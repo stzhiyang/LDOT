@@ -1,0 +1,85 @@
+# 定位模式: 0: 使用姿态(pose)信息 (默认), 1: 使用里程计(odom)信息
+localization_mode: 0
+
+# ROS 主题
+depth_image_topic: /camera/depth/image_raw     # 深度图像主题
+color_image_topic: /camera/color/image_raw     # 彩色图像主题
+lidar_pointcloud_topic: /cloud_registered            # 激光雷达点云主题
+pose_topic: /mavros/local_position/pose        # 姿态主题
+odom_topic: /mavros/local_position/odom        # 里程计主题
+
+# 相机参数
+# 深度相机内参 [fx, fy, cx, cy], 适用于 Intel Realsense
+depth_intrinsics: [385.3096008300781, 385.3096008300781, 324.7971496582031, 237.722900390625]
+# 彩色相机内参 [fx, fy, cx, cy], 适用于 Intel Realsense
+color_intrinsics: [606.3120727539062, 605.92626953125, 314.6913146972656, 252.1909942626953]
+depth_scale_factor: 1000 # 深度值缩放因子, Intel Realsense 相机通常为 1000
+depth_min_value: 0.5     # 最小有效深度值 (米)
+depth_max_value: 5.0     # 最大有效深度值 (米)
+depth_filter_margin: 10  # 深度图像边缘滤波的边界大小 (像素)
+depth_skip_pixel: 2      # 深度处理时跳过的像素数, 用于加速
+image_cols: 640          # 图像宽度 (像素)
+image_rows: 480          # 图像高度 (像素)
+
+# 传感器坐标系变换
+# 机体坐标系到深度相机坐标系的变换矩阵 (4x4)
+body_to_camera_depth: [0.0,  0.0,  1.0,  0.09,
+                      -1.0,  0.0,  0.0,  0.0 ,
+                      0.0, -1.0,  0.0,  0.095,
+                      0.0,  0.0,  0.0,  1.0]
+# 机体坐标系到彩色相机坐标系的变换矩阵 (4x4)
+body_to_camera_color: [0.0,  0.0,  1.0,  0.09,
+                      -1.0,  0.0,  0.0,  0.0 ,
+                      0.0, -1.0,  0.0,  0.095,
+                      0.0,  0.0,  0.0,  1.0]
+# 机体坐标系到激光雷达坐标系的变换矩阵 (4x4)
+body_to_lidar:  [1.0,  0.0,  0.0,  0.0,
+                 0.0,  1.0,  0.0,  0.0 ,
+                 0.0,  0.0,  1.0,  0.15,
+                 0.0,  0.0,  0.0,  1.0]
+
+# 系统参数
+time_step: 0.033 # 系统运行的时间步长 (秒), 约等于 30Hz
+
+# DBSCAN 通用参数
+ground_height: 0.2 # 地面高度阈值 (米), 用于移除地面点云
+roof_height: 2.0   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
+
+# DBSCAN 视觉聚类参数
+voxel_occupied_thresh: 5     # 体素滤波中, 一个体素被视为占据状态所需的最小点数
+dbscan_min_points_cluster: 20 # DBSCAN聚类的最小点数. 20: 约4.0米检测范围; 30: 约3.5米; 40: 约3.0米
+dbscan_search_range_epsilon: 0.05 # DBSCAN邻域搜索半径 (米)
+
+# DBSCAN 激光雷达聚类参数
+lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数
+lidar_DBSCAN_epsilon: 0.05    # 激光雷达DBSCAN邻域搜索半径 (米)
+downsample_threshold: 3500    # 点云降采样的阈值, 超过该数量则进行降采样
+gaussian_downsample_rate: 6   # 高斯降采样的比率
+
+# 激光雷达与视觉融合滤波
+filtering_BBox_IOU_threshold: 0.2 # 视觉检测框与激光雷达聚类框的IOU(交并比)阈值, 用于关联和滤波
+
+# 目标跟踪与数据关联
+max_match_range: 0.5 # 前后帧之间目标匹配的最大距离 (米)
+max_size_diff_range: 0.5 # 前后帧之间目标尺寸差异的最大范围 (米)
+# 特征权重, 用于计算匹配代价 [3*位置, 3*尺寸, 3*点云质心]
+feature_weight: [3.0, 3.0, 0.1, 0.5, 0.5, 0.05, 0, 0, 0]
+history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
+fix_size_history_threshold: 10 # 固定目标尺寸的历史帧数阈值, 当一个目标被连续跟踪超过该帧数后, 其尺寸将被固定
+fix_size_dimension_threshold: 0.4 # 固定目标尺寸的维度比例阈值, 用于判断是否固定尺寸
+kalman_filter_param: [0.25, 0.01, 0.05, 0.05, 0.04, 0.3, 0.6] # 卡尔曼滤波器参数
+kalman_filter_averaging_frames: 10 # 卡尔曼滤波器状态平均的帧数
+
+# 动态/静态分类
+frame_skip: 5 # 比较两个点云以判断动态性时跳过的帧数
+dynamic_velocity_threshold: 0.2 # 判断为动态障碍物的速度阈值 (米/秒)
+dynamic_voting_threshold: 0.8 # 动态性投票的阈值, 超过该比例则认为可能是动态
+frames_force_dynamic: 10 # 在历史轨迹中搜索动态障碍物的范围 (帧数)
+frames_force_dynamic_check_range: 30 # 强制判断为动态障碍物的检查范围阈值 (帧数)
+# 连续k帧被投票为动态的障碍物才被最终分类为动态, k为此处的阈值
+dynamic_consistency_threshold: 15
+
+# 尺寸约束
+target_constrain_size: true # 是否启用目标尺寸约束
+target_object_size: [0.5, 0.5, 1.8] # 期望的目标物体尺寸 [长, 宽, 高] (米)
+max_object_size: [3.0, 3.0, 2.0] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)

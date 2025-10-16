@@ -1,0 +1,65 @@
+# ROS build files
+build/
+devel/
+install/
+log/
+logs/
+
+# CMake and compilation artifacts
+CMakeLists.txt.user
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+*.o
+*.lo
+*.la
+*.a
+*.so
+*.so.*
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ROS package-specific files
+*.swp
+*.swo
+*.bak
+*.~*
+.DS_Store
+
+# ROS and catkin workspace files
+.catkin_workspace
+.catkin_tools/
+.catkin_tools.yaml
+
+# VS Code and JetBrains IDE settings (optional)
+.vscode/
+.idea/
+*.iml
+
+# Generated messages and services
+msg_gen/
+srv_gen/
+action_gen/
+
+# ROS bag files (optional, if storing bag files in repo)
+*.bag
+*.bag.active
+*.bag.yaml
+
+# Miscellaneous
+*.log
+*.tmp
+*.cache
+*.out
+*.lock
+*.test
+
+# Colcon build (if applicable)
+build/
+install/
+log/

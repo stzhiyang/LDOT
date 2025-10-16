@@ -1,0 +1,15 @@
+<launch>
+    <!-- 加载探测器参数 -->
+	<rosparam file="$(find onboard_detector)/cfg/detector_param.yaml" ns="/onboard_detector" />
+    <!-- 启动激光雷达探测器节点 -->
+	<node pkg="onboard_detector" type="detector_node" name="detector_node" output="screen" />
+    <!-- 启动YOLOv5探测器节点（已注释掉） -->
+    <!-- <node pkg="onboard_detector" type="yolo_detector_node.py" name="yolo_detector_node" output="screen" /> -->
+    <!-- 运行YOLOv11需要: pip install ultralytics -->
+    <!-- 启动YOLOv11探测器节点 -->
+    <node pkg="onboard_detector" type="yolov11_detector_node.py" name="yolov11_detector_node" output="log" />
+	<!-- 启动RViz并加载默认配置文件（已注释掉） -->
+	<!-- <node name="rviz" pkg="rviz" type="rviz" args="-d $(find onboard_detector)/rviz/detector.rviz"/> -->
+	<!-- 启动RViz并加载LV（Large Vehicle）配置文件 -->
+	<node name="rviz" pkg="rviz" type="rviz" args="-d $(find onboard_detector)/rviz/detector_lv.rviz"/>
+</launch>
