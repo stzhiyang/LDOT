@@ -33,350 +33,218 @@
 #include <onboard_detector/GetDynamicObstacles.h>
 
 namespace onboardDetector{
+    /**
+     * @class dynamicDetector
+     * @brief 一个用于检测、跟踪和分类动态障碍物的主类。
+     * 
+     * 该类集成了多种传感器（深度相机、彩色相机、激光雷达）的数据，
+     * 使用DBSCAN、UV-Disparity等方法进行物体检测，
+     * 通过卡尔曼滤波器进行目标跟踪，并最终识别出动态障碍物。
+     */
     class dynamicDetector{
     private:
-        std::string ns_;
-        std::string hint_;
+        // ROS相关句柄、订阅者、发布者和定时器
+        std::string ns_; // 命名空间，用于ROS话题和参数
+        std::string hint_; // 日志输出前缀
 
-        // ROS
+        // ROS句柄、订阅者、发布者等
         ros::NodeHandle nh_;
-        std::shared_ptr<message_filters::Subscriber<sensor_msgs::Image>> depthSub_;
-        std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> lidarCloudSub_;
-        std::shared_ptr<message_filters::Subscriber<geometry_msgs::PoseStamped>> poseSub_;
-        typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, geometry_msgs::PoseStamped> depthPoseSync;
-        std::shared_ptr<message_filters::Synchronizer<depthPoseSync>> depthPoseSync_;
-        typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, geometry_msgs::PoseStamped> lidarPoseSync;
-        std::shared_ptr<message_filters::Synchronizer<lidarPoseSync>> lidarPoseSync_;
-        std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odomSub_;
-        typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, nav_msgs::Odometry> depthOdomSync;
-        std::shared_ptr<message_filters::Synchronizer<depthOdomSync>> depthOdomSync_;
-        typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry> lidarOdomSync;
-        std::shared_ptr<message_filters::Synchronizer<lidarOdomSync>> lidarOdomSync_;
-        ros::Subscriber colorImgSub_;
-        ros::Subscriber yoloDetectionSub_;
-        ros::Timer detectionTimer_;
-        ros::Timer lidarDetectionTimer_;
-        ros::Timer trackingTimer_;
-        ros::Timer classificationTimer_;
-        ros::Timer visTimer_;
-        image_transport::Publisher uvDepthMapPub_;
-        image_transport::Publisher uDepthMapPub_;
-        image_transport::Publisher uvBirdViewPub_;
-        image_transport::Publisher detectedColorImgPub_;
-        ros::Publisher uvBBoxesPub_;
-        ros::Publisher dbBBoxesPub_;
-        ros::Publisher visualBBoxesPub_;
-        ros::Publisher lidarBBoxesPub_;
-        ros::Publisher filteredBBoxesBeforeYoloPub_;
-        ros::Publisher filteredBBoxesPub_;
-        ros::Publisher trackedBBoxesPub_;
-        ros::Publisher dynamicBBoxesPub_;
-        ros::Publisher filteredDepthPointsPub_;
-        ros::Publisher lidarClustersPub_;
-        ros::Publisher filteredPointsPub_;
-        ros::Publisher dynamicPointsPub_;
-        ros::Publisher rawDynamicPointsPub_;
-        ros::Publisher downSamplePointsPub_;
-        ros::Publisher rawLidarPointsPub_;
-        ros::Publisher historyTrajPub_;
-        ros::Publisher velVisPub_;
-        ros::ServiceServer getDynamicObstacleServer_;
+        // 消息过滤器，用于同步不同传感器的数据
+        std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> lidarCloudSub_; // 激光雷达点云订阅器
+        std::shared_ptr<message_filters::Subscriber<geometry_msgs::PoseStamped>> poseSub_; // 位姿订阅器
+        typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, geometry_msgs::PoseStamped> lidarPoseSync; // 激光-位姿同步策略
+        std::shared_ptr<message_filters::Synchronizer<lidarPoseSync>> lidarPoseSync_; // 同步器实例
+        std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odomSub_; // 里程计订阅器
+        typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry> lidarOdomSync; // 激光-里程计同步策略
+        std::shared_ptr<message_filters::Synchronizer<lidarOdomSync>> lidarOdomSync_; // 同步器实例
+        
+        // 定时器，用于周期性执行检测、跟踪、分类和可视化任务
+        ros::Timer lidarDetectionTimer_; // 激光雷达检测定时器
+        ros::Timer trackingTimer_; // 目标跟踪定时器
+        ros::Timer classificationTimer_; // 动态/静态分类定时器
+        ros::Timer visTimer_; // 可视化发布定时器
+
+        // 发布器，用于发布中间结果和最终结果以供调试和可视化
+        ros::Publisher lidarBBoxesPub_; // 激光雷达检测的3D边界框
+        ros::Publisher filteredBBoxesPub_; // 最终过滤后的3D边界框
+        ros::Publisher trackedBBoxesPub_; // 跟踪中的3D边界框
+        ros::Publisher dynamicBBoxesPub_; // 最终识别出的动态3D边界框
+        ros::Publisher filteredDepthPointsPub_; // 过滤后的深度点云
+        ros::Publisher lidarClustersPub_; // 激光雷达点云聚类
+        ros::Publisher filteredPointsPub_; // 过滤后的融合点云
+        ros::Publisher dynamicPointsPub_; // 动态障碍物的点云
+        ros::Publisher rawDynamicPointsPub_; // 原始传感器数据中的动态点云
+        ros::Publisher downSamplePointsPub_; // 降采样后的点云
+        ros::Publisher rawLidarPointsPub_; // 原始激光雷达点云
+        ros::Publisher historyTrajPub_; // 跟踪物体的历史轨迹
+        ros::Publisher velVisPub_; // 跟踪物体的速度可视化
+        
+        // 服务
+        ros::ServiceServer getDynamicObstacleServer_; // 获取动态障碍物的服务
     
-        // DETECTOR
-        std::shared_ptr<onboardDetector::UVdetector> uvDetector_;
-        std::shared_ptr<onboardDetector::DBSCAN> dbCluster_;
-        std::shared_ptr<onboardDetector::lidarDetector> lidarDetector_;
+        // 检测器实例
+        std::shared_ptr<onboardDetector::lidarDetector> lidarDetector_; // 激光雷达检测器
 
-        // SENSOR INFO
-        // CAMERA DEPTH
-        double fx_, fy_, cx_, cy_; // depth camera intrinsics
-        double depthScale_; // value / depthScale
-        double depthMinValue_, depthMaxValue_;
-        double raycastMaxLength_;
-        int depthFilterMargin_, skipPixel_; // depth filter margin
-        int imgCols_, imgRows_;
-        Eigen::Matrix4d body2CamDepth_; // from body frame to camera frame
+        // 激光雷达参数
+        Eigen::Matrix4d body2Lidar_; // 机体坐标系到激光雷达坐标系的变换矩阵
 
-        // CAMERA COLOR
-        double fxC_, fyC_, cxC_, cyC_;
-        Eigen::Matrix4d body2CamColor_;
+        // ROS话题名称与模式参数
+        int localizationMode_; // 定位模式 (0: Pose, 1: Odometry)
+        std::string lidarTopicName_; // 激光雷达点云话题
+        std::string poseTopicName_; // 位姿话题
+        std::string odomTopicName_; // 里程计话题
 
-        // LIDAR
-        Eigen::Matrix4d body2Lidar_;
+        // 系统参数
+        double dt_; // 系统运行时间步长
 
-        // PARAMETETER
-        // Topics
-        int localizationMode_;
-        std::string depthTopicName_;
-        std::string colorImgTopicName_;
-        std::string lidarTopicName_;
-        std::string poseTopicName_;
-        std::string odomTopicName_;
-
-        // System
-        double dt_;
-
-        // DBSCAN Common
-        double groundHeight_;
-        double roofHeight_;
+        // DBSCAN通用参数
+        double groundHeight_; // 地面高度阈值，用于滤除地面点
+        double roofHeight_; // 天花板高度阈值，用于滤除天花板点
         
-        // DBSCAN visual param
-        double voxelOccThresh_;
-        int dbMinPointsCluster_;
-        double dbEpsilon_;
-        
-        // DBSCAN LiDAR param
-        int lidarDBMinPoints_;
-        double lidarDBEpsilon_;
-        int gaussianDownSampleRate_;
-        int downSampleThresh_;
+        // 激光雷达DBSCAN聚类参数
+        int lidarDBMinPoints_; // 激光雷达DBSCAN的最小点数
+        double lidarDBEpsilon_; // 激光雷达DBSCAN的搜索半径
+        int gaussianDownSampleRate_; // 高斯降采样率
+        int downSampleThresh_; // 降采样后的点云数量阈值
 
-        // LiDAR Visual Filtering
-        double boxIOUThresh_;
+        // 目标跟踪与数据关联参数
+        double maxMatchRange_; // 数据关联时，目标最大匹配距离
+        double maxMatchSizeRange_; // 数据关联时，目标最大尺寸差异
+        Eigen::VectorXd featureWeights_; // 数据关联时，不同特征的权重
+        int histSize_; // 跟踪历史的长度
+        int fixSizeHistThresh_; // 固定边界框尺寸的历史长度阈值
+        double fixSizeDimThresh_; // 固定边界框尺寸的维度变化阈值
+        // 卡尔曼滤波器参数
+        double eP_; // 初始不确定性
+        double eQPos_; // 过程噪声 - 位置
+        double eQVel_; // 过程噪声 - 速度
+        double eQAcc_; // 过程噪声 - 加速度
+        double eRPos_; // 测量噪声 - 位置
+        double eRVel_; // 测量噪声 - 速度
+        double eRAcc_; // 测量噪声 - 加速度
+        int kfAvgFrames_; // 用于计算观测速度的帧数
 
-        // Tracking and data association
-        double maxMatchRange_;
-        double maxMatchSizeRange_;
-        Eigen::VectorXd featureWeights_;
-        int histSize_;
-        int fixSizeHistThresh_;
-        double fixSizeDimThresh_;
-        double eP_; // kalman filter initial uncertainty matrix
-        double eQPos_; // motion model uncertainty matrix for position
-        double eQVel_; // motion model uncertainty matrix for velocity
-        double eQAcc_; // motion model uncertainty matrix for acceleration
-        double eRPos_; // observation uncertainty matrix for position
-        double eRVel_; // observation uncertainty matrix for velocity
-        double eRAcc_; // observation uncertainty matrix for acceleration
-        int kfAvgFrames_;
+        // 动态/静态分类参数
+        int skipFrame_; // 点云比较时跳过的帧数
+        double dynaVelThresh_; // 判定为动态的速度阈值
+        double dynaVoteThresh_; // 判定为动态的投票比例阈值
+        int forceDynaFrames_; // 在历史中被判定为动态的帧数，超过则强制认为是动态
+        int forceDynaCheckRange_; // 检查强制动态的历史范围
+        int dynamicConsistThresh_; // 动态一致性检查的帧数阈值
 
-        // Classification
-        int skipFrame_;
-        double dynaVelThresh_;
-        double dynaVoteThresh_;
-        int forceDynaFrames_;
-        int forceDynaCheckRange_;
-        int dynamicConsistThresh_;
+        // 尺寸约束参数
+        bool constrainSize_; // 是否启用目标尺寸约束
+        std::vector<Eigen::Vector3d> targetObjectSize_; // 目标物体的典型尺寸
+        Eigen::Vector3d maxObjectSize_; // 物体的最大尺寸阈值
 
-        // Constrain size
-        bool constrainSize_;
-        std::vector<Eigen::Vector3d> targetObjectSize_; 
-        Eigen::Vector3d maxObjectSize_; 
+        // 传感器原始数据
+        Eigen::Vector3d position_; // 机器人当前位置
+        Eigen::Matrix3d orientation_; // 机器人当前姿态
+        Eigen::Vector3d positionLidar_; // 激光雷达当前位置
+        Eigen::Matrix3d orientationLidar_; // 激光雷达当前姿态
+        bool hasSensorPose_; // 是否已获取到传感器位姿
+        Eigen::Vector3d localLidarRange_ {10.0, 10.0, 5.0}; // 激光雷达局部检测范围
 
-        // SENSOR DATA
-        cv::Mat depthImage_;
-        Eigen::Vector3d position_; // robot position
-        Eigen::Matrix3d orientation_; // robot orientation
-        Eigen::Vector3d positionDepth_; // depth camera position
-        Eigen::Matrix3d orientationDepth_; // depth camera orientation
-        Eigen::Vector3d positionColor_; // color camera position
-        Eigen::Matrix3d orientationColor_; // color camera orientation
-        Eigen::Vector3d positionLidar_; // color camera position
-        Eigen::Matrix3d orientationLidar_; // color camera orientation
-        bool hasSensorPose_;
-        Eigen::Vector3d localSensorRange_ {5.0, 5.0, 5.0};
-        Eigen::Vector3d localLidarRange_ {10.0, 10.0, 5.0};
+        // 激光雷达处理数据
+        sensor_msgs::PointCloud2ConstPtr latestCloud_; // 最新的原始激光雷达消息
+        pcl::PointCloud<pcl::PointXYZ>::Ptr lidarCloud_ = NULL; // 处理后的激光雷达点云
+        std::vector<onboardDetector::Cluster> lidarClusters_; // 激光雷达点云聚类结果
 
-        //LIDAR DATA
-        sensor_msgs::PointCloud2ConstPtr latestCloud_;
-        pcl::PointCloud<pcl::PointXYZ>::Ptr lidarCloud_ = NULL; 
-        std::vector<onboardDetector::Cluster> lidarClusters_;
+        // 检测器中间数据
+        int projPointsNum_ = 0; // 投影点数量
+        std::vector<onboardDetector::box3D> filteredBBoxes_; // 最终过滤后的边界框
+        std::vector<std::vector<Eigen::Vector3d>> filteredPcClusters_; // 最终过滤后的点云聚类
+        std::vector<Eigen::Vector3d> filteredPcClusterCenters_; // 最终过滤后点云聚类的中心
+        std::vector<Eigen::Vector3d> filteredPcClusterStds_; // 最终过滤后点云聚类的标准差
+        std::vector<onboardDetector::box3D> lidarBBoxes_; // 由激光雷达检测到的边界框
+        std::vector<onboardDetector::box3D> trackedBBoxes_; // 经过卡尔曼滤波跟踪的边界框
+        std::vector<onboardDetector::box3D> dynamicBBoxes_; // 被分类为动态的边界框
 
-        // DETECTOR DATA
-        std::vector<onboardDetector::box3D> uvBBoxes_; // uv detector bounding boxes
-        int projPointsNum_ = 0;
-        std::vector<Eigen::Vector3d> projPoints_; // projected points from depth image
-        std::vector<double> pointsDepth_;
-        std::vector<Eigen::Vector3d> filteredDepthPoints_; // filtered point cloud data
-        std::vector<onboardDetector::box3D> dbBBoxes_; // DBSCAN bounding boxes
-        std::vector<std::vector<Eigen::Vector3d>> pcClustersVisual_; // pointcloud clusters
-        std::vector<Eigen::Vector3d> pcClusterCentersVisual_; // pointcloud cluster centers
-        std::vector<Eigen::Vector3d> pcClusterStdsVisual_; // pointcloud cluster standard deviation in each axis      
-        std::vector<onboardDetector::box3D> filteredBBoxesBeforeYolo_; // filtered bboxes before yolo
-        std::vector<onboardDetector::box3D> filteredBBoxes_; // filtered bboxes
-        std::vector<std::vector<Eigen::Vector3d>> filteredPcClusters_; // pointcloud clusters after filtering by UV and DBSCAN fusion
-        std::vector<Eigen::Vector3d> filteredPcClusterCenters_; // filtered pointcloud cluster centers
-        std::vector<Eigen::Vector3d> filteredPcClusterStds_; // filtered pointcloud cluster standard deviation in each axis
-        std::vector<onboardDetector::box3D> visualBBoxes_; // visual bobxes detected by camera
-        std::vector<onboardDetector::box3D> lidarBBoxes_; // bboxes detected by lidar (have static and dynamic)
-        std::vector<onboardDetector::box3D> trackedBBoxes_; // bboxes tracked from kalman filtering
-        std::vector<onboardDetector::box3D> dynamicBBoxes_; // boxes classified as dynamic
+        // 跟踪与关联数据
+        bool newDetectFlag_; // 是否有新检测结果的标志
+        std::vector<std::deque<onboardDetector::box3D>> boxHist_; // 每个被跟踪物体的边界框历史
+        std::vector<std::deque<std::vector<Eigen::Vector3d>>> pcHist_; // 每个被跟踪物体的点云历史
+        std::vector<std::deque<Eigen::Vector3d>> pcCenterHist_; // 每个被跟踪物体的点云中心历史
+        std::vector<onboardDetector::kalman_filter> filters_; // 每个被跟踪物体对应的卡尔曼滤波器
 
-        // TRACKING AND ASSOCIATION DATA
-        bool newDetectFlag_;
-        std::vector<std::deque<onboardDetector::box3D>> boxHist_; // data association result: history of filtered bounding boxes for each box in current frame
-        std::vector<std::deque<std::vector<Eigen::Vector3d>>> pcHist_; // data association result: history of filtered pc clusteres for each pc cluster in current frame
-        std::vector<std::deque<Eigen::Vector3d>> pcCenterHist_; 
-        std::vector<onboardDetector::kalman_filter> filters_; // kalman filter for each objects
-
-        // YOLO RESULTS
-        vision_msgs::Detection2DArray yoloDetectionResults_; // yolo detected 2D results
-        cv::Mat detectedColorImage_;
 
     public:
+        // 构造与析构函数
         dynamicDetector();
         dynamicDetector(const ros::NodeHandle& nh);
         void initDetector(const ros::NodeHandle& nh);
 
-        void initParam();
-        void registerPub();
-        void registerCallback();
+        // 初始化函数
+        void initParam(); // 初始化ROS参数
+        void registerPub(); // 注册所有发布者
+        void registerCallback(); // 注册所有订阅者和定时器
 
-        // service
+        // 服务回调函数
 		bool getDynamicObstacles(onboard_detector::GetDynamicObstacles::Request& req, 
 								 onboard_detector::GetDynamicObstacles::Response& res);
 
-        // callback
-        void depthPoseCB(const sensor_msgs::ImageConstPtr& img, const geometry_msgs::PoseStampedConstPtr& pose);
-        void depthOdomCB(const sensor_msgs::ImageConstPtr& img, const nav_msgs::OdometryConstPtr& odom);
+        // 传感器数据回调函数
         void lidarPoseCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const geometry_msgs::PoseStampedConstPtr& pose);
         void lidarOdomCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const nav_msgs::OdometryConstPtr& odom);
-        void colorImgCB(const sensor_msgs::ImageConstPtr& img);
-        void yoloDetectionCB(const vision_msgs::Detection2DArrayConstPtr& detections);
-        void detectionCB(const ros::TimerEvent&);
-        void lidarDetectionCB(const ros::TimerEvent&);
-        void trackingCB(const ros::TimerEvent&);
-        void classificationCB(const ros::TimerEvent&);
-        void visCB(const ros::TimerEvent&);
-
-        // detect function
-        void uvDetect();
-        void dbscanDetect();
-        void lidarDetect();
-        void filterLVBBoxes(); // filter lidar and vision bounding boxes
-        void transformUVBBoxes(std::vector<onboardDetector::box3D>& bboxes);
         
-        // Visual DBSCAN Detector Functions
-        void projectDepthImage();
-        void filterPoints(const std::vector<Eigen::Vector3d>& points, std::vector<Eigen::Vector3d>& filteredPoints);
-        void clusterPointsAndBBoxes(const std::vector<Eigen::Vector3d>& points, std::vector<onboardDetector::box3D>& bboxes, std::vector<std::vector<Eigen::Vector3d>>& pcClusters, std::vector<Eigen::Vector3d>& pcClusterCenters, std::vector<Eigen::Vector3d>& pcClusterStds);
-        void voxelFilter(const std::vector<Eigen::Vector3d>& points, std::vector<Eigen::Vector3d>& filteredPoints);
+        // 定时器回调函数
+        void lidarDetectionCB(const ros::TimerEvent&); // 激光雷达检测主循环
+        void trackingCB(const ros::TimerEvent&); // 跟踪主循环
+        void classificationCB(const ros::TimerEvent&); // 分类主循环
+        void visCB(const ros::TimerEvent&); // 可视化主循环
+
+        // 检测模块函数
+        void lidarDetect(); // 执行激光雷达检测
         
-        // detection helper functions
-        void calcPcFeat(const std::vector<Eigen::Vector3d>& pcCluster, Eigen::Vector3d& pcClusterCenter, Eigen::Vector3d& pcClusterStd);
-        double calBoxIOU(const onboardDetector::box3D& box1, const onboardDetector::box3D& box2, bool ignoreZmin=false);
+        // 检测辅助函数
+        void calcPcFeat(const std::vector<Eigen::Vector3d>& pcCluster, Eigen::Vector3d& pcClusterCenter, Eigen::Vector3d& pcClusterStd); // 计算点云特征
+        double calBoxIOU(const onboardDetector::box3D& box1, const onboardDetector::box3D& box2, bool ignoreZmin=false); // 计算3D边界框的IOU
 
-        // Data association and tracking functions
-        void boxAssociation(std::vector<int>& bestMatch);
-        void boxAssociationHelper(std::vector<int>& bestMatch);
-        void genFeatHelper(const std::vector<onboardDetector::box3D>& boxes, const std::vector<Eigen::Vector3d>& pcCenters, std::vector<Eigen::VectorXd>& feature);
-        void getPrevBBoxes(std::vector<onboardDetector::box3D>& prevBoxes, std::vector<Eigen::Vector3d>& prevPcCenters);
-        void linearProp(std::vector<onboardDetector::box3D>& propedBoxes, std::vector<Eigen::Vector3d>& propedPcCenters);
-        void findBestMatch(const std::vector<onboardDetector::box3D>& prevBBoxes, const std::vector<Eigen::VectorXd>& prevBoxesFeat, const std::vector<onboardDetector::box3D>& propedBoxes, const std::vector<Eigen::VectorXd>& propedBoxesFeat, const std::vector<Eigen::VectorXd>& currBoxesFeat, std::vector<int>& bestMatch);
-        void kalmanFilterAndUpdateHist(const std::vector<int>& bestMatch);
-        void kalmanFilterMatrixVel(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R);
-        void kalmanFilterMatrixAcc(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R);
-        void getKalmanObservationVel(const onboardDetector::box3D& currDetectedBBox, int bestMatchIdx, MatrixXd& Z);
-        void getKalmanObservationAcc(const onboardDetector::box3D& currDetectedBBox, int bestMatchIdx, MatrixXd& Z);
+        // 数据关联与跟踪函数
+        void boxAssociation(std::vector<int>& bestMatch); // 边界框数据关联
+        void boxAssociationHelper(std::vector<int>& bestMatch); // 数据关联辅助函数
+        void genFeatHelper(const std::vector<onboardDetector::box3D>& boxes, const std::vector<Eigen::Vector3d>& pcCenters, std::vector<Eigen::VectorXd>& feature); // 生成特征向量
+        void getPrevBBoxes(std::vector<onboardDetector::box3D>& prevBoxes, std::vector<Eigen::Vector3d>& prevPcCenters); // 获取上一帧的边界框
+        void linearProp(std::vector<onboardDetector::box3D>& propedBoxes, std::vector<Eigen::Vector3d>& propedPcCenters); // 线性预测边界框
+        void findBestMatch(const std::vector<onboardDetector::box3D>& prevBBoxes, const std::vector<Eigen::VectorXd>& prevBoxesFeat, const std::vector<onboardDetector::box3D>& propedBoxes, const std::vector<Eigen::VectorXd>& propedBoxesFeat, const std::vector<Eigen::VectorXd>& currBoxesFeat, std::vector<int>& bestMatch); // 寻找最佳匹配
+        void kalmanFilterAndUpdateHist(const std::vector<int>& bestMatch); // 卡尔曼滤波与更新历史
+        void kalmanFilterMatrixVel(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R); // 设置速度模型KF矩阵
+        void kalmanFilterMatrixAcc(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R); // 设置加速度模型KF矩阵
+        void getKalmanObservationVel(const onboardDetector::box3D& currDetectedBBox, int bestMatchIdx, MatrixXd& Z); // 获取速度观测值
+        void getKalmanObservationAcc(const onboardDetector::box3D& currDetectedBBox, int bestMatchIdx, MatrixXd& Z); // 获取加速度观测值
 
 
-        // visualization
-        void getDynamicPc(std::vector<Eigen::Vector3d>& dynamicPc);
-        void publishUVImages(); 
-        void publishColorImages();
-        void publishPoints(const std::vector<Eigen::Vector3d>& points, const ros::Publisher& publisher);
-        void publish3dBox(const std::vector<onboardDetector::box3D>& bboxes, const ros::Publisher& publisher, double r, double g, double b);
-        void publishHistoryTraj();
-        void publishVelVis();
-        void publishLidarClusters();
-        void publishFilteredPoints();
-        void publishRawDynamicPoints();
+        // 可视化函数
+        void getDynamicPc(std::vector<Eigen::Vector3d>& dynamicPc); // 获取动态点云
+        void publishPoints(const std::vector<Eigen::Vector3d>& points, const ros::Publisher& publisher); // 发布点云
+        void publish3dBox(const std::vector<onboardDetector::box3D>& bboxes, const ros::Publisher& publisher, double r, double g, double b); // 发布3D边界框
+        void publishHistoryTraj(); // 发布历史轨迹
+        void publishVelVis(); // 发布速度可视化信息
+        void publishLidarClusters(); // 发布激光雷达聚类
+        void publishFilteredPoints(); // 发布过滤后的点云
+        void publishRawDynamicPoints(); // 发布原始动态点云
 
-        // helper function
+        // 辅助函数
         void transformBBox(const Eigen::Vector3d& center, const Eigen::Vector3d& size, const Eigen::Vector3d& position, const Eigen::Matrix3d& orientation,
-                                  Eigen::Vector3d& newCenter, Eigen::Vector3d& newSize);
-        int getBestOverlapBBox(const onboardDetector::box3D& currBBox, const std::vector<onboardDetector::box3D>& targetBBoxes, double& bestIOU);
+                                  Eigen::Vector3d& newCenter, Eigen::Vector3d& newSize); // 坐标系转换
+        int getBestOverlapBBox(const onboardDetector::box3D& currBBox, const std::vector<onboardDetector::box3D>& targetBBoxes, double& bestIOU); // 获取最佳重叠框
 
-        // user functions
-        void getDynamicObstacles(std::vector<onboardDetector::box3D>& incomeDynamicBBoxes, const Eigen::Vector3d &robotSize = Eigen::Vector3d(0.0,0.0,0.0));
+        // 用户接口函数
+        void getDynamicObstacles(std::vector<onboardDetector::box3D>& incomeDynamicBBoxes, const Eigen::Vector3d &robotSize = Eigen::Vector3d(0.0,0.0,0.0)); // 获取动态障碍物（考虑机器人尺寸膨胀）
         void getDynamicObstaclesHist(std::vector<std::vector<Eigen::Vector3d>>& posHist, 
 									 std::vector<std::vector<Eigen::Vector3d>>& velHist, 
-									 std::vector<std::vector<Eigen::Vector3d>>& sizeHist, const Eigen::Vector3d &robotSize = Eigen::Vector3d(0.0,0.0,0.0));
+									 std::vector<std::vector<Eigen::Vector3d>>& sizeHist, const Eigen::Vector3d &robotSize = Eigen::Vector3d(0.0,0.0,0.0)); // 获取动态障碍物的历史轨迹
 
-        // inline helper functions
-        bool isInFilterRange(const Eigen::Vector3d& pos);
-        void posToIndex(const Eigen::Vector3d& pos, Eigen::Vector3i& idx, double res);
-        int indexToAddress(const Eigen::Vector3i& idx, double res);
-        int posToAddress(const Eigen::Vector3d& pos, double res);
-        void indexToPos(const Eigen::Vector3i& idx, Eigen::Vector3d& pos, double res);
-        void getCameraPose(const geometry_msgs::PoseStampedConstPtr& pose, Eigen::Matrix4d& camPoseDepthMatrix, Eigen::Matrix4d& camPoseColorMatrix);
-        void getCameraPose(const nav_msgs::OdometryConstPtr& odom, Eigen::Matrix4d& camPoseDepthMatrix, Eigen::Matrix4d& camPoseColorMatrix);
-        void getLidarPose(const geometry_msgs::PoseStampedConstPtr& pose, Eigen::Matrix4d& lidarPoseMatrix);
-        void getLidarPose(const nav_msgs::OdometryConstPtr& odom, Eigen::Matrix4d& lidarPoseMatrix);
-        onboardDetector::Point eigenToDBPoint(const Eigen::Vector3d& p);
-        Eigen::Vector3d dbPointToEigen(const onboardDetector::Point& pDB);
-        void eigenToDBPointVec(const std::vector<Eigen::Vector3d>& points, std::vector<onboardDetector::Point>& pointsDB, int size);       
-    };
+        // 内联辅助函数
+        void getLidarPose(const geometry_msgs::PoseStampedConstPtr& pose, Eigen::Matrix4d& lidarPoseMatrix); // 获取激光雷达位姿
+        void getLidarPose(const nav_msgs::OdometryConstPtr& odom, Eigen::Matrix4d& lidarPoseMatrix); // 获取激光雷达位姿
+        };
 
-
-    inline bool dynamicDetector::isInFilterRange(const Eigen::Vector3d& pos){
-        if ((pos(0) >= this->position_(0) - this->localSensorRange_(0)) and (pos(0) <= this->position_(0) + this->localSensorRange_(0)) and 
-            (pos(1) >= this->position_(1) - this->localSensorRange_(1)) and (pos(1) <= this->position_(1) + this->localSensorRange_(1)) and 
-            (pos(2) >= this->position_(2) - this->localSensorRange_(2)) and (pos(2) <= this->position_(2) + this->localSensorRange_(2))){
-            return true;
-        }
-        else{
-            return false;
-        }        
-    }
-
-    inline void dynamicDetector::posToIndex(const Eigen::Vector3d& pos, Eigen::Vector3i& idx, double res){
-        idx(0) = floor( (pos(0) - this->position_(0) + localSensorRange_(0)) / res);
-        idx(1) = floor( (pos(1) - this->position_(1) + localSensorRange_(1)) / res);
-        idx(2) = floor( (pos(2) - this->position_(2) + localSensorRange_(2)) / res);
-    }
-
-    inline int dynamicDetector::indexToAddress(const Eigen::Vector3i& idx, double res){
-        return idx(0) * ceil(2*this->localSensorRange_(1)/res) * ceil(2*this->localSensorRange_(2)/res) + idx(1) * ceil(2*this->localSensorRange_(2)/res) + idx(2);
-        // return idx(0) * ceil(this->localSensorRange_(0)/res) + idx(1) * ceil(this->localSensorRange_(1)/res) + idx(2);
-    }
-
-    inline int dynamicDetector::posToAddress(const Eigen::Vector3d& pos, double res){
-        Eigen::Vector3i idx;
-        this->posToIndex(pos, idx, res);
-        return this->indexToAddress(idx, res);
-    }
-
-    inline void dynamicDetector::indexToPos(const Eigen::Vector3i& idx, Eigen::Vector3d& pos, double res){
-		pos(0) = (idx(0) + 0.5) * res - localSensorRange_(0) + this->position_(0);
-		pos(1) = (idx(1) + 0.5) * res - localSensorRange_(1) + this->position_(1);
-		pos(2) = (idx(2) + 0.5) * res - localSensorRange_(2) + this->position_(2);
-	}
-    
-    inline void dynamicDetector::getCameraPose(const geometry_msgs::PoseStampedConstPtr& pose, Eigen::Matrix4d& camPoseDepthMatrix, Eigen::Matrix4d& camPoseColorMatrix){
-        Eigen::Quaterniond quat;
-        quat = Eigen::Quaterniond(pose->pose.orientation.w, pose->pose.orientation.x, pose->pose.orientation.y, pose->pose.orientation.z);
-        Eigen::Matrix3d rot = quat.toRotationMatrix();
-
-        // convert body pose to camera pose
-        Eigen::Matrix4d map2body; map2body.setZero();
-        map2body.block<3, 3>(0, 0) = rot;
-        map2body(0, 3) = pose->pose.position.x; 
-        map2body(1, 3) = pose->pose.position.y;
-        map2body(2, 3) = pose->pose.position.z;
-        map2body(3, 3) = 1.0;
-
-        camPoseDepthMatrix = map2body * this->body2CamDepth_;
-        camPoseColorMatrix = map2body * this->body2CamColor_;
-    }
-
-    inline void dynamicDetector::getCameraPose(const nav_msgs::OdometryConstPtr& odom, Eigen::Matrix4d& camPoseDepthMatrix, Eigen::Matrix4d& camPoseColorMatrix){
-        Eigen::Quaterniond quat;
-        quat = Eigen::Quaterniond(odom->pose.pose.orientation.w, odom->pose.pose.orientation.x, odom->pose.pose.orientation.y, odom->pose.pose.orientation.z);
-        Eigen::Matrix3d rot = quat.toRotationMatrix();
-
-        // convert body pose to camera pose
-        Eigen::Matrix4d map2body; map2body.setZero();
-        map2body.block<3, 3>(0, 0) = rot;
-        map2body(0, 3) = odom->pose.pose.position.x; 
-        map2body(1, 3) = odom->pose.pose.position.y;
-        map2body(2, 3) = odom->pose.pose.position.z;
-        map2body(3, 3) = 1.0;
-
-        camPoseDepthMatrix = map2body * this->body2CamDepth_;
-        camPoseColorMatrix = map2body * this->body2CamColor_;
-    }
-
+    /*!
+     * \brief 根据位姿信息计算激光雷达位姿矩阵（使用PoseStamped消息）
+     * \param pose 机器人位姿信息
+     * \param lidarPoseMatrix 输出参数，激光雷达的位姿矩阵
+     */
     inline void dynamicDetector::getLidarPose(const geometry_msgs::PoseStampedConstPtr& pose, Eigen::Matrix4d& lidarPoseMatrix){
         Eigen::Quaterniond quat;
         quat = Eigen::Quaterniond(pose->pose.orientation.w, pose->pose.orientation.x, pose->pose.orientation.y, pose->pose.orientation.z);
@@ -393,6 +261,11 @@ namespace onboardDetector{
         lidarPoseMatrix = map2body * this->body2Lidar_;
     }
 
+    /*!
+     * \brief 根据位姿信息计算激光雷达位姿矩阵（使用Odometry消息）
+     * \param odom 机器人里程计信息
+     * \param lidarPoseMatrix 输出参数，激光雷达的位姿矩阵
+     */
     inline void dynamicDetector::getLidarPose(const nav_msgs::OdometryConstPtr& odom, Eigen::Matrix4d& lidarPoseMatrix){
         Eigen::Quaterniond quat;
         quat = Eigen::Quaterniond(odom->pose.pose.orientation.w, odom->pose.pose.orientation.x, odom->pose.pose.orientation.y, odom->pose.pose.orientation.z);
@@ -409,30 +282,6 @@ namespace onboardDetector{
         lidarPoseMatrix = map2body * this->body2Lidar_;
     }
     
-    inline onboardDetector::Point dynamicDetector::eigenToDBPoint(const Eigen::Vector3d& p){
-        onboardDetector::Point pDB;
-        pDB.x = p(0);
-        pDB.y = p(1);
-        pDB.z = p(2);
-        pDB.clusterID = -1;
-        return pDB;
-    }
-
-    inline Eigen::Vector3d dynamicDetector::dbPointToEigen(const onboardDetector::Point& pDB){
-        Eigen::Vector3d p;
-        p(0) = pDB.x;
-        p(1) = pDB.y;
-        p(2) = pDB.z;
-        return p;
-    }
-
-    inline void dynamicDetector::eigenToDBPointVec(const std::vector<Eigen::Vector3d>& points, std::vector<onboardDetector::Point>& pointsDB, int size){
-        for (int i=0; i<size; ++i){
-            Eigen::Vector3d p = points[i];
-            onboardDetector::Point pDB = this->eigenToDBPoint(p);
-            pointsDB.push_back(pDB);
-        }
-    }
 }
 
 #endif

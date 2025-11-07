@@ -28,6 +28,7 @@ namespace onboardDetector{
     }
 
     void dynamicDetector::initParam(){
+        // ---------------------------------获取ros话题---------------------------------------
         // localization mode
         if (not this->nh_.getParam(this->ns_ + "/localization_mode", this->localizationMode_)){
             this->localizationMode_ = 0;
@@ -36,25 +37,6 @@ namespace onboardDetector{
         else{
             cout << this->hint_ << ": Localizaiton mode: pose (0)/odom (1). Your option: " << this->localizationMode_ << endl;
         }   
-
-        // depth topic name
-        if (not this->nh_.getParam(this->ns_ + "/depth_image_topic", this->depthTopicName_)){
-            this->depthTopicName_ = "/camera/depth/image_raw";
-            cout << this->hint_ << ": No depth image topic name. Use default: /camera/depth/image_raw" << endl;
-        }
-        else{
-            cout << this->hint_ << ": Depth topic: " << this->depthTopicName_ << endl;
-        }
-
-
-        // color topic name
-        if (not this->nh_.getParam(this->ns_ + "/color_image_topic", this->colorImgTopicName_)){
-            this->colorImgTopicName_ = "/camera/color/image_raw";
-            cout << this->hint_ << ": No color image topic name. Use default: /camera/color/image_raw" << endl;
-        }
-        else{
-            cout << this->hint_ << ": Color image topic: " << this->colorImgTopicName_ << endl;
-        }
 
         // lidar topic name
         if (not this->nh_.getParam(this->ns_ + "/lidar_pointcloud_topic", this->lidarTopicName_)){
@@ -87,130 +69,7 @@ namespace onboardDetector{
             }
         }
 
-        // depth intrinsics
-        std::vector<double> depthIntrinsics (4);
-        if (not this->nh_.getParam(this->ns_ + "/depth_intrinsics", depthIntrinsics)){
-            cout << this->hint_ << ": Please check camera intrinsics!" << endl;
-            exit(0);
-        }
-        else{
-            this->fx_ = depthIntrinsics[0];
-            this->fy_ = depthIntrinsics[1];
-            this->cx_ = depthIntrinsics[2];
-            this->cy_ = depthIntrinsics[3];
-            cout << this->hint_ << ": fx, fy, cx, cy: " << "["  << this->fx_ << ", " << this->fy_  << ", " << this->cx_ << ", "<< this->cy_ << "]" << endl;
-        }
-
-        // color intrinsics
-        std::vector<double> colorIntrinsics (4);
-        if (not this->nh_.getParam(this->ns_ + "/color_intrinsics", colorIntrinsics)){
-            cout << this->hint_ << ": Please check camera intrinsics!" << endl;
-            exit(0);
-        }
-        else{
-            this->fxC_ = colorIntrinsics[0];
-            this->fyC_ = colorIntrinsics[1];
-            this->cxC_ = colorIntrinsics[2];
-            this->cyC_ = colorIntrinsics[3];
-            cout << this->hint_ << ": fxC, fyC, cxC, cyC: " << "["  << this->fxC_ << ", " << this->fyC_  << ", " << this->cxC_ << ", "<< this->cyC_ << "]" << endl;
-        }
-
-        // depth scale factor
-        if (not this->nh_.getParam(this->ns_ + "/depth_scale_factor", this->depthScale_)){
-            this->depthScale_ = 1000.0;
-            cout << this->hint_ << ": No depth scale factor. Use default: 1000." << endl;
-        }
-        else{
-            cout << this->hint_ << ": Depth scale factor: " << this->depthScale_ << endl;
-        }
-
-        // depth min value
-        if (not this->nh_.getParam(this->ns_ + "/depth_min_value", this->depthMinValue_)){
-            this->depthMinValue_ = 0.2;
-            cout << this->hint_ << ": No depth min value. Use default: 0.2 m." << endl;
-        }
-        else{
-            cout << this->hint_ << ": Depth min value: " << this->depthMinValue_ << endl;
-        }
-
-        // depth max value
-        if (not this->nh_.getParam(this->ns_ + "/depth_max_value", this->depthMaxValue_)){
-            this->depthMaxValue_ = 5.0;
-            this->raycastMaxLength_ = 5.0;
-            cout << this->hint_ << ": No depth max value. Use default: 5.0 m." << endl;
-        }
-        else{
-            this->raycastMaxLength_ = this->depthMaxValue_;
-            cout << this->hint_ << ": Depth depth max value: " << this->depthMaxValue_ << endl;
-        }
-
-        // depth filter margin
-        if (not this->nh_.getParam(this->ns_ + "/depth_filter_margin", this->depthFilterMargin_)){
-            this->depthFilterMargin_ = 0;
-            cout << this->hint_ << ": No depth filter margin. Use default: 0." << endl;
-        }
-        else{
-            cout << this->hint_ << ": Depth filter margin: " << this->depthFilterMargin_ << endl;
-        }
-
-        // depth skip pixel
-        if (not this->nh_.getParam(this->ns_ + "/depth_skip_pixel", this->skipPixel_)){
-            this->skipPixel_ = 1;
-            cout << this->hint_ << ": No depth skip pixel. Use default: 1." << endl;
-        }
-        else{
-            cout << this->hint_ << ": Depth skip pixel: " << this->skipPixel_ << endl;
-        }
-
-        // ------------------------------------------------------------------------------------
-        // depth image columns
-        if (not this->nh_.getParam(this->ns_ + "/image_cols", this->imgCols_)){
-            this->imgCols_ = 640;
-            cout << this->hint_ << ": No depth image columns. Use default: 640." << endl;
-        }
-        else{
-            cout << this->hint_ << ": Depth image columns: " << this->imgCols_ << endl;
-        }
-
-        // depth skip pixel
-        if (not this->nh_.getParam(this->ns_ + "/image_rows", this->imgRows_)){
-            this->imgRows_ = 480;
-            cout << this->hint_ << ": No depth image rows. Use default: 480." << endl;
-        }
-        else{
-            cout << this->hint_ << ": Depth image rows: " << this->imgRows_ << endl;
-        }
-        this->projPoints_.resize(this->imgCols_ * this->imgRows_ / (this->skipPixel_ * this->skipPixel_));
-        this->pointsDepth_.resize(this->imgCols_ * this->imgRows_ / (this->skipPixel_ * this->skipPixel_));
-        // ------------------------------------------------------------------------------------
-
-
-        // transform matrix: body to camera depth
-        std::vector<double> body2CamDepthVec (16);
-        if (not this->nh_.getParam(this->ns_ + "/body_to_camera_depth", body2CamDepthVec)){
-            ROS_ERROR("[dynamicDetector]: Please check body to camera matrix!");
-        }
-        else{
-            for (int i=0; i<4; ++i){
-                for (int j=0; j<4; ++j){
-                    this->body2CamDepth_(i, j) = body2CamDepthVec[i * 4 + j];
-                }
-            }
-        }
-        
-        // transform matrix: body to camera color
-        std::vector<double> body2CamColorVec (16);
-        if (not this->nh_.getParam(this->ns_ + "/body_to_camera_color", body2CamColorVec)){
-            ROS_ERROR("[dynamicDetector]: Please check body to camera color matrix!");
-        }
-        else{
-            for (int i=0; i<4; ++i){
-                for (int j=0; j<4; ++j){
-                    this->body2CamColor_(i, j) = body2CamColorVec[i * 4 + j];
-                }
-            }
-        }
-
+        // --------------------------------------坐标系转换参数（外参）--------------------------------------------
         // transform matrix: body to lidar
         std::vector<double> body2LidarVec (16);
         if (not this->nh_.getParam(this->ns_ + "/body_to_lidar", body2LidarVec)){
@@ -224,7 +83,7 @@ namespace onboardDetector{
             }
         }
 
-        // time step
+        // --------------------------------------系统运行的频率（时间步长）-----------------------------------------
         if (not this->nh_.getParam(this->ns_ + "/time_step", this->dt_)){
             this->dt_ = 0.033;
             std::cout << this->hint_ << ": No time step parameter found. Use default: 0.033." << std::endl;
@@ -233,7 +92,8 @@ namespace onboardDetector{
             std::cout << this->hint_ << ": Time step for the system is set to: " << this->dt_ << std::endl;
         }  
 
-        // ground height
+        // --------------------------------------DBSCAN通用参数--------------------------------------------------
+        // 地面高度
         if (not this->nh_.getParam(this->ns_ + "/ground_height", this->groundHeight_)){
             this->groundHeight_ = 0.1;
             std::cout << this->hint_ << ": No ground height parameter. Use default: 0.1m." << std::endl;
@@ -242,7 +102,7 @@ namespace onboardDetector{
             std::cout << this->hint_ << ": Ground height is set to: " << this->groundHeight_ << std::endl;
         }
 
-        // roof height
+        // roof height  天花板高度
         if (not this->nh_.getParam(this->ns_ + "/roof_height", this->roofHeight_)){
             this->roofHeight_ = 2.0;
             std::cout << this->hint_ << ": No roof height parameter. Use default: 2.0m." << std::endl;
@@ -251,33 +111,7 @@ namespace onboardDetector{
             std::cout << this->hint_ << ": Roof height is set to: " << this->roofHeight_ << std::endl;
         }
 
-        // min num of points for a voxel to be occupied in voxel filter
-        if (not this->nh_.getParam(this->ns_ + "/voxel_occupied_thresh", this->voxelOccThresh_)){
-            this->voxelOccThresh_ = 10;
-            cout << this->hint_ << ": No voxel_occupied_threshold. Use default: 10." << endl;
-        }
-        else{
-            cout << this->hint_ << ": min num of points for a voxel to be occupied in voxel filter is set to be: " << this->voxelOccThresh_ << endl;
-        }
-
-        // minimum number of points in each cluster
-        if (not this->nh_.getParam(this->ns_ + "/dbscan_min_points_cluster", this->dbMinPointsCluster_)){
-            this->dbMinPointsCluster_ = 18;
-            cout << this->hint_ << ": No DBSCAN minimum point in each cluster parameter. Use default: 18." << endl;
-        }
-        else{
-            cout << this->hint_ << ": DBSCAN Minimum point in each cluster is set to: " << this->dbMinPointsCluster_ << endl;
-        }
-
-        // search range
-        if (not this->nh_.getParam(this->ns_ + "/dbscan_search_range_epsilon", this->dbEpsilon_)){
-            this->dbEpsilon_ = 0.3;
-            cout << this->hint_ << ": No DBSCAN epsilon parameter. Use default: 0.3." << endl;
-        }
-        else{
-            cout << this->hint_ << ": DBSCAN epsilon is set to: " << this->dbEpsilon_ << endl;
-        }  
-
+        // --------------------------------------激光DBSCAN聚类参数---------------------------------------------------------
         // lidar dbscan min points
         if (not this->nh_.getParam(this->ns_ + "/lidar_DBSCAN_min_points", this->lidarDBMinPoints_)){
             this->lidarDBMinPoints_ = 10;
@@ -314,15 +148,7 @@ namespace onboardDetector{
             std::cout << this->hint_ << ": Gaussian downsample rate is set to: " << this->gaussianDownSampleRate_ << std::endl;
         }
 
-        // IOU threshold
-        if (not this->nh_.getParam(this->ns_ + "/filtering_BBox_IOU_threshold", this->boxIOUThresh_)){
-            this->boxIOUThresh_ = 0.5;
-            cout << this->hint_ << ": No threshold for boununding box IOU filtering parameter found. Use default: 0.5." << endl;
-        }
-        else{
-            cout << this->hint_ << ": Threshold for boununding box IOU filtering is set to: " << this->boxIOUThresh_ << endl;
-        }
-
+        // -------------------------------------------目标跟踪与数据关联参数--------------------------------------------------
         // maximum match range
         if (not this->nh_.getParam(this->ns_ + "/max_match_range", this->maxMatchRange_)){
             this->maxMatchRange_ = 0.5;
@@ -429,6 +255,7 @@ namespace onboardDetector{
             std::cout << this->hint_ << ": Number of frames used in KF for observation is set to: " << this->kfAvgFrames_ << std::endl;
         } 
 
+        //-------------------------------------动态/静态分类参数----------------------------------------------------
         // skip frame for classification
         if (not this->nh_.getParam(this->ns_ + "/frame_skip", this->skipFrame_)){
             this->skipFrame_ = 5;
@@ -486,6 +313,7 @@ namespace onboardDetector{
             ROS_ERROR("history length is too short to perform force-dynamic");
         }
 
+        //-----------------------------------------尺寸约束参数--------------------------------------------------------------
         // constrain target object size
         if (not this->nh_.getParam(this->ns_ + "/target_constrain_size", this->constrainSize_)){
             this->constrainSize_ = false;
@@ -532,87 +360,59 @@ namespace onboardDetector{
     }
 
     void dynamicDetector::registerPub(){
-        image_transport::ImageTransport it(this->nh_);
-        // uv detector depth map pub
-        this->uvDepthMapPub_ = it.advertise(this->ns_ + "/detected_depth_map", 10);
-
-        // uv detector u depth map pub
-        this->uDepthMapPub_ = it.advertise(this->ns_ + "/detected_u_depth_map", 10);
-
-        // uv detector bird view pub
-        this->uvBirdViewPub_ = it.advertise(this->ns_ + "/u_depth_bird_view", 10);
-
-        // color 2D bounding boxes pub
-        this->detectedColorImgPub_ = it.advertise(this->ns_ + "/detected_color_image", 10);
-
-        // uv detector bounding box pub
-        this->uvBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/uv_bboxes", 10);
-
-        // DBSCAN bounding box pub
-        this->dbBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/dbscan_bboxes", 10);
-
-        // visual bboxes pub
-        this->visualBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/visual_bboxes", 10);
-
-        // lidar bbox pub
+        // 激光雷达边界框发布
         this->lidarBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/lidar_bboxes", 10);
 
-        // filtered bounding box before YOLO pub
-        this->filteredBBoxesBeforeYoloPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/filtered_before_yolo_bboxes", 10);
-
-        // filtered bounding box pub
+        // 过滤后的边界框发布
         this->filteredBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/filtered_bboxes", 10);
 
-        // tracked bounding box pub
+        // 跟踪的边界框发布
         this->trackedBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/tracked_bboxes", 10);
 
-        // dynamic bounding box pub
+        // 动态边界框发布
         this->dynamicBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/dynamic_bboxes", 10);
 
-        // filtered depth pointcloud pub
+        // 过滤后的深度点云发布
         this->filteredDepthPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/filtered_depth_cloud", 10);
 
-        // lidar cluster pub 
+        // 激光雷达聚类发布 
         this->lidarClustersPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/lidar_clusters", 10);
 
-        // filtered pointcloud pub 
+        // 过滤后的点云发布 
         this->filteredPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/filtered_point_cloud", 10);
 
-        // dynamic pointcloud pub
+        // 动态点云发布
         this->dynamicPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/dynamic_point_cloud", 10);
 
-        // raw dynamic pointcloud pub
+        // 原始动态点云发布
         this->rawDynamicPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/raw_dynamic_point_cloud", 10);
 
-        // downsample points visualization pub
+        // 降采样点可视化发布
         this->downSamplePointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/downsampled_point_cloud", 10);
 
-        // raw LiDAR points visualization pub
+        // 原始激光雷达点可视化发布
         this->rawLidarPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/raw_lidar_point_cloud", 10);
 
-        // history trajectory pub
+        // 历史轨迹发布
         this->historyTrajPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/history_trajectories", 10);
 
-        // velocity visualization pub
+        // 速度可视化发布
         this->velVisPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/velocity_visualizaton", 10);
     }   
 
     void dynamicDetector::registerCallback(){
-        // depth pose callback
-        this->depthSub_.reset(new message_filters::Subscriber<sensor_msgs::Image>(this->nh_, this->depthTopicName_, 50));
+        //message_filters和正常的ros订阅区别是，message_filters不会直接调用回调函数，而是满足过滤器的条件才调用
+        // 深度图像和位姿回调。reset表示释放旧的对象，处理当前的新对象。new动态内存分配，如果分配的是对象，new会调用该对象的构造函数来初始化它，也分配内存
         this->lidarCloudSub_.reset(new message_filters::Subscriber<sensor_msgs::PointCloud2>(this->nh_, this->lidarTopicName_, 50));
         // this->lidarCloudSub_ = this->nh_.subscribe(this->lidarTopicName_, 10, &dynamicDetector::lidarCloudCB, this);
         if (this->localizationMode_ == 0){
             this->poseSub_.reset(new message_filters::Subscriber<geometry_msgs::PoseStamped>(this->nh_, this->poseTopicName_, 25));
-            this->depthPoseSync_.reset(new message_filters::Synchronizer<depthPoseSync>(depthPoseSync(100), *this->depthSub_, *this->poseSub_));
-            this->depthPoseSync_->registerCallback(boost::bind(&dynamicDetector::depthPoseCB, this, _1, _2));
+            // message_filters::Synchronizer表示滤波器的前提条件是时间同步，depthPoseSync(100)同步器的队列大小，下面的-1-2为调用函数接收两个话题对应参数的占位符
             this->lidarPoseSync_.reset(new message_filters::Synchronizer<lidarPoseSync>(lidarPoseSync(100), *this->lidarCloudSub_, *this->poseSub_));
             this->lidarPoseSync_->registerCallback(boost::bind(&dynamicDetector::lidarPoseCB, this, _1, _2));
         }
         else if (this->localizationMode_ == 1){
             this->odomSub_.reset(new message_filters::Subscriber<nav_msgs::Odometry>(this->nh_, this->odomTopicName_, 25));
-            this->depthOdomSync_.reset(new message_filters::Synchronizer<depthOdomSync>(depthOdomSync(100), *this->depthSub_, *this->odomSub_));
-            this->depthOdomSync_->registerCallback(boost::bind(&dynamicDetector::depthOdomCB, this, _1, _2));
             this->lidarOdomSync_.reset(new message_filters::Synchronizer<lidarOdomSync>(lidarOdomSync(100), *this->lidarCloudSub_, *this->odomSub_));
             this->lidarOdomSync_->registerCallback(boost::bind(&dynamicDetector::lidarOdomCB, this, _1, _2));
         }
@@ -621,57 +421,52 @@ namespace onboardDetector{
             exit(0);
         }
 
-        // color image subscriber
-        this->colorImgSub_ = this->nh_.subscribe(this->colorImgTopicName_, 10, &dynamicDetector::colorImgCB, this);
-
-        // yolo detection results subscriber
-        this->yoloDetectionSub_ = this->nh_.subscribe("yolo_detector/detected_bounding_boxes", 10, &dynamicDetector::yoloDetectionCB, this);
-
-        // detection timer
-        this->detectionTimer_ = this->nh_.createTimer(ros::Duration(this->dt_), &dynamicDetector::detectionCB, this);
-
-        // lidar detection timer
+        // 激光雷达检测定时器
         this->lidarDetectionTimer_ = this->nh_.createTimer(ros::Duration(this->dt_), &dynamicDetector::lidarDetectionCB, this);
 
-        // tracking timer
+        // 跟踪定时器
         this->trackingTimer_ = this->nh_.createTimer(ros::Duration(this->dt_), &dynamicDetector::trackingCB, this);
 
-        // classification timer
+        // 分类定时器
         this->classificationTimer_ = this->nh_.createTimer(ros::Duration(this->dt_), &dynamicDetector::classificationCB, this);
     
-        // visualization timer
+        // 可视化定时器
         this->visTimer_ = this->nh_.createTimer(ros::Duration(this->dt_), &dynamicDetector::visCB, this);
         
-		// get dynamic obstacle service
+		// 获取动态障碍物服务
 		this->getDynamicObstacleServer_ = this->nh_.advertiseService("onboard_detector/get_dynamic_obstacles", &dynamicDetector::getDynamicObstacles, this);
     }
 
+
+    // 获取动态障碍物的服务回调函数。对获取的障碍物按与机器人的距离从小到大排序
     bool dynamicDetector::getDynamicObstacles(onboard_detector::GetDynamicObstacles::Request& req, 
                                               onboard_detector::GetDynamicObstacles::Response& res) {
-        // Get the current robot position
+        // 从服务请求中获取机器人当前的位置
         Eigen::Vector3d currPos = Eigen::Vector3d (req.current_position.x, req.current_position.y, req.current_position.z);
 
-        // Vector to store obstacles along with their distances
+        // 创建一个向量，用于存储障碍物id及与机器人距离的键值对，方便后续排序
         std::vector<std::pair<double, onboardDetector::box3D>> obstaclesWithDistances;
 
-        // Go through all obstacles and calculate distances
+        // 遍历当前所有已检测到的动态障碍物
         for (const onboardDetector::box3D& bbox : this->dynamicBBoxes_) {
             Eigen::Vector3d obsPos(bbox.x, bbox.y, bbox.z);
             Eigen::Vector3d diff = currPos - obsPos;
-            diff(2) = 0.;
+            diff(2) = 0.; // 忽略Z轴差异，计算2D平面距离
             double distance = diff.norm();
+
+            // 如果障碍物在请求的范围之内，则将其添加到列表中
             if (distance <= req.range) {
                 obstaclesWithDistances.push_back(std::make_pair(distance, bbox));
             }
         }
 
-        // Sort obstacles by distance in ascending order
+        // 按距离从小到大对障碍物进行排序
         std::sort(obstaclesWithDistances.begin(), obstaclesWithDistances.end(), 
                 [](const std::pair<double, onboardDetector::box3D>& a, const std::pair<double, onboardDetector::box3D>& b) {
                     return a.first < b.first;
                 });
 
-        // Push sorted obstacles into the response
+        // 将排序后的障碍物信息填充到服务响应中
         for (const auto& item : obstaclesWithDistances) {
             const onboardDetector::box3D& bbox = item.second;
 
@@ -679,14 +474,17 @@ namespace onboardDetector{
             geometry_msgs::Vector3 vel;
             geometry_msgs::Vector3 size;
 
+            // 填充位置
             pos.x = bbox.x;
             pos.y = bbox.y;
             pos.z = bbox.z;
 
+            // 填充速度（Z轴速度设为0）
             vel.x = bbox.Vx;
             vel.y = bbox.Vy;
             vel.z = 0.;
 
+            // 填充尺寸
             size.x = bbox.x_width;
             size.y = bbox.y_width;
             size.z = bbox.z_width;
@@ -696,158 +494,105 @@ namespace onboardDetector{
             res.size.push_back(size);
         }
 
-        return true;
+        return true; // 表示服务成功完成
     }
 
-    void dynamicDetector::depthPoseCB(const sensor_msgs::ImageConstPtr& img, const geometry_msgs::PoseStampedConstPtr& pose){
-        // store current depth image
-        cv_bridge::CvImagePtr imgPtr = cv_bridge::toCvCopy(img, img->encoding);
-        if (img->encoding == sensor_msgs::image_encodings::TYPE_32FC1){
-            (imgPtr->image).convertTo(imgPtr->image, CV_16UC1, this->depthScale_);
-        }
-        imgPtr->image.copyTo(this->depthImage_);
-
-        // store current position and orientation (camera)
-        Eigen::Matrix4d camPoseDepthMatrix, camPoseColorMatrix;
-        this->getCameraPose(pose, camPoseDepthMatrix, camPoseColorMatrix);
-
-        this->position_(0) = pose->pose.position.x;
-        this->position_(1) = pose->pose.position.y;
-        this->position_(2) = pose->pose.position.z;
-        Eigen::Quaterniond quat;
-        quat = Eigen::Quaterniond(pose->pose.orientation.w, pose->pose.orientation.x, pose->pose.orientation.y, pose->pose.orientation.z);
-        Eigen::Matrix3d rot = quat.toRotationMatrix();
-        this->orientation_ = rot;
-
-        this->positionDepth_(0) = camPoseDepthMatrix(0, 3);
-        this->positionDepth_(1) = camPoseDepthMatrix(1, 3);
-        this->positionDepth_(2) = camPoseDepthMatrix(2, 3);
-        this->orientationDepth_ = camPoseDepthMatrix.block<3, 3>(0, 0);
-
-        this->positionColor_(0) = camPoseColorMatrix(0, 3);
-        this->positionColor_(1) = camPoseColorMatrix(1, 3);
-        this->positionColor_(2) = camPoseColorMatrix(2, 3);
-        this->orientationColor_ = camPoseColorMatrix.block<3, 3>(0, 0);
-    }
-
-    void dynamicDetector::depthOdomCB(const sensor_msgs::ImageConstPtr& img, const nav_msgs::OdometryConstPtr& odom){
-        // store current depth image
-        cv_bridge::CvImagePtr imgPtr = cv_bridge::toCvCopy(img, img->encoding);
-        if (img->encoding == sensor_msgs::image_encodings::TYPE_32FC1){
-            (imgPtr->image).convertTo(imgPtr->image, CV_16UC1, this->depthScale_);
-        }
-        imgPtr->image.copyTo(this->depthImage_);
-
-        // store current position and orientation (camera)
-        Eigen::Matrix4d camPoseDepthMatrix, camPoseColorMatrix;
-        this->getCameraPose(odom, camPoseDepthMatrix, camPoseColorMatrix);
-
-        this->position_(0) = odom->pose.pose.position.x;
-        this->position_(1) = odom->pose.pose.position.y;
-        this->position_(2) = odom->pose.pose.position.z;
-        Eigen::Quaterniond quat;
-        quat = Eigen::Quaterniond(odom->pose.pose.orientation.w, odom->pose.pose.orientation.x, odom->pose.pose.orientation.y, odom->pose.pose.orientation.z);
-        Eigen::Matrix3d rot = quat.toRotationMatrix();
-        this->orientation_ = rot;
-
-        this->positionDepth_(0) = camPoseDepthMatrix(0, 3);
-        this->positionDepth_(1) = camPoseDepthMatrix(1, 3);
-        this->positionDepth_(2) = camPoseDepthMatrix(2, 3);
-        this->orientationDepth_ = camPoseDepthMatrix.block<3, 3>(0, 0);
-
-        this->positionColor_(0) = camPoseColorMatrix(0, 3);
-        this->positionColor_(1) = camPoseColorMatrix(1, 3);
-        this->positionColor_(2) = camPoseColorMatrix(2, 3);
-        this->orientationColor_ = camPoseColorMatrix.block<3, 3>(0, 0);
-    }
-
+    //转换点云格式，滤波一定范围内的点，高斯
     void dynamicDetector::lidarPoseCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const geometry_msgs::PoseStampedConstPtr& pose){
-        // for visualization
+        // 仅用于可视化，存储最新的原始点云消息
         this->latestCloud_ = cloudMsg;
 
-        // local cloud
+        // 将ROS点云消息转换为PCL点云格式
         pcl::PointCloud<pcl::PointXYZ>::Ptr tempCloud (new pcl::PointCloud<pcl::PointXYZ>());
         pcl::fromROSMsg(*cloudMsg, *tempCloud);
 
-        // filter and downsample pointcloud
-        // Create a filtered cloud pointer to store intermediate results
+        // --- 点云滤波和降采样 ---
+        // 创建一个滤波后的点云指针以存储结果
         pcl::PointCloud<pcl::PointXYZ>::Ptr filteredCloud (new pcl::PointCloud<pcl::PointXYZ>());
 
-        // Apply a pass-through filter to limit points to the local sensor range in X, Y, and Z axes
+        // 应用直通滤波器来限制X、Y、Z轴上的局部传感器范围内的点
         pcl::PassThrough<pcl::PointXYZ> pass;
 
-        // Filter for X axis
+        // 沿X轴滤波
         pass.setInputCloud(tempCloud);
-        pass.setFilterFieldName("x");
+        pass.setFilterFieldName("x"); // 指定过滤字段为X坐标
         pass.setFilterLimits(-this->localLidarRange_.x(), this->localLidarRange_.x());
-        pass.filter(*filteredCloud);
+        pass.filter(*filteredCloud); // 执行过滤操作，将结果存储在filteredCloud中
 
-        // Filter for Y axis
+        // 沿Y轴滤波
         pass.setInputCloud(filteredCloud);
         pass.setFilterFieldName("y");
         pass.setFilterLimits(-this->localLidarRange_.y(), this->localLidarRange_.y());
         pass.filter(*filteredCloud);
 
+        // --- 基于高斯分布的概率降采样 ---
         int sigma = this->gaussianDownSampleRate_;
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr preTransformCloud(new pcl::PointCloud<pcl::PointXYZ>());
-        preTransformCloud->reserve(filteredCloud->size());
+        preTransformCloud->reserve(filteredCloud->size()); // 预分配内存空间，容量为过滤后点云的大小
 
+        // 根据点到传感器的距离，使用高斯概率决定是否保留该点
         for (pcl::PointXYZ &pt : filteredCloud->points) {
             double dist = pow(pow(pt.x, 2) + pow(pt.y, 2), 0.5);
+            // 第二行根据距离和sigma参数计算高斯权重，距离越远权重越小
             double p = std::exp(-(dist * dist) / (2 * sigma * sigma));
 
+            //生成0-1之间的随机数r
             double r = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
             if (r < p) {
                 preTransformCloud->push_back(pt);
             }
         }
 
-        // transform
-        Eigen::Affine3d transform = Eigen::Affine3d::Identity();
-        transform.linear() = this->orientationLidar_;
-        transform.translation() = this->positionLidar_;
+        // --- 坐标变换 ---
+        // 创建变换矩阵，将点云从激光雷达坐标系转换到地图坐标系
+        Eigen::Affine3d transform = Eigen::Affine3d::Identity(); // 创建单位变换矩阵
+        transform.linear() = this->orientationLidar_;  // 设置旋转部分为激光雷达的朝向
+        transform.translation() = this->positionLidar_; // 设置平移部分为激光雷达的位置
 
-        // map cloud
-        // Create an empty point cloud to store the transformed data
+        // 创建一个空的点云来存储变换后的数据
         pcl::PointCloud<pcl::PointXYZ>::Ptr transformedCloud (new pcl::PointCloud<pcl::PointXYZ>());
 
-        // Apply the transformation
+        // 应用坐标变换
         pcl::transformPointCloud(*preTransformCloud, *transformedCloud, transform);
 
-        // filter roof and ground 
+        // --- 过滤地面和天花板 ---
         pcl::PointCloud<pcl::PointXYZ>::Ptr groundRoofFilterCloud (new pcl::PointCloud<pcl::PointXYZ>());
         pass.setInputCloud(transformedCloud);
         pass.setFilterFieldName("z");
         pass.setFilterLimits(this->groundHeight_, this->roofHeight_);
         pass.filter(*groundRoofFilterCloud);
 
+        // --- 体素网格降采样 ---
         pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud = groundRoofFilterCloud;
-        // Create the VoxelGrid filter object
+        // 创建VoxelGrid滤波器对象
         pcl::VoxelGrid<pcl::PointXYZ> sor;
-        // sor.setInputCloud(filteredCloud);
         sor.setInputCloud(groundRoofFilterCloud);
 
-        // Set the leaf size (adjust to control the downsampling)
-        sor.setLeafSize(0.1f, 0.1f, 0.1f); // Try different values based on your point cloud density
+        // 设置体素大小（叶子大小）
+        sor.setLeafSize(0.1f, 0.1f, 0.1f); 
 
-        // If the downsampled cloud has more than certain points, further increase the leaf size
+        // 如果降采样后的点云点数仍然过多，则进一步增大概率来减少点数
         while (int(downsampledCloud->size()) > this->downSampleThresh_) {
-            double leafSize = sor.getLeafSize().x() * 1.1f; // Increase the leaf size to reduce point count
+            double leafSize = sor.getLeafSize().x() * 1.1f; // 增加叶子大小以减少点数
             sor.setLeafSize(leafSize, leafSize, leafSize);
             sor.filter(*downsampledCloud);
         }
 
+        // 存储处理后的激光雷达点云
         this->lidarCloud_ = downsampledCloud;
+        // 将处理后的点云发布出去，用于可视化
         sensor_msgs::PointCloud2 outputCloud;
-        pcl::toROSMsg(*this->lidarCloud_, outputCloud); // Convert to ROS message
-        outputCloud.header.frame_id = "map";    // Set appropriate frame ID
+        pcl::toROSMsg(*this->lidarCloud_, outputCloud); // 转换为ROS消息
+        outputCloud.header.frame_id = "map";    // 设置坐标系
         this->downSamplePointsPub_.publish(outputCloud);
 
-        // store current position and orientation
+        // --- 更新位姿信息 ---
+        // 存储当前的位置和姿态
         Eigen::Matrix4d lidarPoseMatrix;
         this->getLidarPose(pose, lidarPoseMatrix);
 
+        // 更新机器人主体的位姿
         this->position_(0) = pose->pose.position.x;
         this->position_(1) = pose->pose.position.y;
         this->position_(2) = pose->pose.position.z;
@@ -856,6 +601,7 @@ namespace onboardDetector{
         Eigen::Matrix3d rot = quat.toRotationMatrix();
         this->orientation_ = rot;
 
+        // 更新激光雷达的位姿
         this->positionLidar_(0) = lidarPoseMatrix(0, 3);
         this->positionLidar_(1) = lidarPoseMatrix(1, 3);
         this->positionLidar_(2) = lidarPoseMatrix(2, 3);
@@ -963,40 +709,24 @@ namespace onboardDetector{
         this->orientationLidar_ = lidarPoseMatrix.block<3, 3>(0, 0);
     }
 
-    void dynamicDetector::colorImgCB(const sensor_msgs::ImageConstPtr& img){
-        cv_bridge::CvImagePtr imgPtr = cv_bridge::toCvCopy(img, img->encoding);
-        imgPtr->image.copyTo(this->detectedColorImage_);
-    }
-
-    void dynamicDetector::yoloDetectionCB(const vision_msgs::Detection2DArrayConstPtr& detections){
-        this->yoloDetectionResults_ = *detections;
-    }
-
    
     void dynamicDetector::lidarDetectionCB(const ros::TimerEvent&){
         this->lidarDetect();
     }
 
-    void dynamicDetector::detectionCB(const ros::TimerEvent&){
-        // detection thread
-        this->dbscanDetect();
-        this->uvDetect();
-        // ros::Time start = ros::Time::now();
-        this->filterLVBBoxes();
-        // ros::Time end = ros::Time::now();
-        // ROS_INFO("filtering time: %f", (end - start).toSec());
-        this->newDetectFlag_ = true; // get a new detection
-    }
-
+    // 跟踪定时器回调函数
     void dynamicDetector::trackingCB(const ros::TimerEvent&){
-        // data association thread
-        std::vector<int> bestMatch; // for each current detection, which index of previous obstacle match
-        this->boxAssociation(bestMatch);
+        // 数据关联线程
+        std::vector<int> bestMatch; // 存储当前检测与历史障碍物的匹配索引。
+        this->boxAssociation(bestMatch); // 执行边界框关联。
+        
         // kalman filter tracking
-        if (bestMatch.size()){
-            this->kalmanFilterAndUpdateHist(bestMatch);
+        // 卡尔曼滤波跟踪
+        if (bestMatch.size()){ // 如果找到匹配。
+            this->kalmanFilterAndUpdateHist(bestMatch); // 更新卡尔曼滤波器和历史记录。
         }
-        else {
+        else { // 如果没有匹配。
+            // 清空历史记录。
             this->boxHist_.clear();
             this->pcHist_.clear();
             this->pcCenterHist_.clear();
@@ -1140,14 +870,7 @@ namespace onboardDetector{
     }
 
     void dynamicDetector::visCB(const ros::TimerEvent&){
-        this->publishUVImages();
-        this->publishColorImages();
-        
-        this->publish3dBox(this->uvBBoxes_, this->uvBBoxesPub_, 0, 1, 0);
-        this->publish3dBox(this->dbBBoxes_, this->dbBBoxesPub_, 1, 0, 0);
-        this->publish3dBox(this->visualBBoxes_, this->visualBBoxesPub_, 0.3, 0.8, 1.0);
         this->publish3dBox(this->lidarBBoxes_, this->lidarBBoxesPub_, 0.5, 0.5, 0.5); // raw lidar cluster bounding boxes
-        this->publish3dBox(this->filteredBBoxesBeforeYolo_, this->filteredBBoxesBeforeYoloPub_, 0, 1, 0.5);
         this->publish3dBox(this->filteredBBoxes_, this->filteredBBoxesPub_, 0, 1, 1);
         this->publish3dBox(this->trackedBBoxes_, this->trackedBBoxesPub_, 1, 1, 0);
         this->publish3dBox(this->dynamicBBoxes_, this->dynamicBBoxesPub_, 0, 0, 1);
@@ -1164,139 +887,59 @@ namespace onboardDetector{
         this->publishVelVis();
     }
 
-    void dynamicDetector::uvDetect(){
-        // initialization
-        if (this->uvDetector_ == NULL){
-            this->uvDetector_.reset(new UVdetector ());
-            this->uvDetector_->fx = this->fx_;
-            this->uvDetector_->fy = this->fy_;
-            this->uvDetector_->px = this->cx_;
-            this->uvDetector_->py = this->cy_;
-            this->uvDetector_->depthScale_ = this->depthScale_; 
-            this->uvDetector_->max_dist = this->raycastMaxLength_ * 1000;
-        }
 
-        // detect from depth mapcalBox
-        if (not this->depthImage_.empty()){
-            this->uvDetector_->depth = this->depthImage_;
-            this->uvDetector_->detect();
-            this->uvDetector_->extract_3Dbox();
-
-            this->uvDetector_->display_U_map();
-            this->uvDetector_->display_bird_view();
-            this->uvDetector_->display_depth();
-
-            // transform to the world frame (recalculate the boudning boxes)
-            std::vector<onboardDetector::box3D> uvBBoxes;
-            this->transformUVBBoxes(uvBBoxes);
-            this->uvBBoxes_ = uvBBoxes;
-        }
-    }
-
-    void dynamicDetector::dbscanDetect(){
-        // 1. get pointcloud
-        this->projectDepthImage();
-
-        // 2. filter points
-        this->filterPoints(this->projPoints_, this->filteredDepthPoints_);
-
-        // 3. cluster points and get bounding boxes
-        this->clusterPointsAndBBoxes(this->filteredDepthPoints_, this->dbBBoxes_, this->pcClustersVisual_, 
-                                     this->pcClusterCentersVisual_, this->pcClusterStdsVisual_);
-    }
-
-
+    /*!
+     * \brief 使用激光雷达数据进行动态障碍物检测
+     * 该函数通过激光雷达点云数据检测环境中的障碍物。它会初始化激光雷达检测器（如果尚未初始化），
+     * 执行DBSCAN聚类算法来识别点云中的不同对象，并过滤掉尺寸过大的边界框。
+     * 最终结果保存在lidarBBoxes_和lidarClusters_成员变量中。
+     */
     void dynamicDetector::lidarDetect(){
+        // 检查激光雷达检测器是否已初始化，如果没有则创建并设置参数
         if (this->lidarDetector_ == NULL){
             this->lidarDetector_.reset(new lidarDetector());
             this->lidarDetector_->setParams(this->lidarDBEpsilon_, this->lidarDBMinPoints_);
         }
 
+        // 检查是否有激光雷达点云数据
         if (this->lidarCloud_ != NULL){
+            // 将点云数据传递给检测器并执行DBSCAN聚类
             this->lidarDetector_->getPointcloud(this->lidarCloud_);
             this->lidarDetector_->lidarDBSCAN();
 
+            // 获取聚类结果和对应的边界框
             std::vector<onboardDetector::Cluster> lidarClustersRaw = this->lidarDetector_->getClusters();
             std::vector<onboardDetector::Cluster> lidarClustersFiltered;
             std::vector<onboardDetector::box3D> lidarBBoxesRaw = this->lidarDetector_->getBBoxes();
             std::vector<onboardDetector::box3D> lidarBBoxesFiltered;
+            
+            // 遍历所有边界框，过滤掉尺寸过大的对象
             for (int i=0; i<int(lidarBBoxesRaw.size()); ++i){
                 onboardDetector::box3D lidarBBox = lidarBBoxesRaw[i];
-                // filter out lidar bounding boxes that are too large
+                // 过滤掉尺寸超过阈值的边界框
                 if(lidarBBox.x_width > this->maxObjectSize_(0) || lidarBBox.y_width > this->maxObjectSize_(1) || lidarBBox.z_width > this->maxObjectSize_(2)){
                     continue;
                 }
                 lidarBBoxesFiltered.push_back(lidarBBox);
                 lidarClustersFiltered.push_back(lidarClustersRaw[i]);            
             }
+            
+            // 保存过滤后的结果
             this->lidarBBoxes_ = lidarBBoxesFiltered;
             this->lidarClusters_ = lidarClustersFiltered;
         }
-    }
 
-    void dynamicDetector::filterLVBBoxes(){
-        std::vector<onboardDetector::box3D> filteredBBoxesTemp;
-        std::vector<std::vector<Eigen::Vector3d>> filteredPcClustersTemp;
-        std::vector<Eigen::Vector3d> filteredPcClusterCentersTemp;
-        std::vector<Eigen::Vector3d> filteredPcClusterStdsTemp; 
-
-        std::vector<onboardDetector::box3D> visualBBoxesTemp;
-        std::vector<std::vector<Eigen::Vector3d>> visualPcClustersTemp;
-        std::vector<Eigen::Vector3d> visualPcClusterCentersTemp;
-        std::vector<Eigen::Vector3d> visualPcClusterStdsTemp; // store visual output
-
+        // 临时存储来自激光雷达的边界框及其点云特征
         std::vector<onboardDetector::box3D> lidarBBoxesTemp;
         std::vector<std::vector<Eigen::Vector3d>> lidarPcClustersTemp;
         std::vector<Eigen::Vector3d> lidarPcClusterCentersTemp;
         std::vector<Eigen::Vector3d> lidarPcClusterStdsTemp; // store lidar output
 
-        // STEP 1: Get visual bboxes by fusing visual bounding boxes
-        // find best IOU match for both uv and dbscan. If they are best for each other, then add to filtered bbox and fuse.
-        for (size_t i=0 ; i<this->uvBBoxes_.size(); ++i){
-            onboardDetector::box3D uvBBox = this->uvBBoxes_[i];
-            double bestIOUForUVBBox, bestIOUForDBBBox;
-            int bestMatchForUVBBox = this->getBestOverlapBBox(uvBBox, this->dbBBoxes_, bestIOUForUVBBox);
-            if (bestMatchForUVBBox == -1) continue; // no match at all
-            onboardDetector::box3D matchedDBBBox = this->dbBBoxes_[bestMatchForUVBBox]; 
-            std::vector<Eigen::Vector3d> matchedPcCluster = this->pcClustersVisual_[bestMatchForUVBBox];
-            Eigen::Vector3d matchedPcClusterCenter = this->pcClusterCentersVisual_[bestMatchForUVBBox];
-            Eigen::Vector3d matchedPcClusterStd = this->pcClusterStdsVisual_[bestMatchForUVBBox];
-            int bestMatchForDBBBox = this->getBestOverlapBBox(matchedDBBBox, this->uvBBoxes_, bestIOUForDBBBox);
-
-            // if best match is each other and both the IOU is greater than the threshold
-            if (bestMatchForDBBBox == int(i) and bestIOUForUVBBox > this->boxIOUThresh_ and bestIOUForDBBBox > this->boxIOUThresh_){
-                onboardDetector::box3D bbox;
-                
-                // take concervative strategy
-                double xmax = std::max(uvBBox.x+uvBBox.x_width/2, matchedDBBBox.x+matchedDBBBox.x_width/2);
-                double xmin = std::min(uvBBox.x-uvBBox.x_width/2, matchedDBBBox.x-matchedDBBBox.x_width/2);
-                double ymax = std::max(uvBBox.y+uvBBox.y_width/2, matchedDBBBox.y+matchedDBBBox.y_width/2);
-                double ymin = std::min(uvBBox.y-uvBBox.y_width/2, matchedDBBBox.y-matchedDBBBox.y_width/2);
-                double zmax = std::max(uvBBox.z+uvBBox.z_width/2, matchedDBBBox.z+matchedDBBBox.z_width/2);
-                double zmin = std::min(uvBBox.z-uvBBox.z_width/2, matchedDBBBox.z-matchedDBBBox.z_width/2);
-                bbox.x = (xmin+xmax)/2;
-                bbox.y = (ymin+ymax)/2;
-                bbox.z = (zmin+zmax)/2;
-                bbox.x_width = xmax-xmin;
-                bbox.y_width = ymax-ymin;
-                bbox.z_width = zmax-zmin;
-                bbox.Vx = 0;
-                bbox.Vy = 0;
-
-                visualBBoxesTemp.push_back(bbox);
-                visualPcClustersTemp.push_back(matchedPcCluster);
-                visualPcClusterCentersTemp.push_back(matchedPcClusterCenter);
-                visualPcClusterStdsTemp.push_back(matchedPcClusterStd);
-            }
-        }
-        this->visualBBoxes_ = visualBBoxesTemp; // for visualization
-
-        // STEP 2: Get lidar bboxes and its corresponding clusters and features
-        // lidar bbox filter
+        //获取激光雷达边界框及其对应的点云簇和特征
         for (size_t i = 0; i < this->lidarBBoxes_.size(); ++i) {
             onboardDetector::box3D lidarBBox = this->lidarBBoxes_[i];
             
-            // get corresponding point cloud cluster
+            // 获取对应的点云簇
             onboardDetector::Cluster cluster = this->lidarClusters_[i];
 
             std::vector<Eigen::Vector3d> pcCluster;
@@ -1304,589 +947,51 @@ namespace onboardDetector{
                 pcCluster.emplace_back(point.x, point.y, point.z);
             }
 
-            // extract the cluster center
+            // 提取点云簇的中心
             Eigen::Vector3d clusterCenter(cluster.centroid[0], cluster.centroid[1], cluster.centroid[2]);
 
-            // compute std
+            // 计算点云簇的标准差
             Eigen::Vector3d clusterStd = cluster.eigen_values.cwiseSqrt().cast<double>();
 
+            // 存入临时变量
             lidarBBoxesTemp.push_back(lidarBBox);
             lidarPcClustersTemp.push_back(pcCluster);
             lidarPcClusterCentersTemp.push_back(clusterCenter);
             lidarPcClusterStdsTemp.push_back(clusterStd);
         }
 
-        // STEP 3: Fuse LiDAR and visual bounding boxes
-        // init processed flags
-        std::vector<bool> processedLidarBBoxes(lidarBBoxesTemp.size(), false);
-        std::vector<bool> processedVisualBBoxes(visualBBoxesTemp.size(), false);
-        for (size_t i = 0; i < visualBBoxesTemp.size(); ++i) {
-            if (processedVisualBBoxes[i]) continue; // skip processed visual boxes
-            onboardDetector::box3D visualBBox = visualBBoxesTemp[i];
-            std::vector<int> overlappingLidarBBoxes;
-            std::vector<int> overlappingVisualBBoxes;
-
-            // loop through all LiDAR boxes
-            for (size_t j = 0; j < lidarBBoxesTemp.size(); ++j) {
-                if (processedLidarBBoxes[j]) continue; // skip processed LiDAR boxes
-                onboardDetector::box3D lidarBBox = lidarBBoxesTemp[j];
-
-                // find IOU between the visual bboxes and lidar bboxes
-                double lvIOU = this->calBoxIOU(visualBBox, lidarBBox, true);
-                if (lvIOU > this->boxIOUThresh_){
-                    overlappingLidarBBoxes.push_back(j);
-                    for (size_t k=0; k<visualBBoxesTemp.size(); ++k){
-                        if (processedVisualBBoxes[i] or i==k) continue;
-                        onboardDetector::box3D visualBBoxPotentialMatch = visualBBoxesTemp[k];
-                        double lvIOUPotentialMatch = this->calBoxIOU(visualBBoxPotentialMatch, lidarBBox, true);
-                        if (lvIOUPotentialMatch > this->boxIOUThresh_){
-                            overlappingVisualBBoxes.push_back(k);
-                        }
-                    }
-                }
-            }
-
-            // **Case 1: no overlapping LiDAR boxes
-            if (overlappingLidarBBoxes.empty()) {
-                // no overlapping LiDAR boxes, keep the visual box
-                filteredBBoxesTemp.push_back(visualBBox);
-                filteredPcClustersTemp.push_back(visualPcClustersTemp[i]);
-                filteredPcClusterCentersTemp.push_back(visualPcClusterCentersTemp[i]);
-                filteredPcClusterStdsTemp.push_back(visualPcClusterStdsTemp[i]);
-                processedVisualBBoxes[i] = true; // mark the visual box as processed
-            // **Case 2: multiple bounding boxes have overlapping
-            }else{
-                std::vector<onboardDetector::box3D> overlappingBBoxes {visualBBox};
-                std::vector<Eigen::Vector3d> overlappingPcCluster = visualPcClustersTemp[i];
-                // update size of fused bounding boxes
-                double xmax = visualBBox.x + visualBBox.x_width / 2;
-                double xmin = visualBBox.x - visualBBox.x_width / 2;
-                double ymax = visualBBox.y + visualBBox.y_width / 2;
-                double ymin = visualBBox.y - visualBBox.y_width / 2;
-                double zmax = visualBBox.z + visualBBox.z_width / 2;
-                double zmin = visualBBox.z - visualBBox.z_width / 2;
-
-                // get all potential bounding boxes that can merge
-                for (int lidarIdx : overlappingLidarBBoxes){
-                    overlappingBBoxes.push_back(lidarBBoxesTemp[lidarIdx]);
-                    xmax = std::max(xmax, lidarBBoxesTemp[lidarIdx].x + lidarBBoxesTemp[lidarIdx].x_width / 2);
-                    xmin = std::min(xmin, lidarBBoxesTemp[lidarIdx].x - lidarBBoxesTemp[lidarIdx].x_width / 2);
-                    ymax = std::max(ymax, lidarBBoxesTemp[lidarIdx].y + lidarBBoxesTemp[lidarIdx].y_width / 2);
-                    ymin = std::min(ymin, lidarBBoxesTemp[lidarIdx].y - lidarBBoxesTemp[lidarIdx].y_width / 2);
-                    zmax = std::max(zmax, lidarBBoxesTemp[lidarIdx].z + lidarBBoxesTemp[lidarIdx].z_width / 2);
-                    zmin = std::min(zmin, lidarBBoxesTemp[lidarIdx].z - lidarBBoxesTemp[lidarIdx].z_width / 2);
-                    for (Eigen::Vector3d lidarPoints : lidarPcClustersTemp[lidarIdx]){
-                        overlappingPcCluster.push_back(lidarPoints);
-                    }
-                    processedLidarBBoxes[lidarIdx] = true;
-                }
-                for (int visualIdx : overlappingVisualBBoxes){
-                    overlappingBBoxes.push_back(visualBBoxesTemp[visualIdx]);
-                    xmax = std::max(xmax, visualBBoxesTemp[visualIdx].x + visualBBoxesTemp[visualIdx].x_width / 2);
-                    xmin = std::min(xmin, visualBBoxesTemp[visualIdx].x - visualBBoxesTemp[visualIdx].x_width / 2);
-                    ymax = std::max(ymax, visualBBoxesTemp[visualIdx].y + visualBBoxesTemp[visualIdx].y_width / 2);
-                    ymin = std::min(ymin, visualBBoxesTemp[visualIdx].y - visualBBoxesTemp[visualIdx].y_width / 2);
-                    zmax = std::max(zmax, visualBBoxesTemp[visualIdx].z + visualBBoxesTemp[visualIdx].z_width / 2);
-                    zmin = std::min(zmin, visualBBoxesTemp[visualIdx].z - visualBBoxesTemp[visualIdx].z_width / 2);
-                    for (Eigen::Vector3d visualPoints : visualPcClustersTemp[visualIdx]){
-                        overlappingPcCluster.push_back(visualPoints);
-                    }
-                    processedVisualBBoxes[visualIdx] = true;
-                }
-
-                std::vector<Eigen::Vector3d>& fusedPcCluster = overlappingPcCluster;
-                Eigen::Vector3d fusedPcClusterCenter, fusedPcClusterStd;
-                this->calcPcFeat(fusedPcCluster, fusedPcClusterCenter, fusedPcClusterStd);
-
-                onboardDetector::box3D fusedBBox;
-                fusedBBox.x = (xmin + xmax) / 2;
-                fusedBBox.y = (ymin + ymax) / 2;
-                fusedBBox.z = (zmin + zmax) / 2;
-                fusedBBox.x_width = xmax - xmin;
-                fusedBBox.y_width = ymax - ymin;
-                fusedBBox.z_width = zmax - zmin;
-                fusedBBox.Vx = 0;
-                fusedBBox.Vy = 0;
-
-                filteredBBoxesTemp.push_back(fusedBBox);
-                filteredPcClustersTemp.push_back(fusedPcCluster); 
-                filteredPcClusterCentersTemp.push_back(fusedPcClusterCenter);
-                filteredPcClusterStdsTemp.push_back(fusedPcClusterStd);
-                processedVisualBBoxes[i] = true;
-            }
-        }
-
-        // STEP 4: Add rest of LiDAR detection 
-        for (size_t i = 0; i < lidarBBoxesTemp.size(); ++i) {
-            if (processedLidarBBoxes[i]) continue; // skip processed LiDAR boxes
-            onboardDetector::box3D lidarBBox = lidarBBoxesTemp[i];
-
-            // put the rest lidar bbox into the filtered bboxes
-            filteredBBoxesTemp.push_back(lidarBBox);
-            filteredPcClustersTemp.push_back(lidarPcClustersTemp[i]);
-            filteredPcClusterCentersTemp.push_back(lidarPcClusterCentersTemp[i]);
-            filteredPcClusterStdsTemp.push_back(lidarPcClusterStdsTemp[i]);
-            processedLidarBBoxes[i] = true;
-        }
-        this->filteredBBoxesBeforeYolo_ = filteredBBoxesTemp; // for visualization
-
-
-        // STEP 5: If YOLO detection results are available, improve the classification and splitting potential incorrect bboxes
-        if (this->yoloDetectionResults_.detections.size() != 0){
-            std::vector<int> best3DBBoxForYOLO(this->yoloDetectionResults_.detections.size(), -1);
-
-            // Project 2D bbox in color image plane from 3D
-            vision_msgs::Detection2DArray filteredDetectionResults;
-            for (int j=0; j<int(filteredBBoxesTemp.size()); ++j){
-                onboardDetector::box3D bbox = filteredBBoxesTemp[j];
-
-                // 1. transform the bounding boxes into the camera frame
-                Eigen::Vector3d centerWorld (bbox.x, bbox.y, bbox.z);
-                Eigen::Vector3d sizeWorld (bbox.x_width, bbox.y_width, bbox.z_width);
-                Eigen::Vector3d centerCam, sizeCam;
-                this->transformBBox(centerWorld, sizeWorld, -this->orientationColor_.inverse() * this->positionColor_, this->orientationColor_.inverse(), centerCam, sizeCam);
-
-                // 2. find the top left and bottom right corner 3D position of the transformed bbox
-                Eigen::Vector3d topleft (centerCam(0)-sizeCam(0)/2, centerCam(1)-sizeCam(1)/2, centerCam(2));
-                Eigen::Vector3d bottomright (centerCam(0)+sizeCam(0)/2, centerCam(1)+sizeCam(1)/2, centerCam(2));
-
-                // 3. project those two points into the camera image plane
-                int tlX = (this->fxC_ * topleft(0) + this->cxC_ * topleft(2)) / topleft(2);
-                int tlY = (this->fyC_ * topleft(1) + this->cyC_ * topleft(2)) / topleft(2);
-                int brX = (this->fxC_ * bottomright(0) + this->cxC_ * bottomright(2)) / bottomright(2);
-                int brY = (this->fyC_ * bottomright(1) + this->cyC_ * bottomright(2)) / bottomright(2);
-
-                vision_msgs::Detection2D result;
-                result.bbox.center.x = tlX;
-                result.bbox.center.y = tlY;
-                result.bbox.size_x = brX - tlX;
-                result.bbox.size_y = brY - tlY;
-                filteredDetectionResults.detections.push_back(result);
-
-                // cv::Rect bboxVis;
-                // bboxVis.x = tlX;
-                // bboxVis.y = tlY;
-                // bboxVis.height = brY - tlY;
-                // bboxVis.width = brX - tlX;
-                // cv::rectangle(this->detectedColorImage_, bboxVis, cv::Scalar(0, 255, 0), 5, 8, 0);
-            }
-
-            for (int i=0; i<int(this->yoloDetectionResults_.detections.size()); ++i){
-                int tlXTarget = int(this->yoloDetectionResults_.detections[i].bbox.center.x);
-                int tlYTarget = int(this->yoloDetectionResults_.detections[i].bbox.center.y);
-                int brXTarget = tlXTarget + int(this->yoloDetectionResults_.detections[i].bbox.size_x);
-                int brYTarget = tlYTarget + int(this->yoloDetectionResults_.detections[i].bbox.size_y);
-
-                cv::Rect bboxVis;
-                bboxVis.x = tlXTarget;
-                bboxVis.y = tlYTarget;
-                bboxVis.height = brYTarget - tlYTarget;
-                bboxVis.width = brXTarget - tlXTarget;
-                cv::rectangle(this->detectedColorImage_, bboxVis, cv::Scalar(255, 0, 0), 5, 8, 0);
-
-                // Define the text to be added
-                std::string text = "dynamic";
-
-                // Define the position for the text (above the bounding box)
-                int fontFace = cv::FONT_HERSHEY_SIMPLEX;
-                double fontScale = 1.0;
-                int thickness = 2;
-                int baseline;
-                cv::getTextSize(text, fontFace, fontScale, thickness, &baseline);
-                cv::Point textOrg(bboxVis.x, bboxVis.y - 10);  // 10 pixels above the bounding box
-
-                // Add the text to the image
-                cv::putText(this->detectedColorImage_, text, textOrg, fontFace, fontScale, cv::Scalar(255, 0, 0), thickness, 8);
-
-                double bestIOU = 0.0;
-                int bestIdx = -1;
-                for (int j = 0; j < int(filteredBBoxesTemp.size()); ++j) {
-                    int tlX = int(filteredDetectionResults.detections[j].bbox.center.x);
-                    int tlY = int(filteredDetectionResults.detections[j].bbox.center.y);
-                    int brX = tlX + int(filteredDetectionResults.detections[j].bbox.size_x);
-                    int brY = tlY + int(filteredDetectionResults.detections[j].bbox.size_y);
-
-                    // check the IOU between yolo and projected bbox
-                    double xOverlap = double(std::max(0, std::min(brX, brXTarget) - std::max(tlX, tlXTarget)));
-                    double yOverlap = double(std::max(0, std::min(brY, brYTarget) - std::max(tlY, tlYTarget)));
-                    double intersection = xOverlap * yOverlap;
-
-                    // Calculate union area
-                    double areaBox = double((brX - tlX) * (brY - tlY));
-                    double areaBoxTarget = double((brXTarget - tlXTarget) * (brYTarget - tlYTarget));
-                    double unionArea = areaBox + areaBoxTarget - intersection;
-
-                    double IOU = (unionArea == 0) ? 0 : intersection / unionArea;
-                    if (IOU > bestIOU){
-                        bestIOU = IOU;
-                        bestIdx = j;
-                    }
-                }
-
-                if (bestIOU > 0.0){
-                    best3DBBoxForYOLO[i] = bestIdx;
-                }
-            }
-
-            std::map<int, std::vector<int>> box3DToYolo;
-            for (int i = 0; i < int(best3DBBoxForYOLO.size()); ++i) {
-                int idx3D = best3DBBoxForYOLO[i];
-                if (idx3D >= 0 && idx3D < int(filteredBBoxesTemp.size())){
-                    box3DToYolo[idx3D].push_back(i);
-                }
-            }
-
-            std::vector<onboardDetector::box3D> newFilteredBBoxes;
-            std::vector<std::vector<Eigen::Vector3d>> newFilteredPcClusters;
-            std::vector<Eigen::Vector3d> newFilteredPcClusterCenters;
-            std::vector<Eigen::Vector3d> newFilteredPcClusterStds;
-            
-            for (int idx3D = 0; idx3D < int(filteredBBoxesTemp.size()); ++idx3D) {
-                auto it = box3DToYolo.find(idx3D);
-                // *Case 1: No corresponding yolo box
-                if (it == box3DToYolo.end()) {
-                    newFilteredBBoxes.push_back(filteredBBoxesTemp[idx3D]);
-                    newFilteredPcClusters.push_back(filteredPcClustersTemp[idx3D]);
-                    newFilteredPcClusterCenters.push_back(filteredPcClusterCentersTemp[idx3D]);
-                    newFilteredPcClusterStds.push_back(filteredPcClusterStdsTemp[idx3D]);
-                    continue;
-                }
-
-                std::vector<int> yoloIndices = it->second;
-                // *Case 2: one yolo box corresponds to one 3D box
-                if (yoloIndices.size() == 1) {
-                    filteredBBoxesTemp[idx3D].is_dynamic = true;
-                    filteredBBoxesTemp[idx3D].is_human = true;
-                    newFilteredBBoxes.push_back(filteredBBoxesTemp[idx3D]);
-                    newFilteredPcClusters.push_back(filteredPcClustersTemp[idx3D]);
-                    newFilteredPcClusterCenters.push_back(filteredPcClusterCentersTemp[idx3D]);
-                    newFilteredPcClusterStds.push_back(filteredPcClusterStdsTemp[idx3D]);
-                // *Case 3: multiple yolo boxes correspond to one 3D box
-                } else {
-                    std::vector<Eigen::Vector3d> cloudCluster = filteredPcClustersTemp[idx3D];
-
-                    // iterate to assign all points
-                    int allowMargin = 0; // pixel 
-                    std::vector<int> assignment(cloudCluster.size(), -1);
-                    for (size_t i = 0; i < cloudCluster.size(); ++i){
-                        Eigen::Vector3d ptWorld = cloudCluster[i];
-                        Eigen::Vector3d ptCam = this->orientationColor_.inverse() * (ptWorld - this->positionColor_);
-
-                        int u = (this->fxC_ * ptCam(0) + this->cxC_ * ptCam(2)) / ptCam(2);
-                        int v = (this->fyC_ * ptCam(1) + this->cyC_ * ptCam(2)) / ptCam(2);
-
-                        int closestDist = std::numeric_limits<int>::max();
-                        for (int yidx : yoloIndices){
-                            int XTarget = int(this->yoloDetectionResults_.detections[yidx].bbox.center.x);
-                            int YTarget = int(this->yoloDetectionResults_.detections[yidx].bbox.center.y);
-                            int XTargetWid = int(this->yoloDetectionResults_.detections[yidx].bbox.size_x);
-                            int YTargetWid = int(this->yoloDetectionResults_.detections[yidx].bbox.size_y);
-                            int xMin = XTarget;
-                            int xMax = XTarget + XTargetWid;
-                            int yMin = YTarget;
-                            int yMax = YTarget + YTargetWid;
-
-                            if (u >= xMin-allowMargin && u <= xMax+allowMargin && v >= yMin-allowMargin && v <= yMax+allowMargin) {
-                                // Horizontal signed distance
-                                int horizontalDistance = 0;
-                                if (u < xMin) {
-                                    horizontalDistance = xMin - u; // Outside on the left
-                                } else if (u > xMax) {
-                                    horizontalDistance = u - xMax; // Outside on the right
-                                } else {
-                                    horizontalDistance = std::max(xMin - u, u - xMax); // Inside horizontally
-                                }
-
-                                // Compute signed distance to the closest edge
-                                int signedDistance;
-                                if (u < xMin || u > xMax || v < yMin || v > yMax) {
-                                    // Outside: Take the larger of horizontal or vertical distance
-                                    signedDistance = horizontalDistance;
-                                } else {
-                                    // Inside: Take the negative of the minimum distance to any edge
-                                    signedDistance = horizontalDistance;
-                                }
-          
-                                int distance = signedDistance;
-                                if (distance < closestDist){
-                                    assignment[i] = yidx;
-                                    closestDist = distance;
-                                }
-                            }
-                        }
-                    }
-
-                    std::vector<bool> flag(cloudCluster.size(), false);
-                    for (int yidx : yoloIndices){
-                        std::vector<Eigen::Vector3d> subCloud;
-                        for (size_t i = 0; i < cloudCluster.size(); ++i){
-                            if (flag[i]){
-                                continue;
-                            }
-
-                            if (assignment[i] == yidx){
-                                subCloud.push_back(cloudCluster[i]);
-                                flag[i] = true;
-                            }
-                        }
-                        if (subCloud.size() != 0){
-                            onboardDetector::box3D newBox;
-                            Eigen::Vector3d center, stddev;
-                            center = computeCenter(subCloud);
-
-                            double xMin = std::numeric_limits<double>::max(), xMax = std::numeric_limits<double>::lowest();
-                            double yMin = std::numeric_limits<double>::max(), yMax = std::numeric_limits<double>::lowest();
-                            double zMin = std::numeric_limits<double>::max(), zMax = std::numeric_limits<double>::lowest();
-
-                            for (const auto &pt : subCloud) {
-                                xMin = std::min(xMin, pt.x());
-                                xMax = std::max(xMax, pt.x());
-                                yMin = std::min(yMin, pt.y());
-                                yMax = std::max(yMax, pt.y());
-                                zMin = std::min(zMin, pt.z());
-                                zMax = std::max(zMax, pt.z());
-                            }
-                            // create a new bounding box
-                            newBox.x = (xMin + xMax) / 2.;
-                            newBox.y = (yMin + yMax) / 2.;
-                            newBox.z = (zMin + zMax) / 2.;
-                            newBox.x_width = xMax - xMin;
-                            newBox.y_width = yMax - yMin;
-                            newBox.z_width = zMax - zMin;
-                            if (newBox.x_width <= 0 or newBox.y_width <= 0 or newBox.x_width <= 0){
-                                continue;
-                            }
-
-                            newBox.is_dynamic = true;
-                            newBox.is_human = true;
-
-                            stddev = computeStd(subCloud, center);
-                            newFilteredBBoxes.push_back(newBox);
-                            newFilteredPcClusters.push_back(subCloud);
-                            newFilteredPcClusterCenters.push_back(center);
-                            newFilteredPcClusterStds.push_back(stddev);
-                        }
-                    }
-                }
-            }
-            filteredBBoxesTemp = newFilteredBBoxes;
-            filteredPcClustersTemp = newFilteredPcClusters;
-            filteredPcClusterCentersTemp = newFilteredPcClusterCenters;
-            filteredPcClusterStdsTemp = newFilteredPcClusterStds;
-        }
-        this->filteredBBoxes_ = filteredBBoxesTemp;
-        this->filteredPcClusters_ = filteredPcClustersTemp;
-        this->filteredPcClusterCenters_ = filteredPcClusterCentersTemp;
-        this->filteredPcClusterStds_ = filteredPcClusterStdsTemp;
+        // 更新最终的过滤结果
+        this->filteredBBoxes_ = lidarBBoxesTemp;
+        this->filteredPcClusters_ = lidarPcClustersTemp;
+        this->filteredPcClusterCenters_ = lidarPcClusterCentersTemp;
+        this->filteredPcClusterStds_ = lidarPcClusterStdsTemp;
     }
 
-    void dynamicDetector::transformUVBBoxes(std::vector<onboardDetector::box3D>& bboxes){
-        bboxes.clear();
-        for(size_t i = 0; i < this->uvDetector_->box3Ds.size(); ++i){
-            onboardDetector::box3D bbox;
-            double x = this->uvDetector_->box3Ds[i].x; 
-            double y = this->uvDetector_->box3Ds[i].y;
-            double z = this->uvDetector_->box3Ds[i].z;
-            double xWidth = this->uvDetector_->box3Ds[i].x_width;
-            double yWidth = this->uvDetector_->box3Ds[i].y_width;
-            double zWidth = this->uvDetector_->box3Ds[i].z_width;
-
-            Eigen::Vector3d center (x, y, z);
-            Eigen::Vector3d size (xWidth, yWidth, zWidth);
-            Eigen::Vector3d newCenter, newSize;
-
-            this->transformBBox(center, size, this->positionDepth_, this->orientationDepth_, newCenter, newSize);
-
-            // assign values to bounding boxes in the map frame
-            bbox.x = newCenter(0);
-            bbox.y = newCenter(1);
-            bbox.z = newCenter(2);
-            bbox.x_width = newSize(0);
-            bbox.y_width = newSize(1);
-            bbox.z_width = newSize(2);
-            bboxes.push_back(bbox);            
-        }        
-    }
-
-    void dynamicDetector::projectDepthImage(){
-        this->projPointsNum_ = 0;
-
-        int cols = this->depthImage_.cols;
-        int rows = this->depthImage_.rows;
-        uint16_t* rowPtr;
-
-        Eigen::Vector3d currPointCam, currPointMap;
-        double depth;
-        const double inv_factor = 1.0 / this->depthScale_;
-        const double inv_fx = 1.0 / this->fx_;
-        const double inv_fy = 1.0 / this->fy_;
-
-        // iterate through each pixel in the depth image
-        for (int v=this->depthFilterMargin_; v<rows-this->depthFilterMargin_; v=v+this->skipPixel_){ // row
-            rowPtr = this->depthImage_.ptr<uint16_t>(v) + this->depthFilterMargin_;
-            for (int u=this->depthFilterMargin_; u<cols-this->depthFilterMargin_; u=u+this->skipPixel_){ // column
-                depth = (*rowPtr) * inv_factor;
-                
-                if (*rowPtr == 0) {
-                    depth = this->raycastMaxLength_ + 0.1;
-                } else if (depth < this->depthMinValue_) {
-                    continue;
-                } else if (depth > this->depthMaxValue_) {
-                    depth = this->raycastMaxLength_ + 0.1;
-                }
-                rowPtr =  rowPtr + this->skipPixel_;
-
-                // get 3D point in camera frame
-                currPointCam(0) = (u - this->cx_) * depth * inv_fx;
-                currPointCam(1) = (v - this->cy_) * depth * inv_fy;
-                currPointCam(2) = depth;
-                currPointMap = this->orientationDepth_ * currPointCam + this->positionDepth_; // transform to map coordinate
-
-                this->projPoints_[this->projPointsNum_] = currPointMap;
-                this->pointsDepth_[this->projPointsNum_] = depth;
-                this->projPointsNum_ = this->projPointsNum_ + 1;
-            }
-        } 
-    }
-
-    void dynamicDetector::filterPoints(const std::vector<Eigen::Vector3d>& points, std::vector<Eigen::Vector3d>& filteredPoints){
-        // currently there is only one filtered (might include more in the future)
-        std::vector<Eigen::Vector3d> voxelFilteredPoints;
-        this->voxelFilter(points, voxelFilteredPoints);
-
-        filteredPoints.clear();
-        for (const auto& point : voxelFilteredPoints){
-            if (point.z() <= this->roofHeight_ && point.z() >= this->groundHeight_){
-                filteredPoints.push_back(point);
-            }
-        }
-    }
-
-
-    void dynamicDetector::clusterPointsAndBBoxes(const std::vector<Eigen::Vector3d>& points, std::vector<onboardDetector::box3D>& bboxes, std::vector<std::vector<Eigen::Vector3d>>& pcClusters, std::vector<Eigen::Vector3d>& pcClusterCenters, std::vector<Eigen::Vector3d>& pcClusterStds){
-        std::vector<onboardDetector::Point> pointsDB;
-        this->eigenToDBPointVec(points, pointsDB, points.size());
-
-        this->dbCluster_.reset(new DBSCAN (this->dbMinPointsCluster_, this->dbEpsilon_, pointsDB));
-
-        // DBSCAN clustering
-        this->dbCluster_->run();
-        // get the cluster data with bounding boxes
-        // iterate through all the clustered points and find number of clusters
-        int clusterNum = 0;
-        for (size_t i=0; i<this->dbCluster_->m_points.size(); ++i){
-            onboardDetector::Point pDB = this->dbCluster_->m_points[i];
-            if (pDB.clusterID > clusterNum){
-                clusterNum = pDB.clusterID;
-            }
-        }
-
-        
-        // pcClusters.resize(clusterNum);
-        std::vector<std::vector<Eigen::Vector3d>> pcClustersTemp;
-        pcClustersTemp.resize(clusterNum);
-        for (size_t i=0; i<this->dbCluster_->m_points.size(); ++i){
-            onboardDetector::Point pDB = this->dbCluster_->m_points[i];
-            if (pDB.clusterID > 0){
-                Eigen::Vector3d p = this->dbPointToEigen(pDB);
-                pcClustersTemp[pDB.clusterID-1].push_back(p);
-            }            
-        }
-
-        // calculate the bounding boxes and clusters
-        pcClusters.clear();
-        bboxes.clear();
-        // bboxes.resize(clusterNum);
-        for (size_t i=0; i<pcClustersTemp.size(); ++i){
-            onboardDetector::box3D box;
-
-            double xmin = pcClustersTemp[i][0](0);
-            double ymin = pcClustersTemp[i][0](1);
-            double zmin = pcClustersTemp[i][0](2);
-            double xmax = pcClustersTemp[i][0](0);
-            double ymax = pcClustersTemp[i][0](1);
-            double zmax = pcClustersTemp[i][0](2);
-            for (size_t j=0; j<pcClustersTemp[i].size(); ++j){
-                xmin = (pcClustersTemp[i][j](0)<xmin)?pcClustersTemp[i][j](0):xmin;
-                ymin = (pcClustersTemp[i][j](1)<ymin)?pcClustersTemp[i][j](1):ymin;
-                zmin = (pcClustersTemp[i][j](2)<zmin)?pcClustersTemp[i][j](2):zmin;
-                xmax = (pcClustersTemp[i][j](0)>xmax)?pcClustersTemp[i][j](0):xmax;
-                ymax = (pcClustersTemp[i][j](1)>ymax)?pcClustersTemp[i][j](1):ymax;
-                zmax = (pcClustersTemp[i][j](2)>zmax)?pcClustersTemp[i][j](2):zmax;
-            }
-            box.id = i;
-
-            box.x = (xmax + xmin)/2.0;
-            box.y = (ymax + ymin)/2.0;
-            box.z = (zmax + zmin)/2.0;
-            box.x_width = (xmax - xmin)>0.1?(xmax-xmin):0.1;
-            box.y_width = (ymax - ymin)>0.1?(ymax-ymin):0.1;
-            box.z_width = (zmax - zmin);
-
-            // filter out bounding boxes that are too large
-            if(box.x_width > this->maxObjectSize_(0) || box.y_width > this->maxObjectSize_(1) || box.z_width > this->maxObjectSize_(2)){
-                continue;
-            }
-            bboxes.push_back(box);
-            pcClusters.push_back(pcClustersTemp[i]);
-        }
-
-        for (size_t i=0 ; i<pcClusters.size() ; ++i){
-            Eigen::Vector3d pcClusterCenter(0.,0.,0.);
-            Eigen::Vector3d pcClusterStd(0.,0.,0.);
-            this->calcPcFeat(pcClusters[i], pcClusterCenter, pcClusterStd);
-            pcClusterCenters.push_back(pcClusterCenter);
-            pcClusterStds.push_back(pcClusterStd);
-        }
-
-    }
-
-    void dynamicDetector::voxelFilter(const std::vector<Eigen::Vector3d>& points, std::vector<Eigen::Vector3d>& filteredPoints){
-        const double res = 0.1; // resolution of voxel
-        int xVoxels = ceil(2*this->localSensorRange_(0)/res); int yVoxels = ceil(2*this->localSensorRange_(1)/res); int zVoxels = ceil(2*this->localSensorRange_(2)/res);
-        int totalVoxels = xVoxels * yVoxels * zVoxels;
-        // std::vector<bool> voxelOccupancyVec (totalVoxels, false);
-        std::vector<int> voxelOccupancyVec (totalVoxels, 0);
-
-        // Iterate through each points in the cloud
-        filteredPoints.clear();
-        
-        for (int i=0; i<this->projPointsNum_; ++i){
-            Eigen::Vector3d p = points[i];
-
-            if (this->isInFilterRange(p) and p(2) >= this->groundHeight_ and this->pointsDepth_[i] <= this->raycastMaxLength_){
-                // find the corresponding voxel id in the vector and check whether it is occupied
-                int pID = this->posToAddress(p, res);
-
-                // add one point
-                voxelOccupancyVec[pID] +=1;
-
-                // add only if thresh points are found
-                if (voxelOccupancyVec[pID] == this->voxelOccThresh_){
-                    filteredPoints.push_back(p);
-                }
-            }
-        } 
-    }
-
+    // 计算点云簇的特征（中心和标准差）
     void dynamicDetector::calcPcFeat(const std::vector<Eigen::Vector3d>& pcCluster, Eigen::Vector3d& pcClusterCenter, Eigen::Vector3d& pcClusterStd){
+        // 获取点云簇中的点的数量
         int numPoints = pcCluster.size();
         
-        // center
+        // 计算点云簇的中心点（均值）
+        // 遍历所有点
         for (int i=0 ; i<numPoints ; i++){
+            // 将每个点的坐标累加到中心点坐标上，并除以总点数
             pcClusterCenter(0) += pcCluster[i](0)/numPoints;
             pcClusterCenter(1) += pcCluster[i](1)/numPoints;
             pcClusterCenter(2) += pcCluster[i](2)/numPoints;
         }
 
-        // std
+        // 计算点云簇的标准差
+        // 遍历所有点
         for (int i=0 ; i<numPoints ; i++){
+            // 累加每个点坐标与中心点坐标差值的平方
             pcClusterStd(0) += std::pow(pcCluster[i](0) - pcClusterCenter(0),2);
             pcClusterStd(1) += std::pow(pcCluster[i](1) - pcClusterCenter(1),2);
             pcClusterStd(2) += std::pow(pcCluster[i](2) - pcClusterCenter(2),2);
         }        
 
-        // take square root
+        // 完成标准差的计算（开方）
+        // 将累加的平方差除以总点数后开方，得到标准差
         pcClusterStd(0) = std::sqrt(pcClusterStd(0)/numPoints);
         pcClusterStd(1) = std::sqrt(pcClusterStd(1)/numPoints);
         pcClusterStd(2) = std::sqrt(pcClusterStd(2)/numPoints);
@@ -1941,18 +1046,29 @@ namespace onboardDetector{
         return IOU;
     }
 
+    // 将当前检测到的边界框与历史记录中的边界框进行关联
     void dynamicDetector::boxAssociation(std::vector<int>& bestMatch){
-        int numObjs = int(this->filteredBBoxes_.size()); // current detected bboxes
-        if (this->boxHist_.size() == 0){ // initialize new bounding box history if no history exists
+        // 获取当前检测到的边界框数量
+        int numObjs = int(this->filteredBBoxes_.size()); 
+        
+        // 如果历史记录为空（即第一次检测）
+        if (this->boxHist_.size() == 0){ // 如果不存在历史记录，则初始化新的边界框历史记录
+            // 初始化历史记录容器的大小
             this->boxHist_.resize(numObjs);
             this->pcHist_.resize(numObjs);
             this->pcCenterHist_.resize(numObjs);
-            bestMatch.resize(this->filteredBBoxes_.size(), -1); // first detection no match
+            
+            // 将最佳匹配索引初始化为-1，因为这是第一次检测，没有可匹配的历史
+            bestMatch.resize(this->filteredBBoxes_.size(), -1); // 第一次检测没有匹配
+            
+            // 遍历所有新检测到的对象
             for (int i=0 ; i<numObjs ; ++i){
-                // initialize history for bbox, pc and KF
+                // 为bbox、pc和KF初始化历史记录
                 this->boxHist_[i].push_back(this->filteredBBoxes_[i]);
                 this->pcHist_[i].push_back(this->filteredPcClusters_[i]);
                 this->pcCenterHist_[i].push_back(this->filteredPcClusterCenters_[i]);
+                
+                // 为新对象设置卡尔曼滤波器
                 MatrixXd states, A, B, H, P, Q, R;       
                 this->kalmanFilterMatrixAcc(this->filteredBBoxes_[i], states, A, B, H, P, Q, R);
                 onboardDetector::kalman_filter newFilter;
@@ -1960,16 +1076,25 @@ namespace onboardDetector{
                 this->filters_.push_back(newFilter);
             }
         }
-        else{
-            // start association only if a new detection is available
+        else{ // 如果历史记录不为空
+            // 仅当有新的检测结果时才开始关联
             if (this->newDetectFlag_){
+                // 调用辅助函数执行关联
                 this->boxAssociationHelper(bestMatch);
             }
         }
 
-        this->newDetectFlag_ = false; // the most recent detection has been associated
+        // 重置新检测标志，表示最近的检测已经处理完毕
+        this->newDetectFlag_ = false; // 最近的检测已经关联
     }
 
+    /**
+     * @brief 辅助进行边界框关联，通过特征匹配找到当前检测与历史检测的最佳对应关系
+     * 
+     * @param[out] bestMatch 用于存储最佳匹配结果的向量，每个元素表示当前检测框对应的历史检测框索引
+     *                      - -1 表示没有匹配到历史框（新出现的目标）
+     *                      - >=0 表示匹配到的历史框索引
+     */
     void dynamicDetector::boxAssociationHelper(std::vector<int>& bestMatch){
         int numObjs = int(this->filteredBBoxes_.size());
         std::vector<onboardDetector::box3D> prevBBoxes;
@@ -1982,18 +1107,18 @@ namespace onboardDetector{
         currBBoxesFeat.resize(numObjs);
         bestMatch.resize(numObjs);
 
-        // Features for current detected bboxes
+        // 提取当前检测到的边界框特征
         this->genFeatHelper(this->filteredBBoxes_, this->filteredPcClusterCenters_, currBBoxesFeat);
 
-        // Features for previous time step bboxes
+        // 获取上一时刻的边界框及点云中心
         this->getPrevBBoxes(prevBBoxes, prevPcCenters);
         this->genFeatHelper(prevBBoxes, prevPcCenters, prevBBoxesFeat);
 
-        // Features for propogated bboxes
+        // 对边界框进行线性预测并提取预测框特征
         this->linearProp(propedBBoxes, propedPcCenters);
         this->genFeatHelper(propedBBoxes, propedPcCenters, propedBBoxesFeat);
 
-        // calculate association: find best match
+        // 计算关联关系：寻找最佳匹配
         this->findBestMatch(prevBBoxes, prevBBoxesFeat, propedBBoxes, propedBBoxesFeat, currBBoxesFeat, bestMatch);      
     }
 
@@ -2304,22 +1429,6 @@ namespace onboardDetector{
         }
     } 
     
-    void dynamicDetector::publishUVImages(){
-        if (this->uvDetector_ != NULL){
-            sensor_msgs::ImagePtr depthBoxMsg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", this->uvDetector_->depth_show).toImageMsg();
-            sensor_msgs::ImagePtr UmapBoxMsg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", this->uvDetector_->U_map_show).toImageMsg();
-            sensor_msgs::ImagePtr birdBoxMsg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", this->uvDetector_->bird_view).toImageMsg();  
-            this->uvDepthMapPub_.publish(depthBoxMsg);
-            this->uDepthMapPub_.publish(UmapBoxMsg); 
-            this->uvBirdViewPub_.publish(birdBoxMsg);
-        }     
-    }
-
-
-    void dynamicDetector::publishColorImages(){
-        sensor_msgs::ImagePtr detectedColorImgMsg = cv_bridge::CvImage(std_msgs::Header(), "rgb8", this->detectedColorImage_).toImageMsg();
-        this->detectedColorImgPub_.publish(detectedColorImgMsg);
-    }
 
     void dynamicDetector::publishPoints(const std::vector<Eigen::Vector3d>& points, const ros::Publisher& publisher){
         pcl::PointXYZ pt;

@@ -3,12 +3,14 @@ project(onboard_detector)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 # add_compile_options(-std=c++11)
+# 设置了C++编译标志，使用C++14标准，并启用了优化(-O3)和所有常见警告(-Wall)。
 set(CMAKE_CXX_FLAGS "-std=c++14 ${CMAKE_CXX_FLAGS} -O3 -Wall")
 
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
+# 寻找项目依赖的ros包
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
@@ -22,6 +24,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
+# 寻找项目依赖的指定版本ros包
 find_package(PCL 1.7 REQUIRED)
 
 ## Uncomment this if the package has a setup.py. This macro ensures
@@ -61,6 +64,7 @@ find_package(PCL 1.7 REQUIRED)
 # )
 
 ## Generate services in the 'srv' folder
+# 定义了一个名为GetDynamicObstacles.srv的服务文件。定义了一个服务的请求（Request）和响应（Response）数据结构，打开文件，---分隔的上面就是请求，下面是响应
 add_service_files(
   FILES
   GetDynamicObstacles.srv
@@ -74,6 +78,9 @@ add_service_files(
 # )
 
 ## Generate added messages and services with any dependencies listed here
+# 指定了生成服务（消息）时，依赖的其他ros包消息类型。
+# 上面声明的服务文件，生成对应的 C++ 头文件和 Python 模块，以便在代码中使用。
+# DEPENDENCIES 指出该服务的定义依赖于 std_msgs 和 geometry_msgs 包中的消息类型。
 generate_messages(
   DEPENDENCIES
   std_msgs
@@ -109,6 +116,11 @@ generate_messages(
 ## LIBRARIES: libraries you create in this project that dependent projects also need
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
+# 声明了该包的导出信息：
+
+# 头文件目录：include
+# 库名称：onboard_detector
+# 依赖的catkin包列表
 catkin_package(
    INCLUDE_DIRS include
    LIBRARIES onboard_detector
@@ -122,6 +134,7 @@ catkin_package(
 
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
+# 指定了编译时需要包含的头文件目录。
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
@@ -129,6 +142,7 @@ include_directories(
 )
 
 ## Declare a C++ library
+# 创建了一个名为onboard_detector的库，包含了项目中的核心算法实现文件。
 add_library(${PROJECT_NAME}
    include/${PROJECT_NAME}/dynamicDetector.cpp
    include/${PROJECT_NAME}/uvDetector.cpp
@@ -165,6 +179,7 @@ add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EX
 # target_link_libraries(${PROJECT_NAME}_node
 #   ${catkin_LIBRARIES}
 # )
+# 链接所需的库文件，将catkin和PCL库链接到项目库中，然后将项目库链接到两个可执行文件。
 target_link_libraries(${PROJECT_NAME} ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 target_link_libraries(detector_node ${PROJECT_NAME})
 target_link_libraries(fake_detector_node ${PROJECT_NAME})
