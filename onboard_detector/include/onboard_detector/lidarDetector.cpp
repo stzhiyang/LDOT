@@ -55,7 +55,7 @@ namespace onboardDetector{
 
         // 创建并运行DBSCAN聚类算法
         DBSCAN dbscan(minPts_, eps_, points);
-        dbscan.run();
+        dbscan.run();  // 得到分好类的自定义Points
 
         // 统计聚类数量（查找最大的clusterID）
         int clusterNum = 0;
@@ -82,7 +82,7 @@ namespace onboardDetector{
         }
         this->clusters_ = clustersTemp;
 
-        // 计算每个聚类的质心、尺寸并构造对应的3D边界框
+        // 计算每个聚类的质心、尺寸并构造对应的3D边界框，&是引用，即操作clusters_
         std::vector<onboardDetector::box3D> bboxesTemp;
         for(auto& cluster : this->clusters_){
             Eigen::Vector4f centroid;
@@ -90,7 +90,7 @@ namespace onboardDetector{
             cluster.centroid = centroid;
             pcl::PointXYZ minPt, maxPt;
             pcl::getMinMax3D(*cluster.points, minPt, maxPt);
-            cluster.dimensions = Eigen::Vector3f(maxPt.x - minPt.x, maxPt.y - minPt.y, maxPt.z - minPt.z); 
+            cluster.dimensions = Eigen::Vector3f(maxPt.x - minPt.x, maxPt.y - minPt.y, maxPt.z - minPt.z);
 
             onboardDetector::box3D bbox;
             bbox.x = centroid(0);
@@ -99,6 +99,7 @@ namespace onboardDetector{
             bbox.x_width = maxPt.x - minPt.x;
             bbox.y_width = maxPt.y - minPt.y;
             bbox.z_width = maxPt.z - minPt.z;
+            bbox.id = cluster.cluster_id;
             bboxesTemp.push_back(bbox);
         }
         this->bboxes_ = bboxesTemp;
