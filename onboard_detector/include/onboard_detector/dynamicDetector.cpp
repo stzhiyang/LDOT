@@ -6,11 +6,13 @@
 #include <onboard_detector/dynamicDetector.h>
 
 namespace onboardDetector{
+    // 默认构造函数
     dynamicDetector::dynamicDetector(){
         this->ns_ = "onboard_detector";
         this->hint_ = "[onboardDetector]";
     }
 
+    // 带节点句柄的构造函数
     dynamicDetector::dynamicDetector(const ros::NodeHandle& nh){
         this->ns_ = "onboard_detector";
         this->hint_ = "[onboardDetector]";
@@ -20,6 +22,7 @@ namespace onboardDetector{
         this->registerCallback();
     }
 
+    // 初始化检测器
     void dynamicDetector::initDetector(const ros::NodeHandle& nh){
         this->nh_ = nh;
         this->initParam();
@@ -27,6 +30,7 @@ namespace onboardDetector{
         this->registerCallback();
     }
 
+    // 初始化参数
     void dynamicDetector::initParam(){
         // ---------------------------------获取ros话题---------------------------------------
         // localization mode
@@ -608,28 +612,29 @@ namespace onboardDetector{
         this->orientationLidar_ = lidarPoseMatrix.block<3, 3>(0, 0);
     }
 
+    // 里程计回调函数，处理点云和里程计数据
     void dynamicDetector::lidarOdomCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const nav_msgs::OdometryConstPtr& odom){
-        // for visualization
+        // 用于可视化
         this->latestCloud_ = cloudMsg;
 
-        // local cloud
+        // 局部点云
         pcl::PointCloud<pcl::PointXYZ>::Ptr tempCloud (new pcl::PointCloud<pcl::PointXYZ>());
         pcl::fromROSMsg(*cloudMsg, *tempCloud);
 
-        // filter and downsample pointcloud
-        // Create a filtered cloud pointer to store intermediate results
+        // 滤波和降采样点云
+        // 创建一个滤波后的点云指针来存储中间结果
         pcl::PointCloud<pcl::PointXYZ>::Ptr filteredCloud (new pcl::PointCloud<pcl::PointXYZ>());
 
-        // Apply a pass-through filter to limit points to the local sensor range in X, Y, and Z axes
+        // 应用直通滤波器来限制X、Y、Z轴上的局部传感器范围内的点
         pcl::PassThrough<pcl::PointXYZ> pass;
 
-        // Filter for X axis
+        // X轴滤波
         pass.setInputCloud(tempCloud);
         pass.setFilterFieldName("x");
         pass.setFilterLimits(-this->localLidarRange_.x(), this->localLidarRange_.x());
         pass.filter(*filteredCloud);
 
-        // Filter for Y axis
+        // Y轴滤波
         pass.setInputCloud(filteredCloud);
         pass.setFilterFieldName("y");
         pass.setFilterLimits(-this->localLidarRange_.y(), this->localLidarRange_.y());
@@ -650,19 +655,19 @@ namespace onboardDetector{
             }
         }
 
-        // transform
+        // 变换
         Eigen::Affine3d transform = Eigen::Affine3d::Identity();
         transform.linear() = this->orientationLidar_;
         transform.translation() = this->positionLidar_;
 
-        // map cloud
-        // Create an empty point cloud to store the transformed data
+        // 地图坐标系下的点云
+        // 创建一个空的点云来存储变换后的数据
         pcl::PointCloud<pcl::PointXYZ>::Ptr transformedCloud (new pcl::PointCloud<pcl::PointXYZ>());
 
-        // Apply the transformation
+        // 应用变换
         pcl::transformPointCloud(*preTransformCloud, *transformedCloud, transform);
 
-        // filter roof and ground 
+        // 过滤天花板和地面
         pcl::PointCloud<pcl::PointXYZ>::Ptr groundRoofFilterCloud (new pcl::PointCloud<pcl::PointXYZ>());
         pass.setInputCloud(transformedCloud);
         pass.setFilterFieldName("z");
@@ -670,28 +675,27 @@ namespace onboardDetector{
         pass.filter(*groundRoofFilterCloud);
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud = groundRoofFilterCloud;
-        // Create the VoxelGrid filter object
+        // 创建体素网格滤波器对象
         pcl::VoxelGrid<pcl::PointXYZ> sor;
-        // sor.setInputCloud(filteredCloud);
         sor.setInputCloud(groundRoofFilterCloud);
 
-        // Set the leaf size (adjust to control the downsampling)
-        sor.setLeafSize(0.1f, 0.1f, 0.1f); // Try different values based on your point cloud density
+        // 设置体素大小（叶子大小）
+        sor.setLeafSize(0.1f, 0.1f, 0.1f); 
 
-        // If the downsampled cloud has more than certain points, further increase the leaf size
+        // 如果降采样后的点云点数仍然过多，则进一步增大体素大小来减少点数
         while (int(downsampledCloud->size()) > this->downSampleThresh_) {
-            double leafSize = sor.getLeafSize().x() * 1.1f; // Increase the leaf size to reduce point count
+            double leafSize = sor.getLeafSize().x() * 1.1f; // 增加叶子大小以减少点数
             sor.setLeafSize(leafSize, leafSize, leafSize);
             sor.filter(*downsampledCloud);
         }
 
         this->lidarCloud_ = downsampledCloud;
         sensor_msgs::PointCloud2 outputCloud;
-        pcl::toROSMsg(*this->lidarCloud_, outputCloud); // Convert to ROS message
-        outputCloud.header.frame_id = "map";    // Set appropriate frame ID
+        pcl::toROSMsg(*this->lidarCloud_, outputCloud); // 转换为ROS消息
+        outputCloud.header.frame_id = "map";    // 设置坐标系
         this->downSamplePointsPub_.publish(outputCloud);
         
-        // store current position and orientation
+        // 存储当前位置和姿态
         Eigen::Matrix4d lidarPoseMatrix;
         this->getLidarPose(odom, lidarPoseMatrix);
 
@@ -710,6 +714,7 @@ namespace onboardDetector{
     }
 
    
+    // 激光雷达检测定时器回调函数
     void dynamicDetector::lidarDetectionCB(const ros::TimerEvent&){
         this->lidarDetect();
     }
@@ -733,24 +738,25 @@ namespace onboardDetector{
         }
     }
 
+    // 分类定时器回调函数
     void dynamicDetector::classificationCB(const ros::TimerEvent&){
-        // Identification thread
+        // 识别线程
         std::vector<onboardDetector::box3D> dynamicBBoxesTemp;
 
-        // Iterate through all pointcloud/bounding boxes history (note that yolo's pointclouds are dummy pointcloud (empty))
-        // NOTE: There are 3 cases which we don't need to perform dynamic obstacle identification.
+        // 遍历所有点云/边界框历史
+        // 注意：在3种情况下，我们不需要执行动态障碍物识别
         for (size_t i=0; i<this->pcHist_.size() ; ++i){
             // ===================================================================================
-            // CASE I: yolo recognized as dynamic dynamic obstacle
-            if (this->boxHist_[i][0].is_human){
-                dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
-                continue;
-            }
+            // 情况一：YOLO识别人类
+            // if (this->boxHist_[i][0].is_human){
+            //     dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
+            //     continue;
+            // }
             // ===================================================================================
 
 
             // ===================================================================================
-            // CASE II: history length is not enough to run classification
+            // 情况二：历史长度不足以进行分类
             int curFrameGap;
             if (int(this->pcHist_[i].size()) < this->skipFrame_+1){
                 curFrameGap = this->pcHist_[i].size() - 1;
@@ -762,29 +768,29 @@ namespace onboardDetector{
 
 
             // ==================================================================================
-            // CASE III: Force Dynamic (if the obstacle is classifed as dynamic for several time steps)
-            int dynaFrames = 0;
-            if (int(this->boxHist_[i].size()) > this->forceDynaCheckRange_){
-                for (int j=1 ; j<this->forceDynaCheckRange_+1 ; ++j){
-                    if (this->boxHist_[i][j].is_dynamic){
-                        ++dynaFrames;
-                    }
-                }
-            }
+            // 情况三：强制动态（如果障碍物在多个时间步内被分类为动态）
+            // int dynaFrames = 0;
+            // if (int(this->boxHist_[i].size()) > this->forceDynaCheckRange_){
+            //     for (int j=1 ; j<this->forceDynaCheckRange_+1 ; ++j){
+            //         if (this->boxHist_[i][j].is_dynamic){
+            //             ++dynaFrames;
+            //         }
+            //     }
+            // }
 
-            if (dynaFrames >= this->forceDynaFrames_){
-                this->boxHist_[i][0].is_dynamic = true;
-                dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
-                continue;
-            }
+            // if (dynaFrames >= this->forceDynaFrames_){
+            //     this->boxHist_[i][0].is_dynamic = true;
+            //     dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
+            //     continue;
+            // }
             // ===================================================================================
 
             std::vector<Eigen::Vector3d> currPc = this->pcHist_[i][0];
             std::vector<Eigen::Vector3d> prevPc = this->pcHist_[i][curFrameGap];
-            Eigen::Vector3d Vcur(0.,0.,0.); // single point velocity 
-            Eigen::Vector3d Vbox(0.,0.,0.); // bounding box velocity 
-            Eigen::Vector3d Vkf(0.,0.,0.);  // velocity estimated from kalman filter
-            int numPoints = currPc.size(); // it changes within loop
+            Eigen::Vector3d Vcur(0.,0.,0.); // 单点速度
+            Eigen::Vector3d Vbox(0.,0.,0.); // 边界框速度
+            Eigen::Vector3d Vkf(0.,0.,0.);  // 卡尔曼滤波器估计的速度
+            int numPoints = currPc.size(); // 循环内会改变
             int votes = 0;
 
             Vbox(0) = (this->boxHist_[i][0].x - this->boxHist_[i][curFrameGap].x)/(this->dt_*curFrameGap);
@@ -793,11 +799,11 @@ namespace onboardDetector{
             Vkf(0) = this->boxHist_[i][0].Vx;
             Vkf(1) = this->boxHist_[i][0].Vy;
 
-            // find nearest neighbor
+            // 寻找最近邻
             for (size_t j=0 ; j<currPc.size() ; ++j){
                 double minDist = 2;
                 Eigen::Vector3d nearestVect;
-                for (size_t k=0 ; k<prevPc.size() ; k++){ // find the nearest point in the previous pointcloud
+                for (size_t k=0 ; k<prevPc.size() ; k++){ // 在之前的点云中找到最近的点
                     double dist = (currPc[j]-prevPc[k]).norm();
                     if (abs(dist) < minDist){
                         minDist = dist;
@@ -818,16 +824,16 @@ namespace onboardDetector{
             }
             
             
-            // update dynamic boxes
+            // 更新动态框
             double voteRatio = (numPoints>0)?double(votes)/double(numPoints):0;
             double velNorm = Vkf.norm();
 
-            // voting and velocity threshold
-            // 1. point cloud voting ratio.
-            // 2. velocity (from kalman filter) 
+            // 投票和速度阈值
+            // 1. 点云投票率
+            // 2. 速度（来自卡尔曼滤波器）
             if (voteRatio>=this->dynaVoteThresh_ && velNorm>=this->dynaVelThresh_){
                 this->boxHist_[i][0].is_dynamic_candidate = true;
-                // dynamic-consistency check
+                // 动态一致性检查
                 int dynaConsistCount = 0;
                 if (int(this->boxHist_[i].size()) >= this->dynamicConsistThresh_){
                     for (int j=0 ; j<this->dynamicConsistThresh_; ++j){
@@ -837,14 +843,14 @@ namespace onboardDetector{
                     }
                 }            
                 if (dynaConsistCount == this->dynamicConsistThresh_){
-                    // set as dynamic and push into history
+                    // 设置为动态并推入历史记录
                     this->boxHist_[i][0].is_dynamic = true;
                     dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);    
                 }
             }
         }
 
-        // filter the dynamic obstacles based on the target sizes
+        // 根据目标尺寸过滤动态障碍物
         if (this->constrainSize_){
             std::vector<onboardDetector::box3D> dynamicBBoxesBeforeConstrain = dynamicBBoxesTemp;
             dynamicBBoxesTemp.clear();
@@ -869,18 +875,18 @@ namespace onboardDetector{
         this->dynamicBBoxes_ = dynamicBBoxesTemp;
     }
 
+    // 可视化定时器回调函数
     void dynamicDetector::visCB(const ros::TimerEvent&){
-        this->publish3dBox(this->lidarBBoxes_, this->lidarBBoxesPub_, 0.5, 0.5, 0.5); // raw lidar cluster bounding boxes
+        this->publish3dBox(this->lidarBBoxes_, this->lidarBBoxesPub_, 0.5, 0.5, 0.5); // 原始激光雷达聚类边界框
         this->publish3dBox(this->filteredBBoxes_, this->filteredBBoxesPub_, 0, 1, 1);
         this->publish3dBox(this->trackedBBoxes_, this->trackedBBoxesPub_, 1, 1, 0);
         this->publish3dBox(this->dynamicBBoxes_, this->dynamicBBoxesPub_, 0, 0, 1);
 
-        this->publishLidarClusters(); // colored clusters
+        this->publishLidarClusters(); // 彩色聚类
         this->publishFilteredPoints();
         std::vector<Eigen::Vector3d> dynamicPoints;
         this->getDynamicPc(dynamicPoints);
         this->publishPoints(dynamicPoints, this->dynamicPointsPub_);
-        this->publishPoints(this->filteredDepthPoints_, this->filteredDepthPointsPub_);
         this->publishRawDynamicPoints();
 
         this->publishHistoryTraj();
@@ -889,7 +895,7 @@ namespace onboardDetector{
 
 
     /*!
-     * \brief 使用激光雷达数据进行动态障碍物检测
+     * 使用激光雷达数据进行动态障碍物检测
      * 该函数通过激光雷达点云数据检测环境中的障碍物。它会初始化激光雷达检测器（如果尚未初始化），
      * 执行DBSCAN聚类算法来识别点云中的不同对象，并过滤掉尺寸过大的边界框。
      * 最终结果保存在lidarBBoxes_和lidarClusters_成员变量中。
@@ -933,7 +939,7 @@ namespace onboardDetector{
         std::vector<onboardDetector::box3D> lidarBBoxesTemp;
         std::vector<std::vector<Eigen::Vector3d>> lidarPcClustersTemp;
         std::vector<Eigen::Vector3d> lidarPcClusterCentersTemp;
-        std::vector<Eigen::Vector3d> lidarPcClusterStdsTemp; // store lidar output
+        std::vector<Eigen::Vector3d> lidarPcClusterStdsTemp; // 存储激光雷达输出
 
         //获取激光雷达边界框及其对应的点云簇和特征
         for (size_t i = 0; i < this->lidarBBoxes_.size(); ++i) {
@@ -965,85 +971,6 @@ namespace onboardDetector{
         this->filteredPcClusters_ = lidarPcClustersTemp;
         this->filteredPcClusterCenters_ = lidarPcClusterCentersTemp;
         this->filteredPcClusterStds_ = lidarPcClusterStdsTemp;
-    }
-
-    // 计算点云簇的特征（中心和标准差）
-    void dynamicDetector::calcPcFeat(const std::vector<Eigen::Vector3d>& pcCluster, Eigen::Vector3d& pcClusterCenter, Eigen::Vector3d& pcClusterStd){
-        // 获取点云簇中的点的数量
-        int numPoints = pcCluster.size();
-        
-        // 计算点云簇的中心点（均值）
-        // 遍历所有点
-        for (int i=0 ; i<numPoints ; i++){
-            // 将每个点的坐标累加到中心点坐标上，并除以总点数
-            pcClusterCenter(0) += pcCluster[i](0)/numPoints;
-            pcClusterCenter(1) += pcCluster[i](1)/numPoints;
-            pcClusterCenter(2) += pcCluster[i](2)/numPoints;
-        }
-
-        // 计算点云簇的标准差
-        // 遍历所有点
-        for (int i=0 ; i<numPoints ; i++){
-            // 累加每个点坐标与中心点坐标差值的平方
-            pcClusterStd(0) += std::pow(pcCluster[i](0) - pcClusterCenter(0),2);
-            pcClusterStd(1) += std::pow(pcCluster[i](1) - pcClusterCenter(1),2);
-            pcClusterStd(2) += std::pow(pcCluster[i](2) - pcClusterCenter(2),2);
-        }        
-
-        // 完成标准差的计算（开方）
-        // 将累加的平方差除以总点数后开方，得到标准差
-        pcClusterStd(0) = std::sqrt(pcClusterStd(0)/numPoints);
-        pcClusterStd(1) = std::sqrt(pcClusterStd(1)/numPoints);
-        pcClusterStd(2) = std::sqrt(pcClusterStd(2)/numPoints);
-    }
-
-
-    double dynamicDetector::calBoxIOU(const onboardDetector::box3D& box1, const onboardDetector::box3D& box2, bool ignoreZmin){
-        double box1Volume = box1.x_width * box1.y_width * box1.z_width;
-        double box2Volume = box2.x_width * box2.y_width * box2.z_width;
-
-        double l1Y = box1.y+box1.y_width/2.-(box2.y-box2.y_width/2.);
-        double l2Y = box2.y+box2.y_width/2.-(box1.y-box1.y_width/2.);
-        double l1X = box1.x+box1.x_width/2.-(box2.x-box2.x_width/2.);
-        double l2X = box2.x+box2.x_width/2.-(box1.x-box1.x_width/2.);
-        double l1Z = box1.z+box1.z_width/2.-(box2.z-box2.z_width/2.);
-        double l2Z = box2.z+box2.z_width/2.-(box1.z-box1.z_width/2.);
-        
-        if (ignoreZmin){
-            // modify box1 and box2 volumn based on the maximum lower z of two
-            double zmin = std::max(box1.z - box1.z_width/2., box2.z - box2.z_width/2.);
-            double zWidth1 = box1.z_width/2. + (box1.z - zmin);
-            double zWidth2 = box2.z_width/2. + (box2.z - zmin);
-            box1Volume = box1.x_width * box1.y_width * zWidth1;
-            box2Volume = box2.x_width * box2.y_width * zWidth2;
-
-            l1Z = box1.z+box1.z_width/2. - zmin;
-            l2Z = box2.z+box2.z_width/2. - zmin;
-        }
-        
-        double overlapX = std::min( l1X , l2X );
-        double overlapY = std::min( l1Y , l2Y );
-        double overlapZ = std::min( l1Z , l2Z );
-       
-        if (std::max(l1X, l2X)<=std::max(box1.x_width,box2.x_width)){ 
-            overlapX = std::min(box1.x_width, box2.x_width);
-        }
-        if (std::max(l1Y, l2Y)<=std::max(box1.y_width,box2.y_width)){ 
-            overlapY = std::min(box1.y_width, box2.y_width);
-        }
-        if (std::max(l1Z, l2Z)<=std::max(box1.z_width,box2.z_width)){ 
-            overlapZ = std::min(box1.z_width, box2.z_width);
-        }
-
-
-        double overlapVolume = overlapX * overlapY *  overlapZ;
-        double IOU = overlapVolume / (box1Volume+box2Volume-overlapVolume);
-        
-        // D-IOU
-        if (overlapX<=0 || overlapY<=0 ||overlapZ<=0){
-            IOU = 0;
-        }
-        return IOU;
     }
 
     // 将当前检测到的边界框与历史记录中的边界框进行关联
@@ -1090,7 +1017,6 @@ namespace onboardDetector{
 
     /**
      * @brief 辅助进行边界框关联，通过特征匹配找到当前检测与历史检测的最佳对应关系
-     * 
      * @param[out] bestMatch 用于存储最佳匹配结果的向量，每个元素表示当前检测框对应的历史检测框索引
      *                      - -1 表示没有匹配到历史框（新出现的目标）
      *                      - >=0 表示匹配到的历史框索引
@@ -1122,6 +1048,10 @@ namespace onboardDetector{
         this->findBestMatch(prevBBoxes, prevBBoxesFeat, propedBBoxes, propedBBoxesFeat, currBBoxesFeat, bestMatch);      
     }
 
+    // 辅助函数，用于为给定的边界框和点云中心生成特征向量
+    // 特征包括：边界框相对于机器人的位置、边界框的尺寸、点云中心的坐标
+    // 每个特征分量都会乘以一个预设的权重
+    // 同时处理了特征值中可能出现的NaN或无穷大问题
     void dynamicDetector::genFeatHelper( 
         const std::vector<onboardDetector::box3D>& boxes,
         const std::vector<Eigen::Vector3d>& pcCenters,
@@ -1141,7 +1071,7 @@ namespace onboardDetector{
             feature(7) = pcCenters[i](1) * featureWeights(7);
             feature(8) = pcCenters[i](2) * featureWeights(8);
 
-            // fix nan problem
+            // 修复nan问题
             for(int j = 0; j < feature.size(); ++j) {
                 if (std::isnan(feature(j)) || std::isinf(feature(j))) {
                     feature(j) = 0;
@@ -1151,6 +1081,8 @@ namespace onboardDetector{
         }
     }
 
+    // 从历史记录中获取上一帧的边界框和点云中心
+    // 遍历每个障碍物的历史记录，并提取最新的（索引为0）边界框和点云中心
     void dynamicDetector::getPrevBBoxes(std::vector<onboardDetector::box3D>& prevBoxes, std::vector<Eigen::Vector3d>& prevPcCenters){
         onboardDetector::box3D prevBox;
         for (size_t i=0 ; i<this->boxHist_.size() ; i++){
@@ -1162,6 +1094,9 @@ namespace onboardDetector{
         }
     }
       
+    // 对历史边界框和点云中心进行线性传播（预测）
+    // 使用上一时刻的速度和时间步长 dt_ 来预测当前时刻的位置
+    // 这用于在数据关联中预测目标可能出现的位置
     void dynamicDetector::linearProp(std::vector<onboardDetector::box3D>& propedBBoxes, std::vector<Eigen::Vector3d>& propedPcCenters){
         onboardDetector::box3D propedBBox;
         for (size_t i=0 ; i<this->boxHist_.size() ; i++){
@@ -1177,11 +1112,14 @@ namespace onboardDetector{
         }
     }
 
+    // 为当前检测到的每个边界框寻找最佳匹配的历史边界框
+    // 匹配过程首先通过尺寸和距离进行粗略筛选
+    // 然后，通过计算特征相似度（结合了上一时刻特征和预测特征）来找到最佳匹配
     void dynamicDetector::findBestMatch(const std::vector<onboardDetector::box3D>& prevBBoxes, const std::vector<Eigen::VectorXd>& prevBBoxesFeat, 
                                         const std::vector<onboardDetector::box3D>& propedBBoxes, const std::vector<Eigen::VectorXd>& propedBBoxesFeat, 
                                         const std::vector<Eigen::VectorXd>& currBBoxesFeat, std::vector<int>& bestMatch){
         int numObjs = this->filteredBBoxes_.size();
-        std::vector<double> bestSims; // best similarity
+        std::vector<double> bestSims; // 最佳相似度
         bestSims.resize(numObjs, 0);
 
         for (int i=0 ; i<numObjs ; i++){
@@ -1195,7 +1133,7 @@ namespace onboardDetector{
                 double currWidth = std::max(currBBox.x_width, currBBox.y_width);
                 if (std::abs(propedWidth - currWidth) < this->maxMatchSizeRange_){
                     if (pow(pow(propedBBox.x - currBBox.x, 2) + pow(propedBBox.y - currBBox.y, 2), 0.5) < this->maxMatchRange_){
-                        // calculate the velocity feature based on propedBBox and currBBox
+                        // 基于propedBBox和currBBox计算速度特征
                         double simPrev = prevBBoxesFeat[j].dot(currBBoxesFeat[i])/(prevBBoxesFeat[j].norm()*currBBoxesFeat[i].norm());
                         double simProped = propedBBoxesFeat[j].dot(currBBoxesFeat[i])/(propedBBoxesFeat[j].norm()*currBBoxesFeat[i].norm());
                         double sim = simPrev + simProped;
@@ -1212,6 +1150,7 @@ namespace onboardDetector{
         }
     }
 
+    // 使用卡尔曼滤波器并更新历史记录
     void dynamicDetector::kalmanFilterAndUpdateHist(const std::vector<int>& bestMatch){
         std::vector<std::deque<onboardDetector::box3D>> boxHistTemp; 
         std::vector<std::deque<std::vector<Eigen::Vector3d>>> pcHistTemp;
@@ -1229,16 +1168,16 @@ namespace onboardDetector{
         int numObjs = this->filteredBBoxes_.size();
 
         for (int i=0 ; i<numObjs ; i++){
-            onboardDetector::box3D newEstimatedBBox; // from kalman filter
+            onboardDetector::box3D newEstimatedBBox; // 来自卡尔曼滤波器
 
-            // inheret history. push history one by one
+            // 继承历史。逐个推入历史
             if (bestMatch[i]>=0){
                 boxHistTemp.push_back(this->boxHist_[bestMatch[i]]);
                 pcHistTemp.push_back(this->pcHist_[bestMatch[i]]);
                 pcCenterHistTemp.push_back(this->pcCenterHist_[bestMatch[i]]);
                 filtersTemp.push_back(this->filters_[bestMatch[i]]);
 
-                // kalman filter to get new state estimation
+                // 卡尔曼滤波器获取新的状态估计
                 onboardDetector::box3D currDetectedBBox = this->filteredBBoxes_[i];
 
                 Eigen::MatrixXd Z;
@@ -1266,7 +1205,7 @@ namespace onboardDetector{
                 pcHistTemp.push_back(newSinglePcHist);
                 pcCenterHistTemp.push_back(newSinglePcCenterHist);
 
-                // create new kalman filter for this object
+                // 为此对象创建新的卡尔曼滤波器
                 onboardDetector::box3D currDetectedBBox = this->filteredBBoxes_[i];
                 MatrixXd states, A, B, H, P, Q, R;    
                 this->kalmanFilterMatrixAcc(currDetectedBBox, states, A, B, H, P, Q, R);
@@ -1277,19 +1216,19 @@ namespace onboardDetector{
                 
             }
 
-            // pop old data if len of hist > size limit
+            // 如果历史记录长度超过大小限制，则弹出旧数据
             if (int(boxHistTemp[i].size()) == this->histSize_){
                 boxHistTemp[i].pop_back();
                 pcHistTemp[i].pop_back();
                 pcCenterHistTemp[i].pop_back();
             }
 
-            // push new data into history
+            // 将新数据推入历史记录
             boxHistTemp[i].push_front(newEstimatedBBox); 
             pcHistTemp[i].push_front(this->filteredPcClusters_[i]);
             pcCenterHistTemp[i].push_front(this->filteredPcClusterCenters_[i]);
 
-            // update new tracked bounding boxes
+            // 更新新的被跟踪边界框
             trackedBBoxesTemp.push_back(newEstimatedBBox);
         }
   
@@ -1312,21 +1251,22 @@ namespace onboardDetector{
             }
         }
         
-        // update history member variable
+        // 更新历史成员变量
         this->boxHist_ = boxHistTemp;
         this->pcHist_ = pcHistTemp;
         this->pcCenterHist_ = pcCenterHistTemp;
         this->filters_ = filtersTemp;
 
-        // update tracked bounding boxes
+        // 更新被跟踪的边界框
         this->trackedBBoxes_=  trackedBBoxesTemp;
     }
 
+    // 设置速度模型的卡尔曼滤波器矩阵
     void dynamicDetector::kalmanFilterMatrixVel(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R){
         states.resize(4,1);
         states(0) = currDetectedBBox.x;
         states(1) = currDetectedBBox.y;
-        // init vel and acc to zeros
+        // 将速度和加速度初始化为零
         states(2) = 0.;
         states(3) = 0.;
 
@@ -1347,11 +1287,12 @@ namespace onboardDetector{
 
     }
 
+    // 设置加速度模型的卡尔曼滤波器矩阵
     void dynamicDetector::kalmanFilterMatrixAcc(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R){
         states.resize(6,1);
         states(0) = currDetectedBBox.x;
         states(1) = currDetectedBBox.y;
-        // init vel and acc to zeros
+        // 将速度和加速度初始化为零
         states(2) = 0.;
         states(3) = 0.;
         states(4) = 0.;
@@ -1376,12 +1317,13 @@ namespace onboardDetector{
         R(0,0) *= this->eRPos_; R(1,1) *= this->eRPos_; R(2,2) *= this->eRVel_; R(3,3) *= this->eRVel_; R(4,4) *= this->eRAcc_; R(5,5) *= this->eRAcc_;
     }
 
+    // 获取速度模型的卡尔曼滤波器观测值
     void dynamicDetector::getKalmanObservationVel(const onboardDetector::box3D& currDetectedBBox, int bestMatchIdx, MatrixXd& Z){
         Z.resize(4,1);
         Z(0) = currDetectedBBox.x; 
         Z(1) = currDetectedBBox.y;
 
-        // use previous k frame for velocity estimation
+        // 使用前k帧进行速度估计
         int k = this->kfAvgFrames_;
         int historySize = this->boxHist_[bestMatchIdx].size();
         if (historySize < k){
@@ -1393,12 +1335,13 @@ namespace onboardDetector{
         Z(3) = (currDetectedBBox.y-prevMatchBBox.y)/(this->dt_*k);
     }
 
+    // 获取加速度模型的卡尔曼滤波器观测值
     void dynamicDetector::getKalmanObservationAcc(const onboardDetector::box3D& currDetectedBBox, int bestMatchIdx, MatrixXd& Z){
         Z.resize(6, 1);
         Z(0) = currDetectedBBox.x;
         Z(1) = currDetectedBBox.y;
 
-        // use previous k frame for velocity estimation
+        // 使用前k帧进行速度估计
         int k = this->kfAvgFrames_;
         int historySize = this->boxHist_[bestMatchIdx].size();
         if (historySize < k){
@@ -1412,6 +1355,7 @@ namespace onboardDetector{
         Z(5) = (Z(3) - prevMatchBBox.Vy)/(this->dt_*k);
     }
  
+    // 获取动态点云
     void dynamicDetector::getDynamicPc(std::vector<Eigen::Vector3d>& dynamicPc){
         Eigen::Vector3d curPoint;
         for (size_t i=0; i<this->filteredPcClusters_.size(); ++i){
@@ -1430,6 +1374,7 @@ namespace onboardDetector{
     } 
     
 
+    // 发布点云
     void dynamicDetector::publishPoints(const std::vector<Eigen::Vector3d>& points, const ros::Publisher& publisher){
         pcl::PointXYZ pt;
         pcl::PointCloud<pcl::PointXYZ> cloud;        
@@ -1450,6 +1395,7 @@ namespace onboardDetector{
     }
 
 
+    // 发布3D边界框
     void dynamicDetector::publish3dBox(const std::vector<box3D>& boxes,
                                    const ros::Publisher& publisher,
                                    double r, double g, double b){
@@ -1512,6 +1458,7 @@ namespace onboardDetector{
     }
 
 
+    // 发布历史轨迹
     void dynamicDetector::publishHistoryTraj(){
         visualization_msgs::MarkerArray trajMsg;
         int countMarker = 0;
@@ -1551,7 +1498,8 @@ namespace onboardDetector{
         this->historyTrajPub_.publish(trajMsg);
     }
 
-    void dynamicDetector::publishVelVis(){ // publish velocities for all tracked objects
+    // 发布所有被跟踪对象的速度可视化信息
+    void dynamicDetector::publishVelVis(){ 
         visualization_msgs::MarkerArray velVisMsg;
         int countMarker = 0;
         for (size_t i=0; i<this->trackedBBoxes_.size(); ++i){
@@ -1583,6 +1531,7 @@ namespace onboardDetector{
         this->velVisPub_.publish(velVisMsg);
     }
 
+    // 发布激光雷达聚类
     void dynamicDetector::publishLidarClusters(){
         sensor_msgs::PointCloud2 lidarClustersMsg;
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
@@ -1617,6 +1566,7 @@ namespace onboardDetector{
         this->lidarClustersPub_.publish(lidarClustersMsg);
     }
 
+    // 发布过滤后的点
     void dynamicDetector::publishFilteredPoints(){
         sensor_msgs::PointCloud2 filteredPointsMsg;
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
@@ -1644,6 +1594,7 @@ namespace onboardDetector{
         this->filteredPointsPub_.publish(filteredPointsMsg);
     }
 
+    // 发布原始动态点
     void dynamicDetector::publishRawDynamicPoints(){
         if (not this->latestCloud_){
             return;
@@ -1709,71 +1660,7 @@ namespace onboardDetector{
         }
     }
 
-    void dynamicDetector::transformBBox(const Eigen::Vector3d& center, const Eigen::Vector3d& size, const Eigen::Vector3d& position, const Eigen::Matrix3d& orientation,
-                                               Eigen::Vector3d& newCenter, Eigen::Vector3d& newSize){
-        double x = center(0); 
-        double y = center(1);
-        double z = center(2);
-        double xWidth = size(0);
-        double yWidth = size(1);
-        double zWidth = size(2);
-
-        // get 8 bouding boxes coordinates in the camera frame
-        Eigen::Vector3d p1 (x+xWidth/2.0, y+yWidth/2.0, z+zWidth/2.0);
-        Eigen::Vector3d p2 (x+xWidth/2.0, y+yWidth/2.0, z-zWidth/2.0);
-        Eigen::Vector3d p3 (x+xWidth/2.0, y-yWidth/2.0, z+zWidth/2.0);
-        Eigen::Vector3d p4 (x+xWidth/2.0, y-yWidth/2.0, z-zWidth/2.0);
-        Eigen::Vector3d p5 (x-xWidth/2.0, y+yWidth/2.0, z+zWidth/2.0);
-        Eigen::Vector3d p6 (x-xWidth/2.0, y+yWidth/2.0, z-zWidth/2.0);
-        Eigen::Vector3d p7 (x-xWidth/2.0, y-yWidth/2.0, z+zWidth/2.0);
-        Eigen::Vector3d p8 (x-xWidth/2.0, y-yWidth/2.0, z-zWidth/2.0);
-
-        // transform 8 points to the map coordinate frame
-        Eigen::Vector3d p1m = orientation * p1 + position;
-        Eigen::Vector3d p2m = orientation * p2 + position;
-        Eigen::Vector3d p3m = orientation * p3 + position;
-        Eigen::Vector3d p4m = orientation * p4 + position;
-        Eigen::Vector3d p5m = orientation * p5 + position;
-        Eigen::Vector3d p6m = orientation * p6 + position;
-        Eigen::Vector3d p7m = orientation * p7 + position;
-        Eigen::Vector3d p8m = orientation * p8 + position;
-        std::vector<Eigen::Vector3d> pointsMap {p1m, p2m, p3m, p4m, p5m, p6m, p7m, p8m};
-
-        // find max min in x, y, z directions
-        double xmin=p1m(0); double xmax=p1m(0); 
-        double ymin=p1m(1); double ymax=p1m(1);
-        double zmin=p1m(2); double zmax=p1m(2);
-        for (Eigen::Vector3d pm : pointsMap){
-            if (pm(0) < xmin){xmin = pm(0);}
-            if (pm(0) > xmax){xmax = pm(0);}
-            if (pm(1) < ymin){ymin = pm(1);}
-            if (pm(1) > ymax){ymax = pm(1);}
-            if (pm(2) < zmin){zmin = pm(2);}
-            if (pm(2) > zmax){zmax = pm(2);}
-        }
-        newCenter(0) = (xmin + xmax)/2.0;
-        newCenter(1) = (ymin + ymax)/2.0;
-        newCenter(2) = (zmin + zmax)/2.0;
-        newSize(0) = xmax - xmin;
-        newSize(1) = ymax - ymin;
-        newSize(2) = zmax - zmin;
-    }
-
-    int dynamicDetector::getBestOverlapBBox(const onboardDetector::box3D& currBBox, const std::vector<onboardDetector::box3D>& targetBBoxes, double& bestIOU){
-        bestIOU = 0.0;
-        int bestIOUIdx = -1; // no match
-        for (size_t i=0; i<targetBBoxes.size(); ++i){
-            onboardDetector::box3D targetBBox = targetBBoxes[i];
-            double IOU = this->calBoxIOU(currBBox, targetBBox);
-            if (IOU > bestIOU){
-                bestIOU = IOU;
-                bestIOUIdx = i;
-            }
-        }
-        return bestIOUIdx;
-    }
-
-    // user functions
+    // 用户函数：获取动态障碍物
     void dynamicDetector::getDynamicObstacles(std::vector<onboardDetector::box3D>& incomeDynamicBBoxes, const Eigen::Vector3d &robotSize){
         incomeDynamicBBoxes.clear();
         for (int i=0; i<int(this->dynamicBBoxes_.size()); i++){
@@ -1785,6 +1672,7 @@ namespace onboardDetector{
         }
     }
 
+    // 用户函数：获取动态障碍物历史
     void dynamicDetector::getDynamicObstaclesHist(std::vector<std::vector<Eigen::Vector3d>>& posHist, std::vector<std::vector<Eigen::Vector3d>>& velHist, std::vector<std::vector<Eigen::Vector3d>>& sizeHist, const Eigen::Vector3d &robotSize){
 		posHist.clear();
         velHist.clear();

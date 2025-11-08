@@ -9,14 +9,11 @@
 #include <ros/ros.h>
 #include <Eigen/Eigen>
 #include <Eigen/StdVector>
-#include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <visualization_msgs/MarkerArray.h>
-#include <vision_msgs/Detection2DArray.h>
-#include <image_transport/image_transport.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -26,21 +23,12 @@
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <onboard_detector/dbscan.h>
-#include <onboard_detector/uvDetector.h>
 #include <onboard_detector/lidarDetector.h>
 #include <onboard_detector/kalmanFilter.h>
 #include <onboard_detector/utils.h>
 #include <onboard_detector/GetDynamicObstacles.h>
 
 namespace onboardDetector{
-    /**
-     * @class dynamicDetector
-     * @brief 一个用于检测、跟踪和分类动态障碍物的主类。
-     * 
-     * 该类集成了多种传感器（深度相机、彩色相机、激光雷达）的数据，
-     * 使用DBSCAN、UV-Disparity等方法进行物体检测，
-     * 通过卡尔曼滤波器进行目标跟踪，并最终识别出动态障碍物。
-     */
     class dynamicDetector{
     private:
         // ROS相关句柄、订阅者、发布者和定时器
@@ -195,10 +183,6 @@ namespace onboardDetector{
 
         // 检测模块函数
         void lidarDetect(); // 执行激光雷达检测
-        
-        // 检测辅助函数
-        void calcPcFeat(const std::vector<Eigen::Vector3d>& pcCluster, Eigen::Vector3d& pcClusterCenter, Eigen::Vector3d& pcClusterStd); // 计算点云特征
-        double calBoxIOU(const onboardDetector::box3D& box1, const onboardDetector::box3D& box2, bool ignoreZmin=false); // 计算3D边界框的IOU
 
         // 数据关联与跟踪函数
         void boxAssociation(std::vector<int>& bestMatch); // 边界框数据关联
@@ -223,11 +207,6 @@ namespace onboardDetector{
         void publishLidarClusters(); // 发布激光雷达聚类
         void publishFilteredPoints(); // 发布过滤后的点云
         void publishRawDynamicPoints(); // 发布原始动态点云
-
-        // 辅助函数
-        void transformBBox(const Eigen::Vector3d& center, const Eigen::Vector3d& size, const Eigen::Vector3d& position, const Eigen::Matrix3d& orientation,
-                                  Eigen::Vector3d& newCenter, Eigen::Vector3d& newSize); // 坐标系转换
-        int getBestOverlapBBox(const onboardDetector::box3D& currBBox, const std::vector<onboardDetector::box3D>& targetBBoxes, double& bestIOU); // 获取最佳重叠框
 
         // 用户接口函数
         void getDynamicObstacles(std::vector<onboardDetector::box3D>& incomeDynamicBBoxes, const Eigen::Vector3d &robotSize = Eigen::Vector3d(0.0,0.0,0.0)); // 获取动态障碍物（考虑机器人尺寸膨胀）

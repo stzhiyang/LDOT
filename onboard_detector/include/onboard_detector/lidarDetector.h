@@ -22,7 +22,7 @@ namespace onboardDetector{
     struct Cluster
     {
         int cluster_id;               // 点云簇的ID
-        Eigen::Vector4f centroid;     // 点云簇的质心
+        Eigen::Vector4f centroid;     // 点云簇的中心
         pcl::PointCloud<pcl::PointXYZ>::Ptr points; // 属于该簇的点云
 
         // 几何信息

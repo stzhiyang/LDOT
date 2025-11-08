@@ -145,7 +145,6 @@ include_directories(
 # 创建了一个名为onboard_detector的库，包含了项目中的核心算法实现文件。
 add_library(${PROJECT_NAME}
    include/${PROJECT_NAME}/dynamicDetector.cpp
-   include/${PROJECT_NAME}/uvDetector.cpp
    include/${PROJECT_NAME}/dbscan.cpp
    include/${PROJECT_NAME}/kalmanFilter.cpp
    include/${PROJECT_NAME}/fakeDetector.cpp
