@@ -68,11 +68,11 @@ gaussian_downsample_rate: 6   # 高斯降采样的比率
 # filtering_BBox_IOU_threshold: 0.2 # 视觉检测框与激光雷达聚类框的IOU(交并比)阈值, 用于关联和滤波
 
 # 目标跟踪与数据关联
-max_match_range: 0.5 # 前后帧之间目标匹配的最大距离 (米)
+max_match_range: 0.2 # 前后帧之间目标匹配的最大距离 (米)
 max_size_diff_range: 0.5 # 前后帧之间目标尺寸差异的最大范围 (米)
 # 特征权重, 用于计算匹配代价 [3*位置, 3*尺寸, 3*点云质心]
 feature_weight: [3.0, 3.0, 0.1, 0.5, 0.5, 0.05, 0, 0, 0]
-history_size: 50 # 跟踪历史的长度. history[0] 是当前检测结果
+history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
 fix_size_history_threshold: 10 # 固定目标尺寸的历史帧数阈值, 当一个目标被连续跟踪超过该帧数后, 其尺寸将被固定
 fix_size_dimension_threshold: 0.4 # 固定目标尺寸的维度比例阈值, 用于判断是否固定尺寸
 # 如果所有三个维度的相对差异都小于fix_size_dimension_threshold（默认为0.4，即40%），则将目标的尺寸固定为历史记录中的值

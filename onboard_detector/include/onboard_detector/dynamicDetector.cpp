@@ -376,9 +376,6 @@ namespace onboardDetector{
         // 动态边界框发布
         this->dynamicBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/dynamic_bboxes", 10);
 
-        // 过滤后的深度点云发布
-        this->filteredDepthPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/filtered_depth_cloud", 10);
-
         // 激光雷达聚类发布 
         this->lidarClustersPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/lidar_clusters", 10);
 
@@ -504,6 +501,7 @@ namespace onboardDetector{
     //转换点云格式，滤波一定范围内的点，高斯
     void dynamicDetector::lidarPoseCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const geometry_msgs::PoseStampedConstPtr& pose){
         // 仅用于可视化，存储最新的原始点云消息
+        this->hasSensorPose_ = true ;
         this->latestCloud_ = cloudMsg;
 
         // 将ROS点云消息转换为PCL点云格式
@@ -615,6 +613,7 @@ namespace onboardDetector{
     // 里程计回调函数，处理点云和里程计数据
     void dynamicDetector::lidarOdomCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const nav_msgs::OdometryConstPtr& odom){
         // 用于可视化
+        this->hasSensorPose_ = true ;
         this->latestCloud_ = cloudMsg;
 
         // 局部点云
@@ -716,6 +715,7 @@ namespace onboardDetector{
     // 激光雷达检测定时器回调函数
     void dynamicDetector::lidarDetectionCB(const ros::TimerEvent&){
         this->lidarDetect();
+        this->newDetectFlag_ = true; // get a new detection
     }
 
     // 跟踪定时器回调函数
@@ -771,21 +771,20 @@ namespace onboardDetector{
 
             // ==================================================================================
             // 情况三：强制动态（如果一个障碍物在过去一段时间内被频繁分类为动态，则强制认定其为动态）
-            // (此功能当前被注释掉)
-            // int dynaFrames = 0;
-            // if (int(this->boxHist_[i].size()) > this->forceDynaCheckRange_){
-            //     for (int j=1 ; j<this->forceDynaCheckRange_+1 ; ++j){
-            //         if (this->boxHist_[i][j].is_dynamic){
-            //             ++dynaFrames;
-            //         }
-            //     }
-            // }
+            int dynaFrames = 0;
+            if (int(this->boxHist_[i].size()) > this->forceDynaCheckRange_){
+                for (int j=1 ; j<this->forceDynaCheckRange_+1 ; ++j){
+                    if (this->boxHist_[i][j].is_dynamic){
+                        ++dynaFrames;
+                    }
+                }
+            }
 
-            // if (dynaFrames >= this->forceDynaFrames_){
-            //     this->boxHist_[i][0].is_dynamic = true;
-            //     dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
-            //     continue;
-            // }
+            if (dynaFrames >= this->forceDynaFrames_){
+                this->boxHist_[i][0].is_dynamic = true;
+                dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
+                continue;
+            }
             // ===================================================================================
 
             // 获取当前帧和历史帧的点云
@@ -904,33 +903,34 @@ namespace onboardDetector{
 
     // 可视化定时器回调函数
     void dynamicDetector::visCB(const ros::TimerEvent&){
-        // 发布不同阶段的3D边界框，用于调试和可视化
-        // 发布原始的激光雷达聚类边界框（灰色）
-        this->publish3dBox(this->lidarBBoxes_, this->lidarBBoxesPub_, 0.5, 0.5, 0.5); 
-        // 发布经过尺寸过滤后的边界框（青色）
-        this->publish3dBox(this->filteredBBoxes_, this->filteredBBoxesPub_, 0, 1, 1);
-        // 发布经过卡尔曼滤波跟踪后的边界框（黄色）
-        this->publish3dBox(this->trackedBBoxes_, this->trackedBBoxesPub_, 1, 1, 0);
-        // 发布最终被分类为动态的边界框（蓝色）
-        this->publish3dBox(this->dynamicBBoxes_, this->dynamicBBoxesPub_, 0, 0, 1);
-
+        //----------------------------障碍物检测阶段----------------------------------------
+        // 从原始（未降采样）的激光雷达数据中提取并发布动态点云，以获得更密集的视觉效果
+        this->publishRawDynamicPoints();
+        // 发布过滤后的点云（通常是灰色的），检测完障碍物的所有点云簇
+        this->publishFilteredPoints();
         // 发布带颜色的激光雷达聚类点云，每个聚类一个随机颜色
         this->publishLidarClusters(); 
-        // 发布过滤后的点云（通常是灰色的）
-        this->publishFilteredPoints();
+        // 发布雷达检测器的聚类边界框（灰色）
+        this->publish3dBox(this->lidarBBoxes_, this->lidarBBoxesPub_, 0.5, 0.5, 0.5); 
+        // 等于同上
+        this->publish3dBox(this->filteredBBoxes_, this->filteredBBoxesPub_, 0, 1, 1);
+
+        //----------------------------障碍物关联和跟踪阶段-------------------------------------
+        // 发布经过卡尔曼滤波跟踪后的边界框（黄色）
+        this->publish3dBox(this->trackedBBoxes_, this->trackedBBoxesPub_, 1, 1, 0);
+        // 发布被跟踪物体的历史轨迹线
+        this->publishHistoryTraj();
+        // 将被跟踪物体的速度作为文本发布到Rviz中
+        this->publishVelVis();
         
+        //-----------------------------动态障碍物识别阶段--------------------------------------
+        // 发布最终被分类为动态的边界框（蓝色）
+        this->publish3dBox(this->dynamicBBoxes_, this->dynamicBBoxesPub_, 0, 0, 1);
         // 提取并发布属于动态障碍物的点云
         std::vector<Eigen::Vector3d> dynamicPoints;
         this->getDynamicPc(dynamicPoints);
         this->publishPoints(dynamicPoints, this->dynamicPointsPub_);
         
-        // 从原始（未降采样）的激光雷达数据中提取并发布动态点云，以获得更密集的视觉效果
-        this->publishRawDynamicPoints();
-
-        // 发布被跟踪物体的历史轨迹线
-        this->publishHistoryTraj();
-        // 将被跟踪物体的速度作为文本发布到Rviz中
-        this->publishVelVis();
     }
 
 
@@ -1317,6 +1317,7 @@ namespace onboardDetector{
         // --- 更新类的成员变量 ---
         // 用新构建的临时历史记录和滤波器列表，替换掉旧的成员变量
         this->boxHist_ = boxHistTemp;
+        // std::cout << "this->boxHist_[1].size() = "  << this->boxHist_[1].size() << std::endl;
         this->pcHist_ = pcHistTemp;
         this->pcCenterHist_ = pcCenterHistTemp;
         this->filters_ = filtersTemp;
@@ -1546,6 +1547,7 @@ namespace onboardDetector{
         visualization_msgs::MarkerArray trajMsg;
         int countMarker = 0;
         for (size_t i=0; i<this->boxHist_.size(); ++i){
+            // std::cout << "this->boxHist_[i].size() = "  << this->boxHist_[i].size() << std::endl;
             if (this->boxHist_[i].size() > 1){
                 visualization_msgs::Marker traj;
                 traj.header.frame_id = "map";
@@ -1679,36 +1681,56 @@ namespace onboardDetector{
 
     // 发布原始动态点
     void dynamicDetector::publishRawDynamicPoints(){
+        // 检查是否有最新的点云数据，如果没有则直接返回
         if (not this->latestCloud_){
             return;
         }
         try {
+            // 创建一个PCL点云指针，用于存储全局坐标系下的点云
             pcl::PointCloud<pcl::PointXYZ>::Ptr globalCloud(new pcl::PointCloud<pcl::PointXYZ>);
+            
+            // 检查是否有传感器位姿信息
             if (this->hasSensorPose_) {
+                // 如果有位姿，则将ROS消息格式的原始点云转换到PCL格式
                 pcl::PointCloud<pcl::PointXYZ>::Ptr tempCloud(new pcl::PointCloud<pcl::PointXYZ>());
                 pcl::fromROSMsg(*this->latestCloud_, *tempCloud);
                 
+                // 创建一个仿射变换矩阵，用于将点云从激光雷达坐标系转换到全局（map）坐标系
                 Eigen::Affine3d transform = Eigen::Affine3d::Identity();
-                transform.linear() = this->orientationLidar_;
-                transform.translation() = this->positionLidar_;
+                transform.linear() = this->orientationLidar_; // 设置旋转部分
+                transform.translation() = this->positionLidar_; // 设置平移部分
                 
+                // 对点云应用变换
                 pcl::transformPointCloud(*tempCloud, *globalCloud, transform);
+
+                // 创建一个ROS点云消息用于发布可视化
                 sensor_msgs::PointCloud2 cloudMsg;
                 pcl::toROSMsg(*globalCloud, cloudMsg);
-                cloudMsg.header.frame_id = "map";
-                cloudMsg.header.stamp = ros::Time::now();
-                this->rawLidarPointsPub_.publish(cloudMsg);
+                cloudMsg.header.frame_id = "map"; // 设置坐标系为 "map"
+                cloudMsg.header.stamp = ros::Time::now(); // 设置时间戳
+                this->rawLidarPointsPub_.publish(cloudMsg); // 发布转换到全局坐标系的原始点云
+            
+                // 终端输出测试：打印发布点云信息到ROS日志/终端
+                // std::cout << ": No time step parameter found. Use default: 0.033." << std::endl;
+                // ROS_INFO_STREAM(this->hint_ << " publishRawDynamicPoints: transformed pointcloud published. "
+                //                 << "hasSensorPose=" << (this->hasSensorPose_ ? "true" : "false")
+                //                 << ", points=" << globalCloud->points.size());
             }
             else {
+                // 如果没有位姿信息，直接将ROS消息转换为PCL点云（假设其已在全局坐标系）
                 pcl::fromROSMsg(*this->latestCloud_, *globalCloud);
             }
             
+            // 创建一个向量，用于存储属于动态障碍物的点的坐标
             std::vector<Eigen::Vector3d> dynamicEigenPoints;
             
+            // 遍历所有已识别的动态边界框
             for (const auto& box : this->dynamicBBoxes_) {
+                // 如果该边界框未被标记为动态，则跳过
                 if (!box.is_dynamic)
                     continue;
                 
+                // 计算边界框的最小和最大坐标
                 double xmin = box.x - box.x_width / 2.0;
                 double xmax = box.x + box.x_width / 2.0;
                 double ymin = box.y - box.y_width / 2.0;
@@ -1716,28 +1738,36 @@ namespace onboardDetector{
                 double zmin = box.z - box.z_width / 2.0;
                 double zmax = box.z + box.z_width / 2.0;
                 
+                // 遍历全局点云中的每一个点
                 for (const auto& point : globalCloud->points) {
+                    // 检查点是否在当前动态边界框内部
                     if (point.x >= xmin && point.x <= xmax &&
                         point.y >= ymin && point.y <= ymax &&
                         point.z >= zmin && point.z <= zmax)
                     {
+                        // 如果点在框内，则将其添加到动态点向量中
                         dynamicEigenPoints.push_back(Eigen::Vector3d(point.x, point.y, point.z));
                     }
                 }
             }
             
+            // 如果没有找到任何动态点，则直接返回
             if (dynamicEigenPoints.empty()) {
                 return;
             }
             
+            // 调用publishPoints函数，将提取出的动态点云发布出去
             this->publishPoints(dynamicEigenPoints, this->rawDynamicPointsPub_);
         }
+        // 捕获并报告PCL库可能抛出的异常
         catch (const pcl::PCLException& e) {
             ROS_ERROR("PCL Exception during dynamic point extraction: %s", e.what());
         }
+        // 捕获并报告标准C++库可能抛出的异常
         catch (const std::exception& e) {
             ROS_ERROR("Standard Exception during dynamic point extraction: %s", e.what());
         }
+        // 捕获所有其他类型的未知异常
         catch (...) {
             ROS_ERROR("Unknown error during dynamic point extraction.");
         }
