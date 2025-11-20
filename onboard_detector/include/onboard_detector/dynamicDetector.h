@@ -7,6 +7,7 @@
 #define ONBOARDDETECTOR_DYNAMICDETECTOR_H
 
 #include <ros/ros.h>
+#include <chrono>
 #include <Eigen/Eigen>
 #include <Eigen/StdVector>
 #include <sensor_msgs/Image.h>
@@ -19,9 +20,11 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/passthrough.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
+#include <livox_ros_driver2/CustomMsg.h>
 #include <onboard_detector/dbscan.h>
 #include <onboard_detector/lidarDetector.h>
 #include <onboard_detector/kalmanFilter.h>
@@ -39,12 +42,17 @@ namespace onboardDetector{
         ros::NodeHandle nh_;
         // 消息过滤器，用于同步不同传感器的数据
         std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> lidarCloudSub_; // 激光雷达点云订阅器
+        std::shared_ptr<message_filters::Subscriber<livox_ros_driver2::CustomMsg>> lidarCustomMsgSub_; // Livox CustomMsg订阅器
         std::shared_ptr<message_filters::Subscriber<geometry_msgs::PoseStamped>> poseSub_; // 位姿订阅器
         typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, geometry_msgs::PoseStamped> lidarPoseSync; // 激光-位姿同步策略
         std::shared_ptr<message_filters::Synchronizer<lidarPoseSync>> lidarPoseSync_; // 同步器实例
+        typedef message_filters::sync_policies::ApproximateTime<livox_ros_driver2::CustomMsg, geometry_msgs::PoseStamped> lidarCustomPoseSync; // Livox-位姿同步策略
+        std::shared_ptr<message_filters::Synchronizer<lidarCustomPoseSync>> lidarCustomPoseSync_; // 同步器实例
         std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odomSub_; // 里程计订阅器
         typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry> lidarOdomSync; // 激光-里程计同步策略
         std::shared_ptr<message_filters::Synchronizer<lidarOdomSync>> lidarOdomSync_; // 同步器实例
+        typedef message_filters::sync_policies::ApproximateTime<livox_ros_driver2::CustomMsg, nav_msgs::Odometry> lidarCustomOdomSync; // Livox-里程计同步策略
+        std::shared_ptr<message_filters::Synchronizer<lidarCustomOdomSync>> lidarCustomOdomSync_; // 同步器实例
         
         // 定时器，用于周期性执行检测、跟踪、分类和可视化任务
         ros::Timer lidarDetectionTimer_; // 激光雷达检测定时器
@@ -78,6 +86,7 @@ namespace onboardDetector{
 
         // ROS话题名称与模式参数
         int localizationMode_; // 定位模式 (0: Pose, 1: Odometry)
+        bool useLivoxCustomMsg_; // 是否使用Livox CustomMsg格式 (true: CustomMsg, false: PointCloud2)
         std::string lidarTopicName_; // 激光雷达点云话题
         std::string poseTopicName_; // 位姿话题
         std::string odomTopicName_; // 里程计话题
@@ -174,6 +183,8 @@ namespace onboardDetector{
         // 传感器数据回调函数
         void lidarPoseCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const geometry_msgs::PoseStampedConstPtr& pose);
         void lidarOdomCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const nav_msgs::OdometryConstPtr& odom);
+        void lidarCustomPoseCB(const livox_ros_driver2::CustomMsgConstPtr& customMsg, const geometry_msgs::PoseStampedConstPtr& pose);
+        void lidarCustomOdomCB(const livox_ros_driver2::CustomMsgConstPtr& customMsg, const nav_msgs::OdometryConstPtr& odom);
         
         // 定时器回调函数
         void lidarDetectionCB(const ros::TimerEvent&); // 激光雷达检测主循环
@@ -217,6 +228,7 @@ namespace onboardDetector{
         // 内联辅助函数
         void getLidarPose(const geometry_msgs::PoseStampedConstPtr& pose, Eigen::Matrix4d& lidarPoseMatrix); // 获取激光雷达位姿
         void getLidarPose(const nav_msgs::OdometryConstPtr& odom, Eigen::Matrix4d& lidarPoseMatrix); // 获取激光雷达位姿
+        void convertCustomMsgToPointCloud2(const livox_ros_driver2::CustomMsgConstPtr& customMsg, sensor_msgs::PointCloud2& cloud); // 将CustomMsg转换为PointCloud2
         };
 
     /*!

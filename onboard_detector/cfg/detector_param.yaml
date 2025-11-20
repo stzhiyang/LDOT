@@ -1,10 +1,13 @@
 # 定位模式: 0: 使用姿态(pose)信息 (默认), 1: 使用里程计(odom)信息
 localization_mode: 1
 
+# 点云格式: true: 使用Livox CustomMsg格式, false: 使用标准PointCloud2格式 (默认)
+use_livox_custom_msg: true
+
 # ROS 主题
 # depth_image_topic: /camera/depth/image_raw     # 深度图像主题
 # color_image_topic: /camera/color/image_raw     # 彩色图像主题
-lidar_pointcloud_topic: /cloud_registered            # 激光雷达点云主题
+lidar_pointcloud_topic: /livox_lidar            # 激光雷达点云主题
 pose_topic: /mavros/local_position/pose        # 姿态主题
 odom_topic: /mavros/local_position/odom        # 里程计主题
 # depth_image_topic: /camera/depth/image_rect_raw
@@ -68,7 +71,7 @@ gaussian_downsample_rate: 6   # 高斯降采样的比率
 # filtering_BBox_IOU_threshold: 0.2 # 视觉检测框与激光雷达聚类框的IOU(交并比)阈值, 用于关联和滤波
 
 # 目标跟踪与数据关联
-max_match_range: 0.2 # 前后帧之间目标匹配的最大距离 (米)
+max_match_range: 0.3 # 前后帧之间目标匹配的最大距离 (米)
 max_size_diff_range: 0.5 # 前后帧之间目标尺寸差异的最大范围 (米)
 # 特征权重, 用于计算匹配代价 [3*位置, 3*尺寸, 3*点云质心]
 feature_weight: [3.0, 3.0, 0.1, 0.5, 0.5, 0.05, 0, 0, 0]
@@ -81,7 +84,7 @@ kalman_filter_param: [0.25, 0.01, 0.05, 0.05, 0.04, 0.3, 0.6] # 卡尔曼滤波�
 kalman_filter_averaging_frames: 10 # 卡尔曼滤波器状态平均的帧数
 
 # 动态/静态分类
-frame_skip: 5 # 比较两个点云聚类以判断动态性时跳过的帧数
+frame_skip: 4 # 比较两个点云聚类以判断动态性时跳过的帧数
 # 如果frame_skip设置为5，那么系统会比较当前帧与5帧之前的同一目标的点云数据
 dynamic_velocity_threshold: 0.1 # 判断为动态障碍物的速度阈值 (米/秒)
 dynamic_voting_threshold: 0.8 # 动态性投票的阈值, 超过该比例则认为可能是动态

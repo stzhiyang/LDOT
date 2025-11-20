@@ -42,6 +42,15 @@ namespace onboardDetector{
             cout << this->hint_ << ": Localizaiton mode: pose (0)/odom (1). Your option: " << this->localizationMode_ << endl;
         }   
 
+        // use livox custom msg
+        if (not this->nh_.getParam(this->ns_ + "/use_livox_custom_msg", this->useLivoxCustomMsg_)){
+            this->useLivoxCustomMsg_ = false;
+            cout << this->hint_ << ": No use_livox_custom_msg parameter. Use default: false (PointCloud2)" << endl;
+        }
+        else{
+            cout << this->hint_ << ": Use Livox CustomMsg: " << (this->useLivoxCustomMsg_ ? "true" : "false") << endl;
+        }
+
         // lidar topic name
         if (not this->nh_.getParam(this->ns_ + "/lidar_pointcloud_topic", this->lidarTopicName_)){
             this->lidarTopicName_ = "/cloud_registered";
@@ -404,22 +413,44 @@ namespace onboardDetector{
     void dynamicDetector::registerCallback(){
         //message_filters和正常的ros订阅区别是，message_filters不会直接调用回调函数，而是满足过滤器的条件才调用
         // 深度图像和位姿回调。reset表示释放旧的对象，处理当前的新对象。new动态内存分配，如果分配的是对象，new会调用该对象的构造函数来初始化它，也分配内存
-        this->lidarCloudSub_.reset(new message_filters::Subscriber<sensor_msgs::PointCloud2>(this->nh_, this->lidarTopicName_, 50));
-        // this->lidarCloudSub_ = this->nh_.subscribe(this->lidarTopicName_, 10, &dynamicDetector::lidarCloudCB, this);
-        if (this->localizationMode_ == 0){
-            this->poseSub_.reset(new message_filters::Subscriber<geometry_msgs::PoseStamped>(this->nh_, this->poseTopicName_, 25));
-            // message_filters::Synchronizer表示滤波器的前提条件是时间同步，depthPoseSync(100)同步器的队列大小，下面的-1-2为调用函数接收两个话题对应参数的占位符
-            this->lidarPoseSync_.reset(new message_filters::Synchronizer<lidarPoseSync>(lidarPoseSync(100), *this->lidarCloudSub_, *this->poseSub_));
-            this->lidarPoseSync_->registerCallback(boost::bind(&dynamicDetector::lidarPoseCB, this, _1, _2));
-        }
-        else if (this->localizationMode_ == 1){
-            this->odomSub_.reset(new message_filters::Subscriber<nav_msgs::Odometry>(this->nh_, this->odomTopicName_, 25));
-            this->lidarOdomSync_.reset(new message_filters::Synchronizer<lidarOdomSync>(lidarOdomSync(100), *this->lidarCloudSub_, *this->odomSub_));
-            this->lidarOdomSync_->registerCallback(boost::bind(&dynamicDetector::lidarOdomCB, this, _1, _2));
+        
+        if (this->useLivoxCustomMsg_){
+            // 使用Livox CustomMsg格式
+            this->lidarCustomMsgSub_.reset(new message_filters::Subscriber<livox_ros_driver2::CustomMsg>(this->nh_, this->lidarTopicName_, 50));
+            
+            if (this->localizationMode_ == 0){
+                this->poseSub_.reset(new message_filters::Subscriber<geometry_msgs::PoseStamped>(this->nh_, this->poseTopicName_, 25));
+                this->lidarCustomPoseSync_.reset(new message_filters::Synchronizer<lidarCustomPoseSync>(lidarCustomPoseSync(100), *this->lidarCustomMsgSub_, *this->poseSub_));
+                this->lidarCustomPoseSync_->registerCallback(boost::bind(&dynamicDetector::lidarCustomPoseCB, this, _1, _2));
+            }
+            else if (this->localizationMode_ == 1){
+                this->odomSub_.reset(new message_filters::Subscriber<nav_msgs::Odometry>(this->nh_, this->odomTopicName_, 25));
+                this->lidarCustomOdomSync_.reset(new message_filters::Synchronizer<lidarCustomOdomSync>(lidarCustomOdomSync(100), *this->lidarCustomMsgSub_, *this->odomSub_));
+                this->lidarCustomOdomSync_->registerCallback(boost::bind(&dynamicDetector::lidarCustomOdomCB, this, _1, _2));
+            }
+            else{
+                ROS_ERROR("[dynamicDetector]: Invalid localization mode!");
+                exit(0);
+            }
         }
         else{
-            ROS_ERROR("[dynamicDetector]: Invalid localization mode!");
-            exit(0);
+            // 使用标准PointCloud2格式
+            this->lidarCloudSub_.reset(new message_filters::Subscriber<sensor_msgs::PointCloud2>(this->nh_, this->lidarTopicName_, 50));
+            
+            if (this->localizationMode_ == 0){
+                this->poseSub_.reset(new message_filters::Subscriber<geometry_msgs::PoseStamped>(this->nh_, this->poseTopicName_, 25));
+                this->lidarPoseSync_.reset(new message_filters::Synchronizer<lidarPoseSync>(lidarPoseSync(100), *this->lidarCloudSub_, *this->poseSub_));
+                this->lidarPoseSync_->registerCallback(boost::bind(&dynamicDetector::lidarPoseCB, this, _1, _2));
+            }
+            else if (this->localizationMode_ == 1){
+                this->odomSub_.reset(new message_filters::Subscriber<nav_msgs::Odometry>(this->nh_, this->odomTopicName_, 25));
+                this->lidarOdomSync_.reset(new message_filters::Synchronizer<lidarOdomSync>(lidarOdomSync(100), *this->lidarCloudSub_, *this->odomSub_));
+                this->lidarOdomSync_->registerCallback(boost::bind(&dynamicDetector::lidarOdomCB, this, _1, _2));
+            }
+            else{
+                ROS_ERROR("[dynamicDetector]: Invalid localization mode!");
+                exit(0);
+            }
         }
 
         // 激光雷达检测定时器
@@ -498,99 +529,16 @@ namespace onboardDetector{
         return true; // 表示服务成功完成
     }
 
-    //转换点云格式，滤波一定范围内的点，高斯
+    //转换点云格式，滤波一定范围内的点
     void dynamicDetector::lidarPoseCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const geometry_msgs::PoseStampedConstPtr& pose){
+        // [Performance Timing] 测量回调函数耗时
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
         // 仅用于可视化，存储最新的原始点云消息
         this->hasSensorPose_ = true ;
         this->latestCloud_ = cloudMsg;
 
-        // 将ROS点云消息转换为PCL点云格式
-        pcl::PointCloud<pcl::PointXYZ>::Ptr tempCloud (new pcl::PointCloud<pcl::PointXYZ>());
-        pcl::fromROSMsg(*cloudMsg, *tempCloud);
-
-        // --- 点云滤波和降采样 ---
-        // 创建一个滤波后的点云指针以存储结果
-        pcl::PointCloud<pcl::PointXYZ>::Ptr filteredCloud (new pcl::PointCloud<pcl::PointXYZ>());
-
-        // 应用直通滤波器来限制X、Y、Z轴上的局部传感器范围内的点
-        pcl::PassThrough<pcl::PointXYZ> pass;
-
-        // 沿X轴滤波
-        pass.setInputCloud(tempCloud);
-        pass.setFilterFieldName("x"); // 指定过滤字段为X坐标
-        pass.setFilterLimits(-this->localLidarRange_.x(), this->localLidarRange_.x());
-        pass.filter(*filteredCloud); // 执行过滤操作，将结果存储在filteredCloud中
-
-        // 沿Y轴滤波
-        pass.setInputCloud(filteredCloud);
-        pass.setFilterFieldName("y");
-        pass.setFilterLimits(-this->localLidarRange_.y(), this->localLidarRange_.y());
-        pass.filter(*filteredCloud);
-
-        // --- 基于高斯分布的概率降采样 ---
-        int sigma = this->gaussianDownSampleRate_;
-
-        pcl::PointCloud<pcl::PointXYZ>::Ptr preTransformCloud(new pcl::PointCloud<pcl::PointXYZ>());
-        preTransformCloud->reserve(filteredCloud->size()); // 预分配内存空间，容量为过滤后点云的大小
-
-        // 根据点到传感器的距离，使用高斯概率决定是否保留该点
-        for (pcl::PointXYZ &pt : filteredCloud->points) {
-            double dist = pow(pow(pt.x, 2) + pow(pt.y, 2), 0.5);
-            // 第二行根据距离和sigma参数计算高斯权重，距离越远权重越小
-            double p = std::exp(-(dist * dist) / (2 * sigma * sigma));
-
-            //生成0-1之间的随机数r
-            double r = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-            if (r < p) {
-                preTransformCloud->push_back(pt);
-            }
-        }
-
-        // --- 坐标变换 ---
-        // 创建变换矩阵，将点云从激光雷达坐标系转换到地图坐标系
-        Eigen::Affine3d transform = Eigen::Affine3d::Identity(); // 创建单位变换矩阵
-        transform.linear() = this->orientationLidar_;  // 设置旋转部分为激光雷达的朝向
-        transform.translation() = this->positionLidar_; // 设置平移部分为激光雷达的位置
-
-        // 创建一个空的点云来存储变换后的数据
-        pcl::PointCloud<pcl::PointXYZ>::Ptr transformedCloud (new pcl::PointCloud<pcl::PointXYZ>());
-
-        // 应用坐标变换
-        pcl::transformPointCloud(*preTransformCloud, *transformedCloud, transform);
-
-        // --- 过滤地面和天花板 ---
-        pcl::PointCloud<pcl::PointXYZ>::Ptr groundRoofFilterCloud (new pcl::PointCloud<pcl::PointXYZ>());
-        pass.setInputCloud(transformedCloud);
-        pass.setFilterFieldName("z");
-        pass.setFilterLimits(this->groundHeight_, this->roofHeight_);
-        pass.filter(*groundRoofFilterCloud);
-
-        // --- 体素网格降采样 ---
-        pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud = groundRoofFilterCloud;
-        // 创建VoxelGrid滤波器对象
-        pcl::VoxelGrid<pcl::PointXYZ> sor;
-        sor.setInputCloud(groundRoofFilterCloud);
-
-        // 设置体素大小（叶子大小）
-        sor.setLeafSize(0.1f, 0.1f, 0.1f); 
-
-        // 如果降采样后的点云点数仍然过多，则进一步增大概率来减少点数
-        while (int(downsampledCloud->size()) > this->downSampleThresh_) {
-            double leafSize = sor.getLeafSize().x() * 1.1f; // 增加叶子大小以减少点数
-            sor.setLeafSize(leafSize, leafSize, leafSize);
-            sor.filter(*downsampledCloud);
-        }
-
-        // 存储处理后的激光雷达点云
-        this->lidarCloud_ = downsampledCloud;
-        // 将处理后的点云发布出去，用于可视化
-        sensor_msgs::PointCloud2 outputCloud;
-        pcl::toROSMsg(*this->lidarCloud_, outputCloud); // 转换为ROS消息
-        outputCloud.header.frame_id = "map";    // 设置坐标系
-        this->downSamplePointsPub_.publish(outputCloud);
-
-        // --- 更新位姿信息 ---
-        // 存储当前的位置和姿态
+        // --- 更新位姿信息（提前更新，避免后续重复计算） ---
         Eigen::Matrix4d lidarPoseMatrix;
         this->getLidarPose(pose, lidarPoseMatrix);
 
@@ -598,128 +546,252 @@ namespace onboardDetector{
         this->position_(0) = pose->pose.position.x;
         this->position_(1) = pose->pose.position.y;
         this->position_(2) = pose->pose.position.z;
-        Eigen::Quaterniond quat;
-        quat = Eigen::Quaterniond(pose->pose.orientation.w, pose->pose.orientation.x, pose->pose.orientation.y, pose->pose.orientation.z);
-        Eigen::Matrix3d rot = quat.toRotationMatrix();
-        this->orientation_ = rot;
+        Eigen::Quaterniond quat(pose->pose.orientation.w, pose->pose.orientation.x, 
+                                pose->pose.orientation.y, pose->pose.orientation.z);
+        this->orientation_ = quat.toRotationMatrix();
 
         // 更新激光雷达的位姿
         this->positionLidar_(0) = lidarPoseMatrix(0, 3);
         this->positionLidar_(1) = lidarPoseMatrix(1, 3);
         this->positionLidar_(2) = lidarPoseMatrix(2, 3);
         this->orientationLidar_ = lidarPoseMatrix.block<3, 3>(0, 0);
-    }
 
-    // 里程计回调函数，处理点云和里程计数据
-    void dynamicDetector::lidarOdomCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const nav_msgs::OdometryConstPtr& odom){
-        // 用于可视化
-        this->hasSensorPose_ = true ;
-        this->latestCloud_ = cloudMsg;
-
-        // 局部点云
+        // 将ROS点云消息转换为PCL点云格式
         pcl::PointCloud<pcl::PointXYZ>::Ptr tempCloud (new pcl::PointCloud<pcl::PointXYZ>());
         pcl::fromROSMsg(*cloudMsg, *tempCloud);
 
-        // 滤波和降采样点云
-        // 创建一个滤波后的点云指针来存储中间结果
-        pcl::PointCloud<pcl::PointXYZ>::Ptr filteredCloud (new pcl::PointCloud<pcl::PointXYZ>());
-
-        // 应用直通滤波器来限制X、Y、Z轴上的局部传感器范围内的点
-        pcl::PassThrough<pcl::PointXYZ> pass;
-
-        // X轴滤波
-        pass.setInputCloud(tempCloud);
-        pass.setFilterFieldName("x");
-        pass.setFilterLimits(-this->localLidarRange_.x(), this->localLidarRange_.x());
-        pass.filter(*filteredCloud);
-
-        // Y轴滤波
-        pass.setInputCloud(filteredCloud);
-        pass.setFilterFieldName("y");
-        pass.setFilterLimits(-this->localLidarRange_.y(), this->localLidarRange_.y());
-        pass.filter(*filteredCloud);
-
-        int sigma = this->gaussianDownSampleRate_;
-
+        // --- 优化：一次性滤波（X、Y范围）并进行均匀密度降采样 ---
         pcl::PointCloud<pcl::PointXYZ>::Ptr preTransformCloud(new pcl::PointCloud<pcl::PointXYZ>());
-        preTransformCloud->reserve(filteredCloud->size());
+        preTransformCloud->reserve(tempCloud->size() / 3); // 预分配内存，估计保留1/3的点
 
-        for (pcl::PointXYZ &pt : filteredCloud->points) {
-            double dist = pow(pow(pt.x, 2) + pow(pt.y, 2), 0.5);
-            double p = std::exp(-(dist * dist) / (2 * sigma * sigma));
-
-            double r = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-            if (r < p) {
+        // 均匀密度降采样策略：使用平滑的S型曲线
+        // 目标是使检测范围内的点云密度分布均匀，避免近处过密、远处过疏
+        double characteristic_dist = static_cast<double>(this->gaussianDownSampleRate_);
+        double x_max = this->localLidarRange_.x();
+        double y_max = this->localLidarRange_.y();
+        double max_range = std::sqrt(x_max * x_max + y_max * y_max); // 检测最大距离
+        
+        for (const pcl::PointXYZ &pt : tempCloud->points) {
+            // 先做范围检查（最快的操作）
+            if (std::abs(pt.x) > x_max || std::abs(pt.y) > y_max) {
+                continue;
+            }
+            
+            // 计算点到传感器的距离
+            double dist = std::sqrt(pt.x * pt.x + pt.y * pt.y);
+            
+            // 使用平滑的S型曲线计算采样概率
+            // 采用 tanh 函数实现平滑过渡
+            double normalized_dist = (dist - characteristic_dist) / characteristic_dist;
+            
+            // tanh函数：从-1平滑过渡到+1
+            // 映射到采样率：从0.3平滑增长到0.8
+            double tanh_value = std::tanh(normalized_dist);
+            double sampling_prob = 0.50 + 0.25 * tanh_value;
+            // dist=0时 prob≈0.35, dist=characteristic_dist时 prob=0.55, dist→∞时 prob≈0.80
+            
+            // 确保概率在合理范围内
+            sampling_prob = std::max(0.20, std::min(sampling_prob, 0.85));
+            
+            double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
+            if (r < sampling_prob) {
                 preTransformCloud->push_back(pt);
             }
         }
 
-        // 变换
+        // --- 坐标变换 ---
         Eigen::Affine3d transform = Eigen::Affine3d::Identity();
         transform.linear() = this->orientationLidar_;
         transform.translation() = this->positionLidar_;
 
-        // 地图坐标系下的点云
-        // 创建一个空的点云来存储变换后的数据
         pcl::PointCloud<pcl::PointXYZ>::Ptr transformedCloud (new pcl::PointCloud<pcl::PointXYZ>());
-
-        // 应用变换
         pcl::transformPointCloud(*preTransformCloud, *transformedCloud, transform);
 
-        // 过滤天花板和地面
+        // --- 过滤地面和天花板（在变换后进行，避免重复操作） ---
         pcl::PointCloud<pcl::PointXYZ>::Ptr groundRoofFilterCloud (new pcl::PointCloud<pcl::PointXYZ>());
-        pass.setInputCloud(transformedCloud);
-        pass.setFilterFieldName("z");
-        pass.setFilterLimits(this->groundHeight_, this->roofHeight_);
-        pass.filter(*groundRoofFilterCloud);
-
-        pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud = groundRoofFilterCloud;
-        // 创建体素网格滤波器对象
-        pcl::VoxelGrid<pcl::PointXYZ> sor;
-        sor.setInputCloud(groundRoofFilterCloud);
-
-        // 设置体素大小（叶子大小）
-        sor.setLeafSize(0.1f, 0.1f, 0.1f); 
-
-        // 如果降采样后的点云点数仍然过多，则进一步增大体素大小来减少点数
-        while (int(downsampledCloud->size()) > this->downSampleThresh_) {
-            double leafSize = sor.getLeafSize().x() * 1.1f; // 增加叶子大小以减少点数
-            sor.setLeafSize(leafSize, leafSize, leafSize);
-            sor.filter(*downsampledCloud);
+        groundRoofFilterCloud->reserve(transformedCloud->size());
+        
+        for (const pcl::PointXYZ &pt : transformedCloud->points) {
+            if (pt.z >= this->groundHeight_ && pt.z <= this->roofHeight_) {
+                groundRoofFilterCloud->push_back(pt);
+            }
         }
 
+        // --- 空间自适应体素网格降采样 ---
+        pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud (new pcl::PointCloud<pcl::PointXYZ>());
+        
+        if (groundRoofFilterCloud->size() > this->downSampleThresh_) {
+            // 根据点云密度自适应调整体素大小
+            double density_ratio = static_cast<double>(groundRoofFilterCloud->size()) / static_cast<double>(this->downSampleThresh_);
+            float adaptive_leaf_size = 0.1f * std::sqrt(density_ratio);
+            adaptive_leaf_size = std::max(0.08f, std::min(adaptive_leaf_size, 0.3f)); // 限制在合理范围内
+            
+            pcl::VoxelGrid<pcl::PointXYZ> sor;
+            sor.setInputCloud(groundRoofFilterCloud);
+            sor.setLeafSize(adaptive_leaf_size, adaptive_leaf_size, adaptive_leaf_size);
+            sor.filter(*downsampledCloud);
+        } else {
+            downsampledCloud = groundRoofFilterCloud;
+        }
+
+        // 存储处理后的激光雷达点云
         this->lidarCloud_ = downsampledCloud;
+        
+        // 将处理后的点云发布出去，用于可视化
         sensor_msgs::PointCloud2 outputCloud;
-        pcl::toROSMsg(*this->lidarCloud_, outputCloud); // 转换为ROS消息
-        outputCloud.header.frame_id = "map";    // 设置坐标系
+        pcl::toROSMsg(*this->lidarCloud_, outputCloud);
+        outputCloud.header.frame_id = "map";
+        outputCloud.header.stamp = cloudMsg->header.stamp;
         this->downSamplePointsPub_.publish(outputCloud);
         
-        // 存储当前位置和姿态
+        // [Performance Timing] 输出耗时
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points: %lu -> %lu", 
+                         this->hint_.c_str(), duration.count() / 1000.0, 
+                         tempCloud->size(), this->lidarCloud_->size());
+    }
+
+    // 里程计回调函数，处理点云和里程计数据
+    void dynamicDetector::lidarOdomCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const nav_msgs::OdometryConstPtr& odom){
+        // [Performance Timing] 测量回调函数耗时
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
+        // 用于可视化
+        this->hasSensorPose_ = true ;
+        this->latestCloud_ = cloudMsg;
+
+        // --- 提前更新位姿信息 ---
         Eigen::Matrix4d lidarPoseMatrix;
         this->getLidarPose(odom, lidarPoseMatrix);
 
         this->position_(0) = odom->pose.pose.position.x;
         this->position_(1) = odom->pose.pose.position.y;
         this->position_(2) = odom->pose.pose.position.z;
-        Eigen::Quaterniond quat;
-        quat = Eigen::Quaterniond(odom->pose.pose.orientation.w, odom->pose.pose.orientation.x, odom->pose.pose.orientation.y, odom->pose.pose.orientation.z);
-        Eigen::Matrix3d rot = quat.toRotationMatrix();
-        this->orientation_ = rot;
+        Eigen::Quaterniond quat(odom->pose.pose.orientation.w, odom->pose.pose.orientation.x, 
+                                odom->pose.pose.orientation.y, odom->pose.pose.orientation.z);
+        this->orientation_ = quat.toRotationMatrix();
 
         this->positionLidar_(0) = lidarPoseMatrix(0, 3);
         this->positionLidar_(1) = lidarPoseMatrix(1, 3);
         this->positionLidar_(2) = lidarPoseMatrix(2, 3);
         this->orientationLidar_ = lidarPoseMatrix.block<3, 3>(0, 0);
+
+        // 局部点云转换
+        pcl::PointCloud<pcl::PointXYZ>::Ptr tempCloud (new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::fromROSMsg(*cloudMsg, *tempCloud);
+
+        // --- 优化：一次性滤波（X、Y范围）并进行均匀密度降采样 ---
+        pcl::PointCloud<pcl::PointXYZ>::Ptr preTransformCloud(new pcl::PointCloud<pcl::PointXYZ>());
+        preTransformCloud->reserve(tempCloud->size() / 3); // 预分配内存，估计保留1/3的点
+
+        // 均匀密度降采样策略：使用平滑的S型曲线
+        // 目标是使检测范围内的点云密度分布均匀，避免近处过密、远处过疏
+        double characteristic_dist = static_cast<double>(this->gaussianDownSampleRate_);
+        double x_max = this->localLidarRange_.x();
+        double y_max = this->localLidarRange_.y();
+        double max_range = std::sqrt(x_max * x_max + y_max * y_max); // 检测最大距离
+        
+        for (const pcl::PointXYZ &pt : tempCloud->points) {
+            // 先做范围检查（最快的操作）
+            if (std::abs(pt.x) > x_max || std::abs(pt.y) > y_max) {
+                continue;
+            }
+            
+            // 计算点到传感器的距离
+            double dist = std::sqrt(pt.x * pt.x + pt.y * pt.y);
+            
+            // 使用平滑的S型曲线计算采样概率
+            // 采用 tanh 函数实现平滑过渡
+            double normalized_dist = (dist - characteristic_dist) / characteristic_dist;
+            
+            // tanh函数：从-1平滑过渡到+1
+            // 映射到采样率：从0.3平滑增长到0.8
+            double tanh_value = std::tanh(normalized_dist);
+            double sampling_prob = 0.50 + 0.25 * tanh_value;
+            // dist=0时 prob≈0.35, dist=characteristic_dist时 prob=0.55, dist→∞时 prob≈0.80
+            
+            // 确保概率在合理范围内
+            sampling_prob = std::max(0.20, std::min(sampling_prob, 0.85));
+            
+            double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
+            if (r < sampling_prob) {
+                preTransformCloud->push_back(pt);
+            }
+        }
+
+        // --- 坐标变换 ---
+        Eigen::Affine3d transform = Eigen::Affine3d::Identity();
+        transform.linear() = this->orientationLidar_;
+        transform.translation() = this->positionLidar_;
+
+        pcl::PointCloud<pcl::PointXYZ>::Ptr transformedCloud (new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::transformPointCloud(*preTransformCloud, *transformedCloud, transform);
+
+        // --- 过滤地面和天花板（在变换后进行，避免重复操作） ---
+        pcl::PointCloud<pcl::PointXYZ>::Ptr groundRoofFilterCloud (new pcl::PointCloud<pcl::PointXYZ>());
+        groundRoofFilterCloud->reserve(transformedCloud->size());
+        
+        for (const pcl::PointXYZ &pt : transformedCloud->points) {
+            if (pt.z >= this->groundHeight_ && pt.z <= this->roofHeight_) {
+                groundRoofFilterCloud->push_back(pt);
+            }
+        }
+
+        // --- 空间自适应体素网格降采样 ---
+        pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud (new pcl::PointCloud<pcl::PointXYZ>());
+        
+        if (groundRoofFilterCloud->size() > this->downSampleThresh_) {
+            // 根据点云密度自适应调整体素大小
+            double density_ratio = static_cast<double>(groundRoofFilterCloud->size()) / static_cast<double>(this->downSampleThresh_);
+            float adaptive_leaf_size = 0.1f * std::sqrt(density_ratio);
+            adaptive_leaf_size = std::max(0.08f, std::min(adaptive_leaf_size, 0.3f)); // 限制在合理范围内
+            
+            pcl::VoxelGrid<pcl::PointXYZ> sor;
+            sor.setInputCloud(groundRoofFilterCloud);
+            sor.setLeafSize(adaptive_leaf_size, adaptive_leaf_size, adaptive_leaf_size);
+            sor.filter(*downsampledCloud);
+        } else {
+            downsampledCloud = groundRoofFilterCloud;
+        }
+
+        // 存储处理后的点云
+        this->lidarCloud_ = downsampledCloud;
+        
+        // 发布降采样后的点云
+        sensor_msgs::PointCloud2 outputCloud;
+        pcl::toROSMsg(*this->lidarCloud_, outputCloud);
+        outputCloud.header.frame_id = "map";
+        outputCloud.header.stamp = cloudMsg->header.stamp;
+        this->downSamplePointsPub_.publish(outputCloud);
+        
+        // [Performance Timing] 输出耗时
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        ROS_INFO_THROTTLE(1.0, "%s: lidarOdomCB took %.3f ms, points: %lu -> %lu", 
+                         this->hint_.c_str(), duration.count() / 1000.0,
+                         tempCloud->size(), this->lidarCloud_->size());
     }
 
     // 激光雷达检测定时器回调函数
     void dynamicDetector::lidarDetectionCB(const ros::TimerEvent&){
+        // // [Performance Timing] 测量回调函数耗时
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
         this->lidarDetect();
         this->newDetectFlag_ = true; // get a new detection
+        
+        // // [Performance Timing] 输出耗时
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
     }
 
     // 跟踪定时器回调函数
     void dynamicDetector::trackingCB(const ros::TimerEvent&){
+        // // [Performance Timing] 测量回调函数耗时
+        // auto start_time = std::chrono::high_resolution_clock::now();
+        
         // 数据关联线程
         std::vector<int> bestMatch; // 存储当前检测与历史障碍物的匹配索引。
         this->boxAssociation(bestMatch); // 执行边界框关联。
@@ -735,10 +807,18 @@ namespace onboardDetector{
             this->pcHist_.clear();
             this->pcCenterHist_.clear();
         }
+        
+        // // [Performance Timing] 输出耗时
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: trackingCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
     }
 
     // 分类定时器回调函数
     void dynamicDetector::classificationCB(const ros::TimerEvent&){
+        // // [Performance Timing] 测量回调函数耗时
+        // auto start_time = std::chrono::high_resolution_clock::now();
+        
         // 创建一个临时向量来存储当前帧检测到的动态边界框
         std::vector<onboardDetector::box3D> dynamicBBoxesTemp;
 
@@ -899,10 +979,18 @@ namespace onboardDetector{
 
         // 更新最终的动态障碍物列表
         this->dynamicBBoxes_ = dynamicBBoxesTemp;
+        
+        // // [Performance Timing] 输出耗时
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: classificationCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
     }
 
     // 可视化定时器回调函数
     void dynamicDetector::visCB(const ros::TimerEvent&){
+        // // [Performance Timing] 测量回调函数耗时
+        // auto start_time = std::chrono::high_resolution_clock::now();
+        
         //----------------------------障碍物检测阶段----------------------------------------
         // 从原始（未降采样）的激光雷达数据中提取并发布动态点云，以获得更密集的视觉效果
         this->publishRawDynamicPoints();
@@ -931,6 +1019,10 @@ namespace onboardDetector{
         this->getDynamicPc(dynamicPoints);
         this->publishPoints(dynamicPoints, this->dynamicPointsPub_);
         
+        // // [Performance Timing] 输出耗时
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: visCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
     }
 
 
@@ -1827,4 +1919,80 @@ namespace onboardDetector{
             }
         }
 	}
+
+    // 将Livox CustomMsg格式转换为PointCloud2格式
+    void dynamicDetector::convertCustomMsgToPointCloud2(const livox_ros_driver2::CustomMsgConstPtr& customMsg, sensor_msgs::PointCloud2& cloud){
+        // auto start_time = std::chrono::high_resolution_clock::now();
+        
+        // 设置PointCloud2的基本信息
+        cloud.header = customMsg->header;
+        cloud.height = 1;
+        cloud.width = customMsg->point_num;
+        cloud.is_bigendian = false;
+        cloud.is_dense = false;
+        
+        // 定义PointCloud2的字段
+        sensor_msgs::PointCloud2Modifier modifier(cloud);
+        modifier.setPointCloud2FieldsByString(1, "xyz");
+        modifier.resize(customMsg->point_num);
+        
+        // 创建迭代器访问xyz字段
+        sensor_msgs::PointCloud2Iterator<float> iter_x(cloud, "x");
+        sensor_msgs::PointCloud2Iterator<float> iter_y(cloud, "y");
+        sensor_msgs::PointCloud2Iterator<float> iter_z(cloud, "z");
+        
+        // 将CustomMsg中的点转换到PointCloud2
+        for (size_t i = 0; i < customMsg->points.size(); ++i){
+            const auto& point = customMsg->points[i];
+            *iter_x = point.x;
+            *iter_y = point.y;
+            *iter_z = point.z;
+            ++iter_x;
+            ++iter_y;
+            ++iter_z;
+        }
+        
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: CustomMsg to PointCloud2 conversion took %.3f ms for %u points", 
+        //                   this->hint_.c_str(), duration.count() / 1000.0, customMsg->point_num);
+    }
+
+    // Livox CustomMsg + Pose 回调函数
+    void dynamicDetector::lidarCustomPoseCB(const livox_ros_driver2::CustomMsgConstPtr& customMsg, const geometry_msgs::PoseStampedConstPtr& pose){
+        // // [Performance Timing] 测量回调函数耗时
+        // auto start_time = std::chrono::high_resolution_clock::now();
+        
+        // 将CustomMsg转换为PointCloud2
+        sensor_msgs::PointCloud2 cloudMsg;
+        this->convertCustomMsgToPointCloud2(customMsg, cloudMsg);
+        
+        // 转换为ConstPtr并调用原有的处理函数
+        sensor_msgs::PointCloud2ConstPtr cloudMsgPtr = boost::make_shared<sensor_msgs::PointCloud2>(cloudMsg);
+        this->lidarPoseCB(cloudMsgPtr, pose);
+        
+        // // [Performance Timing] 输出耗时
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: lidarCustomPoseCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
+    }
+
+    // Livox CustomMsg + Odometry 回调函数
+    void dynamicDetector::lidarCustomOdomCB(const livox_ros_driver2::CustomMsgConstPtr& customMsg, const nav_msgs::OdometryConstPtr& odom){
+        // // [Performance Timing] 测量回调函数耗时
+        // auto start_time = std::chrono::high_resolution_clock::now();
+        
+        // 将CustomMsg转换为PointCloud2
+        sensor_msgs::PointCloud2 cloudMsg;
+        this->convertCustomMsgToPointCloud2(customMsg, cloudMsg);
+        
+        // 转换为ConstPtr并调用原有的处理函数
+        sensor_msgs::PointCloud2ConstPtr cloudMsgPtr = boost::make_shared<sensor_msgs::PointCloud2>(cloudMsg);
+        this->lidarOdomCB(cloudMsgPtr, odom);
+        
+        // // [Performance Timing] 输出耗时
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: lidarCustomOdomCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
+    }
 }
