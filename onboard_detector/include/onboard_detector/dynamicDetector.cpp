@@ -124,6 +124,24 @@ namespace onboardDetector{
             std::cout << this->hint_ << ": Roof height is set to: " << this->roofHeight_ << std::endl;
         }
 
+        // lidar detection range
+        std::vector<double> detectionRange;
+        if (not this->nh_.getParam(this->ns_ + "/lidar_detection_range", detectionRange)){
+            this->localLidarRange_ = Eigen::Vector3d(10.0, 10.0, 3.0);
+            std::cout << this->hint_ << ": No lidar detection range parameter. Use default: [10.0, 10.0, 3.0]." << std::endl;
+        }
+        else{
+            if (detectionRange.size() == 3){
+                this->localLidarRange_ = Eigen::Vector3d(detectionRange[0], detectionRange[1], detectionRange[2]);
+                std::cout << this->hint_ << ": Lidar detection range is set to: [" << this->localLidarRange_.x() << ", " 
+                     << this->localLidarRange_.y() << ", " << this->localLidarRange_.z() << "]" << std::endl;
+            }
+            else{
+                this->localLidarRange_ = Eigen::Vector3d(10.0, 10.0, 3.0);
+                std::cout << this->hint_ << ": Invalid lidar detection range size. Use default: [10.0, 10.0, 3.0]." << std::endl;
+            }
+        }
+
         // --------------------------------------激光DBSCAN聚类参数---------------------------------------------------------
         // lidar dbscan min points
         if (not this->nh_.getParam(this->ns_ + "/lidar_DBSCAN_min_points", this->lidarDBMinPoints_)){
@@ -141,6 +159,24 @@ namespace onboardDetector{
         }
         else{
             cout << this->hint_ << ": Lidar DBSCAN epsilon is set to: " << this->lidarDBEpsilon_ << endl;
+        }
+
+        // lidar dbscan use adaptive epsilon
+        if (not this->nh_.getParam(this->ns_ + "/lidar_DBSCAN_use_adaptive", this->lidarDBUseAdaptive_)){
+            this->lidarDBUseAdaptive_ = false;
+            cout << this->hint_ << ": No lidar DBSCAN use adaptive parameter. Use default: false." << endl;
+        }
+        else{
+            cout << this->hint_ << ": Lidar DBSCAN use adaptive is set to: " << (this->lidarDBUseAdaptive_ ? "true" : "false") << endl;
+        }
+
+        // lidar dbscan distance scale for adaptive epsilon
+        if (not this->nh_.getParam(this->ns_ + "/lidar_DBSCAN_distance_scale", this->lidarDBDistanceScale_)){
+            this->lidarDBDistanceScale_ = 0.05;
+            cout << this->hint_ << ": No lidar DBSCAN distance scale parameter. Use default: 0.05." << endl;
+        }
+        else{
+            cout << this->hint_ << ": Lidar DBSCAN distance scale is set to: " << this->lidarDBDistanceScale_ << endl;
         }
         
         // lidar points downsample threshold
@@ -370,6 +406,49 @@ namespace onboardDetector{
             }
             std::cout << "]." << std::endl;
         }
+
+        //-----------------------------------------物体分类参数--------------------------------------------------------------
+        // 人的分类阈值
+        std::vector<double> classifyHumanThresh;
+        if (not this->nh_.getParam(this->ns_ + "/classify_human_threshold", classifyHumanThresh)){
+            this->classifyHumanZWidthRatio_ = 2.0;
+            this->classifyHumanCentroidZRatio_ = 0.5;
+            ROS_WARN_STREAM(this->hint_ << " No classify_human_threshold param. Use default: [2.0, 0.5]");
+        }
+        else{
+            this->classifyHumanZWidthRatio_ = classifyHumanThresh[0];
+            this->classifyHumanCentroidZRatio_ = classifyHumanThresh[1];
+            ROS_INFO_STREAM(this->hint_ << " classify_human_threshold: [" << this->classifyHumanZWidthRatio_ 
+                           << ", " << this->classifyHumanCentroidZRatio_ << "]");
+        }
+
+        // 车的分类阈值
+        std::vector<double> classifyVehicleThresh;
+        if (not this->nh_.getParam(this->ns_ + "/classify_vehicle_threshold", classifyVehicleThresh)){
+            this->classifyVehicleXYWidthRatio_ = 1.5;
+            this->classifyVehicleCentroidZRatio_ = 0.8;
+            ROS_WARN_STREAM(this->hint_ << " No classify_vehicle_threshold param. Use default: [1.5, 0.8]");
+        }
+        else{
+            this->classifyVehicleXYWidthRatio_ = classifyVehicleThresh[0];
+            this->classifyVehicleCentroidZRatio_ = classifyVehicleThresh[1];
+            ROS_INFO_STREAM(this->hint_ << " classify_vehicle_threshold: [" << this->classifyVehicleXYWidthRatio_ 
+                           << ", " << this->classifyVehicleCentroidZRatio_ << "]");
+        }
+
+        // 无人机的分类阈值
+        std::vector<double> classifyUAVThresh;
+        if (not this->nh_.getParam(this->ns_ + "/classify_uav_threshold", classifyUAVThresh)){
+            this->classifyUAVMaxSize_ = 0.6;
+            this->classifyUAVCentroidZRatio_ = 1.2;
+            ROS_WARN_STREAM(this->hint_ << " No classify_uav_threshold param. Use default: [0.6, 1.2]");
+        }
+        else{
+            this->classifyUAVMaxSize_ = classifyUAVThresh[0];
+            this->classifyUAVCentroidZRatio_ = classifyUAVThresh[1];
+            ROS_INFO_STREAM(this->hint_ << " classify_uav_threshold: [" << this->classifyUAVMaxSize_ 
+                           << ", " << this->classifyUAVCentroidZRatio_ << "]");
+        }
     }
 
     void dynamicDetector::registerPub(){
@@ -532,7 +611,7 @@ namespace onboardDetector{
     //转换点云格式，滤波一定范围内的点
     void dynamicDetector::lidarPoseCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const geometry_msgs::PoseStampedConstPtr& pose){
         // [Performance Timing] 测量回调函数耗时
-        auto start_time = std::chrono::high_resolution_clock::now();
+        // auto start_time = std::chrono::high_resolution_clock::now();
         
         // 仅用于可视化，存储最新的原始点云消息
         this->hasSensorPose_ = true ;
@@ -562,41 +641,36 @@ namespace onboardDetector{
 
         // --- 优化：一次性滤波（X、Y范围）并进行均匀密度降采样 ---
         pcl::PointCloud<pcl::PointXYZ>::Ptr preTransformCloud(new pcl::PointCloud<pcl::PointXYZ>());
-        preTransformCloud->reserve(tempCloud->size() / 3); // 预分配内存，估计保留1/3的点
+        preTransformCloud->reserve(tempCloud->size()); // 预分配内存，估计保留1/3的点
 
-        // 均匀密度降采样策略：使用平滑的S型曲线
-        // 目标是使检测范围内的点云密度分布均匀，避免近处过密、远处过疏
         double characteristic_dist = static_cast<double>(this->gaussianDownSampleRate_);
         double x_max = this->localLidarRange_.x();
         double y_max = this->localLidarRange_.y();
-        double max_range = std::sqrt(x_max * x_max + y_max * y_max); // 检测最大距离
         
         for (const pcl::PointXYZ &pt : tempCloud->points) {
             // 先做范围检查（最快的操作）
             if (std::abs(pt.x) > x_max || std::abs(pt.y) > y_max) {
                 continue;
             }
+            preTransformCloud->push_back(pt);
             
-            // 计算点到传感器的距离
-            double dist = std::sqrt(pt.x * pt.x + pt.y * pt.y);
-            
-            // 使用平滑的S型曲线计算采样概率
-            // 采用 tanh 函数实现平滑过渡
-            double normalized_dist = (dist - characteristic_dist) / characteristic_dist;
-            
-            // tanh函数：从-1平滑过渡到+1
-            // 映射到采样率：从0.3平滑增长到0.8
-            double tanh_value = std::tanh(normalized_dist);
-            double sampling_prob = 0.50 + 0.25 * tanh_value;
-            // dist=0时 prob≈0.35, dist=characteristic_dist时 prob=0.55, dist→∞时 prob≈0.80
-            
-            // 确保概率在合理范围内
-            sampling_prob = std::max(0.20, std::min(sampling_prob, 0.85));
-            
-            double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
-            if (r < sampling_prob) {
-                preTransformCloud->push_back(pt);
-            }
+            //均匀密度降采样
+            // // 计算点到传感器的距离
+            // double dist = std::sqrt(pt.x * pt.x + pt.y * pt.y);
+            // // 使用平滑的S型曲线计算采样概率
+            // // 采用 tanh 函数实现平滑过渡
+            // double normalized_dist = (dist - characteristic_dist) / characteristic_dist;
+            // // tanh函数：从-1平滑过渡到+1
+            // // 映射到采样率：从0.3平滑增长到0.8
+            // double tanh_value = std::tanh(normalized_dist);
+            // double sampling_prob = 0.50 + 0.25 * tanh_value;
+            // // dist=0时 prob≈0.35, dist=characteristic_dist时 prob=0.55, dist→∞时 prob≈0.80
+            // // 确保概率在合理范围内
+            // sampling_prob = std::max(0.20, std::min(sampling_prob, 0.85));
+            // double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
+            // if (r < sampling_prob) {
+            //     preTransformCloud->push_back(pt);
+            // }
         }
 
         // --- 坐标变换 ---
@@ -617,25 +691,25 @@ namespace onboardDetector{
             }
         }
 
-        // --- 空间自适应体素网格降采样 ---
-        pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud (new pcl::PointCloud<pcl::PointXYZ>());
+        // // --- 空间自适应体素网格降采样 ---
+        // pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud (new pcl::PointCloud<pcl::PointXYZ>());
         
-        if (groundRoofFilterCloud->size() > this->downSampleThresh_) {
-            // 根据点云密度自适应调整体素大小
-            double density_ratio = static_cast<double>(groundRoofFilterCloud->size()) / static_cast<double>(this->downSampleThresh_);
-            float adaptive_leaf_size = 0.1f * std::sqrt(density_ratio);
-            adaptive_leaf_size = std::max(0.08f, std::min(adaptive_leaf_size, 0.3f)); // 限制在合理范围内
+        // if (groundRoofFilterCloud->size() > this->downSampleThresh_) {
+        //     // 根据点云密度自适应调整体素大小
+        //     double density_ratio = static_cast<double>(groundRoofFilterCloud->size()) / static_cast<double>(this->downSampleThresh_);
+        //     float adaptive_leaf_size = 0.1f * std::sqrt(density_ratio);
+        //     adaptive_leaf_size = std::max(0.08f, std::min(adaptive_leaf_size, 0.3f)); // 限制在合理范围内
             
-            pcl::VoxelGrid<pcl::PointXYZ> sor;
-            sor.setInputCloud(groundRoofFilterCloud);
-            sor.setLeafSize(adaptive_leaf_size, adaptive_leaf_size, adaptive_leaf_size);
-            sor.filter(*downsampledCloud);
-        } else {
-            downsampledCloud = groundRoofFilterCloud;
-        }
+        //     pcl::VoxelGrid<pcl::PointXYZ> sor;
+        //     sor.setInputCloud(groundRoofFilterCloud);
+        //     sor.setLeafSize(adaptive_leaf_size, adaptive_leaf_size, adaptive_leaf_size);
+        //     sor.filter(*downsampledCloud);
+        // } else {
+        //     downsampledCloud = groundRoofFilterCloud;
+        // }
 
         // 存储处理后的激光雷达点云
-        this->lidarCloud_ = downsampledCloud;
+        this->lidarCloud_ = groundRoofFilterCloud;
         
         // 将处理后的点云发布出去，用于可视化
         sensor_msgs::PointCloud2 outputCloud;
@@ -645,17 +719,17 @@ namespace onboardDetector{
         this->downSamplePointsPub_.publish(outputCloud);
         
         // [Performance Timing] 输出耗时
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points: %lu -> %lu", 
-                         this->hint_.c_str(), duration.count() / 1000.0, 
-                         tempCloud->size(), this->lidarCloud_->size());
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points: %lu -> %lu", 
+        //                  this->hint_.c_str(), duration.count() / 1000.0, 
+        //                  tempCloud->size(), this->lidarCloud_->size());
     }
 
     // 里程计回调函数，处理点云和里程计数据
     void dynamicDetector::lidarOdomCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const nav_msgs::OdometryConstPtr& odom){
         // [Performance Timing] 测量回调函数耗时
-        auto start_time = std::chrono::high_resolution_clock::now();
+        // auto start_time = std::chrono::high_resolution_clock::now();
         
         // 用于可视化
         this->hasSensorPose_ = true ;
@@ -683,41 +757,36 @@ namespace onboardDetector{
 
         // --- 优化：一次性滤波（X、Y范围）并进行均匀密度降采样 ---
         pcl::PointCloud<pcl::PointXYZ>::Ptr preTransformCloud(new pcl::PointCloud<pcl::PointXYZ>());
-        preTransformCloud->reserve(tempCloud->size() / 3); // 预分配内存，估计保留1/3的点
+        // 范围过滤后保留的点数不确定，预分配为原始点云大小以避免多次重新分配
+        preTransformCloud->reserve(tempCloud->size());
 
-        // 均匀密度降采样策略：使用平滑的S型曲线
-        // 目标是使检测范围内的点云密度分布均匀，避免近处过密、远处过疏
         double characteristic_dist = static_cast<double>(this->gaussianDownSampleRate_);
         double x_max = this->localLidarRange_.x();
         double y_max = this->localLidarRange_.y();
-        double max_range = std::sqrt(x_max * x_max + y_max * y_max); // 检测最大距离
         
         for (const pcl::PointXYZ &pt : tempCloud->points) {
             // 先做范围检查（最快的操作）
             if (std::abs(pt.x) > x_max || std::abs(pt.y) > y_max) {
                 continue;
             }
+            preTransformCloud->push_back(pt);
             
-            // 计算点到传感器的距离
-            double dist = std::sqrt(pt.x * pt.x + pt.y * pt.y);
-            
-            // 使用平滑的S型曲线计算采样概率
-            // 采用 tanh 函数实现平滑过渡
-            double normalized_dist = (dist - characteristic_dist) / characteristic_dist;
-            
-            // tanh函数：从-1平滑过渡到+1
-            // 映射到采样率：从0.3平滑增长到0.8
-            double tanh_value = std::tanh(normalized_dist);
-            double sampling_prob = 0.50 + 0.25 * tanh_value;
-            // dist=0时 prob≈0.35, dist=characteristic_dist时 prob=0.55, dist→∞时 prob≈0.80
-            
-            // 确保概率在合理范围内
-            sampling_prob = std::max(0.20, std::min(sampling_prob, 0.85));
-            
-            double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
-            if (r < sampling_prob) {
-                preTransformCloud->push_back(pt);
-            }
+            // // 计算点到传感器的距离
+            // double dist = std::sqrt(pt.x * pt.x + pt.y * pt.y);
+            // // 使用平滑的S型曲线计算采样概率
+            // // 采用 tanh 函数实现平滑过渡
+            // double normalized_dist = (dist - characteristic_dist) / characteristic_dist;
+            // // tanh函数：从-1平滑过渡到+1
+            // // 映射到采样率：从0.3平滑增长到0.8
+            // double tanh_value = std::tanh(normalized_dist);
+            // double sampling_prob = 0.50 + 0.25 * tanh_value;
+            // // dist=0时 prob≈0.35, dist=characteristic_dist时 prob=0.55, dist→∞时 prob≈0.80
+            // // 确保概率在合理范围内
+            // sampling_prob = std::max(0.20, std::min(sampling_prob, 0.85));
+            // double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
+            // if (r < sampling_prob) {
+            //     preTransformCloud->push_back(pt);
+            // }
         }
 
         // --- 坐标变换 ---
@@ -738,25 +807,24 @@ namespace onboardDetector{
             }
         }
 
-        // --- 空间自适应体素网格降采样 ---
-        pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud (new pcl::PointCloud<pcl::PointXYZ>());
-        
-        if (groundRoofFilterCloud->size() > this->downSampleThresh_) {
-            // 根据点云密度自适应调整体素大小
-            double density_ratio = static_cast<double>(groundRoofFilterCloud->size()) / static_cast<double>(this->downSampleThresh_);
-            float adaptive_leaf_size = 0.1f * std::sqrt(density_ratio);
-            adaptive_leaf_size = std::max(0.08f, std::min(adaptive_leaf_size, 0.3f)); // 限制在合理范围内
+        // // --- 空间自适应体素网格降采样 ---
+        // pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud (new pcl::PointCloud<pcl::PointXYZ>());
+        // if (groundRoofFilterCloud->size() > this->downSampleThresh_) {
+        //     // 根据点云密度自适应调整体素大小
+        //     double density_ratio = static_cast<double>(groundRoofFilterCloud->size()) / static_cast<double>(this->downSampleThresh_);
+        //     float adaptive_leaf_size = 0.1f * std::sqrt(density_ratio);
+        //     adaptive_leaf_size = std::max(0.08f, std::min(adaptive_leaf_size, 0.3f)); // 限制在合理范围内
             
-            pcl::VoxelGrid<pcl::PointXYZ> sor;
-            sor.setInputCloud(groundRoofFilterCloud);
-            sor.setLeafSize(adaptive_leaf_size, adaptive_leaf_size, adaptive_leaf_size);
-            sor.filter(*downsampledCloud);
-        } else {
-            downsampledCloud = groundRoofFilterCloud;
-        }
+        //     pcl::VoxelGrid<pcl::PointXYZ> sor;
+        //     sor.setInputCloud(groundRoofFilterCloud);
+        //     sor.setLeafSize(adaptive_leaf_size, adaptive_leaf_size, adaptive_leaf_size);
+        //     sor.filter(*downsampledCloud);
+        // } else {
+        //     downsampledCloud = groundRoofFilterCloud;
+        // }
 
         // 存储处理后的点云
-        this->lidarCloud_ = downsampledCloud;
+        this->lidarCloud_ = groundRoofFilterCloud;
         
         // 发布降采样后的点云
         sensor_msgs::PointCloud2 outputCloud;
@@ -766,25 +834,25 @@ namespace onboardDetector{
         this->downSamplePointsPub_.publish(outputCloud);
         
         // [Performance Timing] 输出耗时
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        ROS_INFO_THROTTLE(1.0, "%s: lidarOdomCB took %.3f ms, points: %lu -> %lu", 
-                         this->hint_.c_str(), duration.count() / 1000.0,
-                         tempCloud->size(), this->lidarCloud_->size());
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: lidarOdomCB took %.3f ms, points: %lu -> %lu", 
+        //                  this->hint_.c_str(), duration.count() / 1000.0,
+        //                  tempCloud->size(), this->lidarCloud_->size());
     }
 
     // 激光雷达检测定时器回调函数
     void dynamicDetector::lidarDetectionCB(const ros::TimerEvent&){
         // // [Performance Timing] 测量回调函数耗时
-        auto start_time = std::chrono::high_resolution_clock::now();
+        // auto start_time = std::chrono::high_resolution_clock::now();
         
         this->lidarDetect();
         this->newDetectFlag_ = true; // get a new detection
         
         // // [Performance Timing] 输出耗时
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
     }
 
     // 跟踪定时器回调函数
@@ -1025,9 +1093,50 @@ namespace onboardDetector{
         // ROS_INFO_THROTTLE(1.0, "%s: visCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
     }
 
+    /*!
+     * @brief 对单个边界框进行物体分类
+     * @param bbox 待分类的边界框（引用传递，会修改其分类标志）
+     * @param centroid 点云质心坐标 [x, y, z, 1]
+     * 分类规则：
+     * - 人：z轴宽度 >= x/y轴最小值的阈值倍数 且 质心z < z轴宽度的阈值倍数
+     * - 车：x/y轴最大宽度 >= z轴的阈值倍数 且 质心z < z轴宽度的阈值倍数
+     * - 无人机：x/y/z轴宽度都 < 阈值 且 质心z > z轴宽度的阈值倍数
+     * - 其他：不满足以上条件
+     */
+    void dynamicDetector::classifyBox(onboardDetector::box3D& bbox, const Eigen::Vector4f& centroid){
+        double x_width = bbox.x_width;
+        double y_width = bbox.y_width;
+        double z_width = bbox.z_width;
+        double centroid_z = centroid(2);
+        
+        // 计算x、y轴的最小值和最大值
+        double xy_min = std::min(x_width, y_width);
+        double xy_max = std::max(x_width, y_width);
+
+        // 分类为人：z轴宽度大，质心靠下（站立的人形）
+        if (z_width >= xy_min * this->classifyHumanZWidthRatio_ && 
+            centroid_z < z_width * this->classifyHumanCentroidZRatio_) {
+            bbox.is_human = true;
+        }
+        // 分类为车：x/y轴宽度大，质心靠下（扁平的车形）
+        else if (xy_max >= z_width * this->classifyVehicleXYWidthRatio_ && 
+                 centroid_z < z_width * this->classifyVehicleCentroidZRatio_) {
+            bbox.is_che = true;
+        }
+        // 分类为无人机：体积小，质心靠上（悬浮在空中）
+        else if (x_width < this->classifyUAVMaxSize_ && 
+                 y_width < this->classifyUAVMaxSize_ && 
+                 z_width < this->classifyUAVMaxSize_ && 
+                 centroid_z > z_width * this->classifyUAVCentroidZRatio_) {
+            bbox.is_uav = true;
+        }
+        // 其他情况
+        else {
+            bbox.is_else = true;
+        }
+    }
 
     /*!
-     * 使用激光雷达数据进行动态障碍物检测
      * 该函数通过激光雷达点云数据检测环境中的障碍物。它会初始化激光雷达检测器（如果尚未初始化），
      * 执行DBSCAN聚类算法来识别点云中的不同对象，并过滤掉尺寸过大的边界框。
      * 最终结果保存在lidarBBoxes_和lidarClusters_成员变量中。
@@ -1036,7 +1145,7 @@ namespace onboardDetector{
         // 检查激光雷达检测器是否已初始化，如果没有则创建并设置参数
         if (this->lidarDetector_ == NULL){
             this->lidarDetector_.reset(new lidarDetector());
-            this->lidarDetector_->setParams(this->lidarDBEpsilon_, this->lidarDBMinPoints_);
+            this->lidarDetector_->setParams(this->lidarDBEpsilon_, this->lidarDBMinPoints_, this->lidarDBUseAdaptive_, this->lidarDBDistanceScale_);
         }
 
         // 检查是否有激光雷达点云数据
@@ -1051,13 +1160,17 @@ namespace onboardDetector{
             std::vector<onboardDetector::box3D> lidarBBoxesRaw = this->lidarDetector_->getBBoxes();
             std::vector<onboardDetector::box3D> lidarBBoxesFiltered;
             
-            // 遍历所有边界框，过滤掉尺寸过大的对象
+            // 遍历所有边界框，过滤掉尺寸过大的对象并进行分类
             for (int i=0; i<int(lidarBBoxesRaw.size()); ++i){
                 onboardDetector::box3D lidarBBox = lidarBBoxesRaw[i];
                 // 过滤掉尺寸超过阈值的边界框
                 if(lidarBBox.x_width > this->maxObjectSize_(0) || lidarBBox.y_width > this->maxObjectSize_(1) || lidarBBox.z_width > this->maxObjectSize_(2)){
                     continue;
                 }
+                
+                // 对边界框进行分类
+                this->classifyBox(lidarBBox, lidarClustersRaw[i].centroid);
+                
                 lidarBBoxesFiltered.push_back(lidarBBox);
                 lidarClustersFiltered.push_back(lidarClustersRaw[i]);            
             }
@@ -1076,8 +1189,6 @@ namespace onboardDetector{
         //获取激光雷达边界框及其对应的点云簇和特征
         for (size_t i = 0; i < this->lidarBBoxes_.size(); ++i) {
             onboardDetector::box3D lidarBBox = this->lidarBBoxes_[i];
-            
-            // 获取对应的点云簇
             onboardDetector::Cluster cluster = this->lidarClusters_[i];
 
             std::vector<Eigen::Vector3d> pcCluster;
@@ -1085,7 +1196,7 @@ namespace onboardDetector{
                 pcCluster.emplace_back(point.x, point.y, point.z);
             }
 
-            // 提取点云簇的中心
+            // 提取点云簇的质心
             Eigen::Vector3d clusterCenter(cluster.centroid[0], cluster.centroid[1], cluster.centroid[2]);
 
             // 计算点云簇的标准差

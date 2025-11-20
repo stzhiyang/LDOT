@@ -8,12 +8,16 @@ namespace onboardDetector{
     lidarDetector::lidarDetector(){
         this->eps_ = 0.5;
         this->minPts_ = 10;
+        this->useAdaptive_ = false;
+        this->distanceScale_ = 0.05;
         this->cloud_ = pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>());
     }
 
-    void lidarDetector::setParams(double eps, int minPts){
+    void lidarDetector::setParams(double eps, int minPts, bool useAdaptive, double distScale){
         this->eps_ = eps;
         this->minPts_ = minPts;
+        this->useAdaptive_ = useAdaptive;
+        this->distanceScale_ = distScale;
     }
 
     void lidarDetector::getPointcloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud){
@@ -54,7 +58,7 @@ namespace onboardDetector{
         }
 
         // 创建并运行DBSCAN聚类算法
-        DBSCAN dbscan(minPts_, eps_, points);
+        DBSCAN dbscan(minPts_, eps_, points, useAdaptive_, distanceScale_);
         dbscan.run();  // 得到分好类的自定义Points
 
         // 统计聚类数量（查找最大的clusterID）
@@ -70,6 +74,7 @@ namespace onboardDetector{
         std::vector<onboardDetector::Cluster> clustersTemp;
         clustersTemp.resize(clusterNum);
         
+        // 这里说明了clusters_容器中点云簇的序号代表，其放置位置的索引，即按序号放入
         for(size_t i=0; i<dbscan.m_points.size(); ++i){
             if (dbscan.m_points[i].clusterID > 0){
                 pcl::PointXYZ point;
@@ -83,7 +88,8 @@ namespace onboardDetector{
         this->clusters_ = clustersTemp;
 
         // 计算每个聚类的质心、尺寸并构造对应的3D边界框，&是引用，即操作clusters_
-        std::vector<onboardDetector::box3D> bboxesTemp;
+        std::vector<onboardDetector::box3D> bboxesTemp; 
+        //因为是按序号操作clusters_的序号、位置处理的，所以bboxes_与clusters_的成员一一对应
         for(auto& cluster : this->clusters_){
             Eigen::Vector4f centroid;
             pcl::compute3DCentroid(*cluster.points, centroid);

@@ -101,6 +101,8 @@ namespace onboardDetector{
         // 激光雷达DBSCAN聚类参数
         int lidarDBMinPoints_; // 激光雷达DBSCAN的最小点数
         double lidarDBEpsilon_; // 激光雷达DBSCAN的搜索半径
+        bool lidarDBUseAdaptive_; // 是否启用基于距离的自适应DBSCAN
+        double lidarDBDistanceScale_; // 自适应DBSCAN的距离缩放因子
         int gaussianDownSampleRate_; // 高斯降采样率
         int downSampleThresh_; // 降采样后的点云数量阈值
 
@@ -134,13 +136,21 @@ namespace onboardDetector{
         std::vector<Eigen::Vector3d> targetObjectSize_; // 目标物体的典型尺寸
         Eigen::Vector3d maxObjectSize_; // 物体的最大尺寸阈值
 
+        // 分类阈值参数
+        double classifyHumanZWidthRatio_; // 人：z轴宽度 >= x/y轴的倍数
+        double classifyHumanCentroidZRatio_; // 人：质心z高度 < z轴宽度的倍数
+        double classifyVehicleXYWidthRatio_; // 车：x/y轴最大宽度 >= z轴的倍数
+        double classifyVehicleCentroidZRatio_; // 车：质心z高度 < z轴宽度的倍数
+        double classifyUAVMaxSize_; // 无人机：x/y/z轴宽度 < 该值(米)
+        double classifyUAVCentroidZRatio_; // 无人机：质心z高度 > z轴宽度的倍数
+
         // 传感器原始数据
         Eigen::Vector3d position_; // 机器人当前位置
         Eigen::Matrix3d orientation_; // 机器人当前姿态
         Eigen::Vector3d positionLidar_; // 激光雷达当前位置
         Eigen::Matrix3d orientationLidar_; // 激光雷达当前姿态
         bool hasSensorPose_; // 是否已获取到传感器位姿
-        Eigen::Vector3d localLidarRange_ {10.0, 10.0, 5.0}; // 激光雷达局部检测范围
+        Eigen::Vector3d localLidarRange_; // 激光雷达局部检测范围
 
         // 激光雷达处理数据
         sensor_msgs::PointCloud2ConstPtr latestCloud_; // 最新的原始激光雷达消息
@@ -194,6 +204,7 @@ namespace onboardDetector{
 
         // 检测模块函数
         void lidarDetect(); // 执行激光雷达检测
+        void classifyBox(onboardDetector::box3D& bbox, const Eigen::Vector4f& centroid); // 对单个边界框进行分类
 
         // 数据关联与跟踪函数
         void boxAssociation(std::vector<int>& bestMatch); // 边界框数据关联

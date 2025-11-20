@@ -47,6 +47,8 @@ namespace onboardDetector{
         // 激光雷达DBSCAN聚类参数
         double eps_;          // DBSCAN的邻域搜索半径 (epsilon)
         int minPts_;          // DBSCAN形成一个簇所需的最小点数
+        bool useAdaptive_;    // 是否使用基于距离的自适应epsilon
+        double distanceScale_; // 自适应epsilon的距离缩放因子
         double groundHeight_; // 用于过滤地面点的Z轴高度阈值
         double roofHeight_;   // 用于过滤天花板/屋顶点的Z轴高度阈值
         
@@ -55,7 +57,7 @@ namespace onboardDetector{
         lidarDetector();
 
         // 设置DBSCAN聚类算法的参数
-        void setParams(double eps, int minPts);
+        void setParams(double eps, int minPts, bool useAdaptive = false, double distScale = 0.05);
 
         // 获取并设置待处理的输入点云
         void getPointcloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);

@@ -26,11 +26,14 @@ namespace onboardDetector{
 
     class DBSCAN {
     public:    
-        DBSCAN(unsigned int minPts, float eps, vector<Point> points){
+        // DBSCAN构造函数，支持普通和自适应模式
+        DBSCAN(unsigned int minPts, float eps, vector<Point> points, bool useAdaptive = false, float distScale = 0.05){
             m_minPoints = minPts;
-            m_epsilon = eps;
+            m_epsilon = eps;  // 作为基础epsilon
             m_points = points;
             m_pointSize = points.size();
+            m_useAdaptiveEps = useAdaptive;
+            m_distanceScale = distScale;
         }
         ~DBSCAN(){}
 
@@ -38,10 +41,8 @@ namespace onboardDetector{
         vector<int> calculateCluster(Point point);
         int expandCluster(Point point, int clusterID);
         inline double calculateDistance(const Point& pointCore, const Point& pointTarget);
-
-        int getTotalPointSize() {return m_pointSize;}
-        int getMinimumClusterSize() {return m_minPoints;}
-        int getEpsilonSize() {return m_epsilon;}
+        inline double calculateDistanceToOrigin(const Point& point);  // 计算点到原点的距离
+        inline double getAdaptiveEpsilon(const Point& point);  // 获取自适应epsilon
         
     public:
         vector<Point> m_points;
@@ -49,7 +50,9 @@ namespace onboardDetector{
     private:    
         unsigned int m_pointSize;
         unsigned int m_minPoints;
-        float m_epsilon;
+        float m_epsilon;  // 基础epsilon值
+        bool m_useAdaptiveEps;  // 是否使用基于距离的自适应epsilon
+        float m_distanceScale;  // 距离缩放因子，用于计算自适应epsilon
     };
 }
 #endif // DBSCAN_H

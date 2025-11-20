@@ -32,8 +32,14 @@ namespace onboardDetector{
         double Vx=0, Vy=0, Vz=0;
         // 包围框在x, y, z方向的加速度
         double Ax=0, Ay=0, Az=0;
-        // 是否被yolo检测为动态物体 (false: 未被yolo检测为动态, true: 被yolo检测为动态)
+        // 是否为人
         bool is_human=false;
+        // 是否为车
+        bool is_che=false;
+        // 是否为无人机
+        bool is_uav=false;
+        // 其他类别
+        bool is_else=false;
         // 是否被检测为动态物体 (false: 未被检测为动态, true: 被检测为动态)
         bool is_dynamic=false;
         // 强制未来包围框尺寸固定的标志

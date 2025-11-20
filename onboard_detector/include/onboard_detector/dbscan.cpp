@@ -102,11 +102,13 @@ namespace onboardDetector{
         int index = 0;
         vector<Point>::iterator iter;
         vector<int> clusterIndex;
+        // 获取当前点的自适应epsilon值
+        double adaptiveEps = getAdaptiveEpsilon(point);
         // 遍历所有点
         for( iter = m_points.begin(); iter != m_points.end(); ++iter)
         {
             // 如果两个点之间的距离（的平方）小于或等于epsilon（的平方）
-            if ( calculateDistance(point, *iter) <= m_epsilon )
+            if ( calculateDistance(point, *iter) <= adaptiveEps )
             {
                 // 将该点的索引添加到邻域索引列表中
                 clusterIndex.push_back(index);
@@ -120,5 +122,31 @@ namespace onboardDetector{
     inline double DBSCAN::calculateDistance(const Point& pointCore, const Point& pointTarget )
     {
         return pow(pointCore.x - pointTarget.x,2)+pow(pointCore.y - pointTarget.y,2)+pow(pointCore.z - pointTarget.z,2);
+    }
+
+    // 计算点到原点（传感器位置）的距离
+    inline double DBSCAN::calculateDistanceToOrigin(const Point& point)
+    {
+        return sqrt(pow(point.x, 2) + pow(point.y, 2) + pow(point.z, 2));
+    }
+
+    // 获取基于距离的自适应epsilon值
+    // 原理：距离传感器越远的点，点云密度越稀疏，需要更大的epsilon
+    inline double DBSCAN::getAdaptiveEpsilon(const Point& point)
+    {
+        if (!m_useAdaptiveEps) {
+            // 如果不使用自适应epsilon，返回基础epsilon的平方（因为calculateDistance返回距离的平方）
+            return m_epsilon * m_epsilon;
+        }
+        
+        // 计算点到原点的距离
+        double distToOrigin = calculateDistanceToOrigin(point);
+        
+        // 自适应epsilon = 基础epsilon + 距离 * 缩放因子
+        // 这样可以根据点的深度动态调整邻域半径
+        double adaptiveEps = m_epsilon + distToOrigin * m_distanceScale;
+        
+        // 返回平方值，因为calculateDistance返回距离的平方
+        return adaptiveEps * adaptiveEps;
     }
 }
