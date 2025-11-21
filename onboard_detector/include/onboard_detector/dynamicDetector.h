@@ -107,9 +107,10 @@ namespace onboardDetector{
         int downSampleThresh_; // 降采样后的点云数量阈值
 
         // 目标跟踪与数据关联参数
-        double maxMatchRange_; // 数据关联时，目标最大匹配距离
-        double maxMatchSizeRange_; // 数据关联时，目标最大尺寸差异
-        Eigen::VectorXd featureWeights_; // 数据关联时，不同特征的权重
+        double associationGateThresh_; // 数据关联的卡方检验门限阈值
+        double associationPosCostWeight_; // 位置代价的权重
+        double associationSizeCostWeight_; // 尺寸代价的权重
+        double associationStdCostWeight_; // 点云标准差代价的权重
         int histSize_; // 跟踪历史的长度
         int fixSizeHistThresh_; // 固定边界框尺寸的历史长度阈值
         double fixSizeDimThresh_; // 固定边界框尺寸的维度变化阈值
@@ -172,6 +173,7 @@ namespace onboardDetector{
         std::vector<std::deque<onboardDetector::box3D>> boxHist_; // 每个被跟踪物体的边界框历史
         std::vector<std::deque<std::vector<Eigen::Vector3d>>> pcHist_; // 每个被跟踪物体的点云历史
         std::vector<std::deque<Eigen::Vector3d>> pcCenterHist_; // 每个被跟踪物体的点云中心历史
+        std::vector<std::deque<Eigen::Vector3d>> pcStdHist_; // 每个被跟踪物体的点云标准差历史
         std::vector<onboardDetector::kalman_filter> filters_; // 每个被跟踪物体对应的卡尔曼滤波器
 
 
@@ -207,12 +209,12 @@ namespace onboardDetector{
         void classifyBox(onboardDetector::box3D& bbox, const Eigen::Vector4f& centroid); // 对单个边界框进行分类
 
         // 数据关联与跟踪函数
-        void boxAssociation(std::vector<int>& bestMatch); // 边界框数据关联
-        void boxAssociationHelper(std::vector<int>& bestMatch); // 数据关联辅助函数
-        void genFeatHelper(const std::vector<onboardDetector::box3D>& boxes, const std::vector<Eigen::Vector3d>& pcCenters, std::vector<Eigen::VectorXd>& feature); // 生成特征向量
-        void getPrevBBoxes(std::vector<onboardDetector::box3D>& prevBoxes, std::vector<Eigen::Vector3d>& prevPcCenters); // 获取上一帧的边界框
-        void linearProp(std::vector<onboardDetector::box3D>& propedBoxes, std::vector<Eigen::Vector3d>& propedPcCenters); // 线性预测边界框
-        void findBestMatch(const std::vector<onboardDetector::box3D>& prevBBoxes, const std::vector<Eigen::VectorXd>& prevBoxesFeat, const std::vector<onboardDetector::box3D>& propedBoxes, const std::vector<Eigen::VectorXd>& propedBoxesFeat, const std::vector<Eigen::VectorXd>& currBoxesFeat, std::vector<int>& bestMatch); // 寻找最佳匹配
+        void boxAssociation(std::vector<int>& bestMatch); // 边界框数据关联（基于马氏距离和匈牙利算法）
+        double computeMahalanobisDistance(const Eigen::Vector2d& posDiff, const Eigen::Matrix2d& covariance); // 计算马氏距离
+        double computeAssociationCost(const onboardDetector::box3D& predBox, const Eigen::Vector3d& predStd,
+                                      const onboardDetector::box3D& measBox, const Eigen::Vector3d& measStd,
+                                      const Eigen::Matrix2d& covariance); // 计算关联代价
+        void hungarianAlgorithm(const std::vector<std::vector<double>>& costMatrix, std::vector<int>& assignment); // 匈牙利算法
         void kalmanFilterAndUpdateHist(const std::vector<int>& bestMatch); // 卡尔曼滤波与更新历史
         void kalmanFilterMatrixVel(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R); // 设置速度模型KF矩阵
         void kalmanFilterMatrixAcc(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R); // 设置加速度模型KF矩阵

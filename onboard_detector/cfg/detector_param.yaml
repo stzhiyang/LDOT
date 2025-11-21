@@ -41,10 +41,11 @@ classify_vehicle_threshold: [1.5, 0.7] # x/y >= z
 classify_uav_threshold: [0.6, 1.2] # z/y/z <
 
 # 目标跟踪与数据关联
-max_match_range: 0.3 # 前后帧之间目标匹配的最大距离 (米)
-max_size_diff_range: 0.5 # 前后帧之间目标尺寸差异的最大范围 (米)
-# 特征权重, 用于计算匹配代价 [3*位置, 3*尺寸, 3*点云质心]
-feature_weight: [3.0, 3.0, 0.1, 0.5, 0.5, 0.05, 0, 0, 0]
+# 新的数据关联方法：基于马氏距离和匈牙利算法
+association_gate_threshold: 9.21  # 关联门限阈值（卡方分布，自由度3，99%置信度）
+association_pos_cost_weight: 1.0  # 位置代价权重（马氏距离）
+association_size_cost_weight: 0.5 # 尺寸代价权重（归一化差异）
+association_std_cost_weight: 0.3  # 点云标准差代价权重（形状变化）
 history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
 fix_size_history_threshold: 10 # 固定目标尺寸的历史帧数阈值, 当一个目标被连续跟踪超过该帧数后, 其尺寸将被固定
 fix_size_dimension_threshold: 0.4 # 固定目标尺寸的维度比例阈值, 用于判断是否固定尺寸

@@ -78,6 +78,18 @@ namespace onboardDetector{
          * @return 返回该状态的估计值
          */
         double output(int state_index);
+
+        /**
+         * @brief 获取当前状态向量
+         * @return 返回状态向量的常量引用
+         */
+        const MatrixXd& getStates() const { return states; }
+
+        /**
+         * @brief 获取当前状态协方差矩阵
+         * @return 返回协方差矩阵的常量引用
+         */
+        const MatrixXd& getCovariance() const { return P; }
     };
 }
 

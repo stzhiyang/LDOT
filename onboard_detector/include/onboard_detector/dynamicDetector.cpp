@@ -198,42 +198,41 @@ namespace onboardDetector{
         }
 
         // -------------------------------------------目标跟踪与数据关联参数--------------------------------------------------
-        // maximum match range
-        if (not this->nh_.getParam(this->ns_ + "/max_match_range", this->maxMatchRange_)){
-            this->maxMatchRange_ = 0.5;
-            cout << this->hint_ << ": No max match range parameter found. Use default: 0.5m." << endl;
+        // 数据关联门限阈值（基于卡方分布）
+        if (not this->nh_.getParam(this->ns_ + "/association_gate_threshold", this->associationGateThresh_)){
+            this->associationGateThresh_ = 9.21; // 自由度为3的卡方分布，置信度99%
+            cout << this->hint_ << ": No association gate threshold parameter found. Use default: 9.21." << endl;
         }
         else{
-            cout << this->hint_ << ": Max match range is set to: " << this->maxMatchRange_  << "m." << endl;
-        }   
+            cout << this->hint_ << ": Association gate threshold is set to: " << this->associationGateThresh_ << "." << endl;
+        }
 
-        // maximum size difference for matching
-        if (not this->nh_.getParam(this->ns_ + "/max_size_diff_range", this->maxMatchSizeRange_)){
-            this->maxMatchSizeRange_ = 0.5;
-            cout << this->hint_ << ": No max size difference range for matching parameter found. Use default: 0.5m." << endl;
+        // 位置代价权重
+        if (not this->nh_.getParam(this->ns_ + "/association_pos_cost_weight", this->associationPosCostWeight_)){
+            this->associationPosCostWeight_ = 1.0;
+            cout << this->hint_ << ": No position cost weight parameter found. Use default: 1.0." << endl;
         }
         else{
-            cout << this->hint_ << ": Max size difference range for matching is set to: " << this->maxMatchSizeRange_ << "m." << endl;
-        }   
-
-        // feature weight
-        std::vector<double> tempWeights;
-        if (not nh_.getParam(ns_ + "/feature_weight", tempWeights)) {
-            this->featureWeights_ = Eigen::VectorXd(10);
-            this->featureWeights_ << 3.0, 3.0, 0.1, 0.5, 0.5, 0.05, 0, 0, 0;
-            std::cout << this->hint_ << ": No feature weights parameter found. Using default feature weights: [3.0, 3.0, 0.1, 0.5, 0.5, 0.05, 0, 0, 0]." << std::endl;
+            cout << this->hint_ << ": Position cost weight is set to: " << this->associationPosCostWeight_ << "." << endl;
         }
-        else {
-            this->featureWeights_ = Eigen::Map<Eigen::VectorXd>(tempWeights.data(), tempWeights.size());
-            std::cout <<  this->hint_ << ": Feature weights are set to: [";
-            for (size_t i = 0; i < tempWeights.size(); ++i) {
-                std::cout << tempWeights[i];
-                if (i != tempWeights.size()-1){
-                    std::cout << ", ";
-                }
-            }
-            std::cout << "]." << std::endl;
-        } 
+
+        // 尺寸代价权重
+        if (not this->nh_.getParam(this->ns_ + "/association_size_cost_weight", this->associationSizeCostWeight_)){
+            this->associationSizeCostWeight_ = 0.5;
+            cout << this->hint_ << ": No size cost weight parameter found. Use default: 0.5." << endl;
+        }
+        else{
+            cout << this->hint_ << ": Size cost weight is set to: " << this->associationSizeCostWeight_ << "." << endl;
+        }
+
+        // 点云标准差代价权重
+        if (not this->nh_.getParam(this->ns_ + "/association_std_cost_weight", this->associationStdCostWeight_)){
+            this->associationStdCostWeight_ = 0.3;
+            cout << this->hint_ << ": No std cost weight parameter found. Use default: 0.3." << endl;
+        }
+        else{
+            cout << this->hint_ << ": Std cost weight is set to: " << this->associationStdCostWeight_ << "." << endl;
+        }
 
         // tracking history size
         if (not this->nh_.getParam(this->ns_ + "/history_size", this->histSize_)){
@@ -643,7 +642,6 @@ namespace onboardDetector{
         pcl::PointCloud<pcl::PointXYZ>::Ptr preTransformCloud(new pcl::PointCloud<pcl::PointXYZ>());
         preTransformCloud->reserve(tempCloud->size()); // 预分配内存，估计保留1/3的点
 
-        double characteristic_dist = static_cast<double>(this->gaussianDownSampleRate_);
         double x_max = this->localLidarRange_.x();
         double y_max = this->localLidarRange_.y();
         
@@ -760,7 +758,6 @@ namespace onboardDetector{
         // 范围过滤后保留的点数不确定，预分配为原始点云大小以避免多次重新分配
         preTransformCloud->reserve(tempCloud->size());
 
-        double characteristic_dist = static_cast<double>(this->gaussianDownSampleRate_);
         double x_max = this->localLidarRange_.x();
         double y_max = this->localLidarRange_.y();
         
@@ -855,7 +852,7 @@ namespace onboardDetector{
         // ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
     }
 
-    // 跟踪定时器回调函数
+    // 跟踪定时器回调函数,有个问题，匹配时，多出的轨迹直接丢掉
     void dynamicDetector::trackingCB(const ros::TimerEvent&){
         // // [Performance Timing] 测量回调函数耗时
         // auto start_time = std::chrono::high_resolution_clock::now();
@@ -874,6 +871,7 @@ namespace onboardDetector{
             this->boxHist_.clear();
             this->pcHist_.clear();
             this->pcCenterHist_.clear();
+            this->pcStdHist_.clear();
         }
         
         // // [Performance Timing] 输出耗时
@@ -1216,182 +1214,238 @@ namespace onboardDetector{
         this->filteredPcClusterStds_ = lidarPcClusterStdsTemp;
     }
 
-    // 将当前检测到的边界框与历史记录中的边界框进行关联
+    /*!
+     * @brief 使用马氏距离和匈牙利算法进行数据关联
+     * @param[out] bestMatch 最佳匹配结果，bestMatch[i]表示第i个当前检测对应的历史轨迹索引（-1表示新目标）
+     * 
+     * 关联流程：
+     * 1. 首次检测：初始化历史记录和卡尔曼滤波器
+     * 2. 后续检测：
+     *    - 构建代价矩阵（基于马氏距离、尺寸差异、点云标准差差异）
+     *    - 使用匈牙利算法求解最优匹配
+     *    - 应用关联门限，拒绝不可靠匹配
+     */
     void dynamicDetector::boxAssociation(std::vector<int>& bestMatch){
-        // 获取当前检测到的边界框数量
-        int numObjs = int(this->filteredBBoxes_.size()); 
+        int numCurrObjs = int(this->filteredBBoxes_.size());
         
-        // 如果历史记录为空（即第一次检测）
-        if (this->boxHist_.size() == 0){ // 如果不存在历史记录，则初始化新的边界框历史记录
-            // 初始化历史记录容器的大小
-            this->boxHist_.resize(numObjs);
-            this->pcHist_.resize(numObjs);
-            this->pcCenterHist_.resize(numObjs);
+        // 第一次检测：初始化所有目标
+        if (this->boxHist_.size() == 0){
+            this->boxHist_.resize(numCurrObjs);
+            this->pcHist_.resize(numCurrObjs);
+            this->pcCenterHist_.resize(numCurrObjs);
+            this->pcStdHist_.resize(numCurrObjs);
+            bestMatch.resize(numCurrObjs, -1);
             
-            // 将最佳匹配索引初始化为-1，因为这是第一次检测，没有可匹配的历史
-            bestMatch.resize(this->filteredBBoxes_.size(), -1); // 第一次检测没有匹配
-            
-            // 遍历所有新检测到的对象
-            for (int i=0 ; i<numObjs ; ++i){
-                // 为bbox、pc和KF初始化历史记录
+            for (int i = 0; i < numCurrObjs; ++i){
                 this->boxHist_[i].push_back(this->filteredBBoxes_[i]);
                 this->pcHist_[i].push_back(this->filteredPcClusters_[i]);
                 this->pcCenterHist_[i].push_back(this->filteredPcClusterCenters_[i]);
+                this->pcStdHist_[i].push_back(this->filteredPcClusterStds_[i]);
                 
-                // 为新对象设置卡尔曼滤波器
-                MatrixXd states, A, B, H, P, Q, R;       
+                // 初始化卡尔曼滤波器
+                MatrixXd states, A, B, H, P, Q, R;
                 this->kalmanFilterMatrixAcc(this->filteredBBoxes_[i], states, A, B, H, P, Q, R);
                 onboardDetector::kalman_filter newFilter;
                 newFilter.setup(states, A, B, H, P, Q, R);
                 this->filters_.push_back(newFilter);
             }
         }
-        else{ // 如果历史记录不为空
-            // 仅当有新的检测结果时才开始关联
-            if (this->newDetectFlag_){
-                // 调用辅助函数执行关联
-                this->boxAssociationHelper(bestMatch);
-            }
-        }
-
-        // 重置新检测标志，表示最近的检测已经处理完毕
-        this->newDetectFlag_ = false; // 最近的检测已经关联
-    }
-
-    /**
-     * @brief 辅助进行边界框关联，通过特征匹配找到当前检测与历史检测的最佳对应关系
-     * @param[out] bestMatch 用于存储最佳匹配结果的向量，每个元素表示当前检测框对应的历史检测框索引
-     *                      - -1 表示没有匹配到历史框（新出现的目标）
-     *                      - >=0 表示匹配到的历史框索引
-     */
-    void dynamicDetector::boxAssociationHelper(std::vector<int>& bestMatch){
-        int numObjs = int(this->filteredBBoxes_.size());
-        std::vector<onboardDetector::box3D> prevBBoxes;
-        std::vector<Eigen::Vector3d> prevPcCenters;
-        std::vector<Eigen::VectorXd> prevBBoxesFeat;
-        std::vector<onboardDetector::box3D> propedBBoxes;
-        std::vector<Eigen::Vector3d> propedPcCenters;
-        std::vector<Eigen::VectorXd> propedBBoxesFeat;
-        std::vector<Eigen::VectorXd> currBBoxesFeat;
-        currBBoxesFeat.resize(numObjs);
-        bestMatch.resize(numObjs);
-
-        // 提取当前检测到的边界框特征，边界框相对于机器人的位置、边界框的尺寸、点云中心的坐标
-        this->genFeatHelper(this->filteredBBoxes_, this->filteredPcClusterCenters_, currBBoxesFeat);
-
-        // 获取上一时刻的边界框及点云中心
-        this->getPrevBBoxes(prevBBoxes, prevPcCenters);
-        this->genFeatHelper(prevBBoxes, prevPcCenters, prevBBoxesFeat);
-
-        // 对边界框进行线性预测并提取预测框特征
-        this->linearProp(propedBBoxes, propedPcCenters);
-        this->genFeatHelper(propedBBoxes, propedPcCenters, propedBBoxesFeat);
-
-        // 计算关联关系：寻找最佳匹配
-        this->findBestMatch(prevBBoxes, prevBBoxesFeat, propedBBoxes, propedBBoxesFeat, currBBoxesFeat, bestMatch);      
-    }
-
-    // 辅助函数，用于为给定的边界框和点云中心生成特征向量
-    // 特征包括：边界框相对于机器人的位置、边界框的尺寸、点云中心的坐标
-    // 每个特征分量都会乘以一个预设的权重
-    // 同时处理了特征值中可能出现的NaN或无穷大问题
-    void dynamicDetector::genFeatHelper( 
-        const std::vector<onboardDetector::box3D>& boxes,
-        const std::vector<Eigen::Vector3d>& pcCenters,
-        std::vector<Eigen::VectorXd>& features){ 
-        Eigen::VectorXd featureWeights = Eigen::VectorXd::Zero(9); // 3 pos + 3 size + 3 pc centers
-        featureWeights = this->featureWeights_;
-        features.resize(boxes.size());
-        for (size_t i = 0; i < boxes.size(); ++i) {
-            Eigen::VectorXd feature = Eigen::VectorXd::Zero(10);
-            feature(0) = (boxes[i].x - this->position_(0)) * featureWeights(0);
-            feature(1) = (boxes[i].y - this->position_(1)) * featureWeights(1);
-            feature(2) = (boxes[i].z - this->position_(2)) * featureWeights(2);
-            feature(3) = boxes[i].x_width * featureWeights(3);
-            feature(4) = boxes[i].y_width * featureWeights(4);
-            feature(5) = boxes[i].z_width * featureWeights(5);
-            feature(6) = pcCenters[i](0) * featureWeights(6);
-            feature(7) = pcCenters[i](1) * featureWeights(7);
-            feature(8) = pcCenters[i](2) * featureWeights(8);
-
-            // 修复nan问题
-            for(int j = 0; j < feature.size(); ++j) {
-                if (std::isnan(feature(j)) || std::isinf(feature(j))) {
-                    feature(j) = 0;
-                }
-            }
-            features[i] = feature;
-        }
-    }
-
-    // 从历史记录中获取上一帧的边界框和点云中心
-    // 遍历每个障碍物的历史记录，并提取最新的（索引为0）边界框和点云中心
-    void dynamicDetector::getPrevBBoxes(std::vector<onboardDetector::box3D>& prevBoxes, std::vector<Eigen::Vector3d>& prevPcCenters){
-        onboardDetector::box3D prevBox;
-        for (size_t i=0 ; i<this->boxHist_.size() ; i++){
-            prevBox = this->boxHist_[i][0];
-            prevBoxes.push_back(prevBox);
-
-            Eigen::Vector3d prevPcCenter = this->pcCenterHist_[i][0];
-            prevPcCenters.push_back(prevPcCenter);
-        }
-    }
-      
-    // 对历史边界框和点云中心进行线性传播（预测）
-    // 使用上一时刻的速度和时间步长 dt_ 来预测当前时刻的位置
-    // 这用于在数据关联中预测目标可能出现的位置
-    void dynamicDetector::linearProp(std::vector<onboardDetector::box3D>& propedBBoxes, std::vector<Eigen::Vector3d>& propedPcCenters){
-        onboardDetector::box3D propedBBox;
-        for (size_t i=0 ; i<this->boxHist_.size() ; i++){
-            propedBBox = this->boxHist_[i][0];
-            propedBBox.x += propedBBox.Vx*this->dt_;
-            propedBBox.y += propedBBox.Vy*this->dt_;
-            propedBBoxes.push_back(propedBBox);
-
-            Eigen::Vector3d propedPcCenter = this->pcCenterHist_[i][0];
-            propedPcCenter(0) += propedBBox.Vx*this->dt_;
-            propedPcCenter(1) += propedBBox.Vy*this->dt_;
-            propedPcCenters.push_back(propedPcCenter);
-        }
-    }
-
-    // 为当前检测到的每个边界框寻找最佳匹配的历史边界框
-    // 匹配过程首先通过尺寸和距离进行粗略筛选
-    // 然后，通过计算特征相似度（结合了上一时刻特征和预测特征）来找到最佳匹配
-    void dynamicDetector::findBestMatch(const std::vector<onboardDetector::box3D>& prevBBoxes, const std::vector<Eigen::VectorXd>& prevBBoxesFeat, 
-                                        const std::vector<onboardDetector::box3D>& propedBBoxes, const std::vector<Eigen::VectorXd>& propedBBoxesFeat, 
-                                        const std::vector<Eigen::VectorXd>& currBBoxesFeat, std::vector<int>& bestMatch){
-        int numObjs = this->filteredBBoxes_.size();
-        std::vector<double> bestSims; // 最佳相似度
-        bestSims.resize(numObjs, 0);
-
-        for (int i=0 ; i<numObjs ; i++){
-            double bestSim = -1.;
-            int bestMatchInd = -1;
-            onboardDetector::box3D currBBox = this->filteredBBoxes_[i];
+        else if (this->newDetectFlag_){
+            // 后续检测：使用匈牙利算法进行关联
+            int numHistObjs = int(this->boxHist_.size());
+            bestMatch.resize(numCurrObjs, -1);
             
-            for (size_t j=0 ; j<propedBBoxes.size() ; j++){
-                onboardDetector::box3D propedBBox = propedBBoxes[j];
-                double propedWidth = std::max(propedBBox.x_width, propedBBox.y_width);
-                double currWidth = std::max(currBBox.x_width, currBBox.y_width);
-                if (std::abs(propedWidth - currWidth) < this->maxMatchSizeRange_){
-                    if (pow(pow(propedBBox.x - currBBox.x, 2) + pow(propedBBox.y - currBBox.y, 2), 0.5) < this->maxMatchRange_){
-                        // 基于propedBBox和currBBox计算速度特征
-                        double simPrev = prevBBoxesFeat[j].dot(currBBoxesFeat[i])/(prevBBoxesFeat[j].norm()*currBBoxesFeat[i].norm());
-                        double simProped = propedBBoxesFeat[j].dot(currBBoxesFeat[i])/(propedBBoxesFeat[j].norm()*currBBoxesFeat[i].norm());
-                        double sim = simPrev + simProped;
-                        if (sim > bestSim){
-                            bestSim = sim;
-                            bestMatchInd = j;
-                        }
+            // 构建代价矩阵
+            std::vector<std::vector<double>> costMatrix(numCurrObjs, std::vector<double>(numHistObjs, 1e9));
+            
+            //  遍历当前障碍物与所有历史轨迹的代价，即矩阵的行，为当前检测到的障碍物，列为按顺序排好的每个历史轨迹
+            for (int i = 0; i < numCurrObjs; ++i){
+                const onboardDetector::box3D& currBox = this->filteredBBoxes_[i];
+                const Eigen::Vector3d& currStd = this->filteredPcClusterStds_[i];
+                
+                for (int j = 0; j < numHistObjs; ++j){
+                    // 获取历史轨迹的最新状态
+                    const onboardDetector::box3D& histBox = this->boxHist_[j][0];
+                    const Eigen::Vector3d& histStd = this->pcStdHist_[j][0];
+                    
+                    // 使用卡尔曼滤波器预测的位置
+                    onboardDetector::box3D predBox = histBox;
+                    const MatrixXd& filterStates = this->filters_[j].getStates();
+                    predBox.x = filterStates(0, 0);
+                    predBox.y = filterStates(2, 0);
+                    
+                    // 获取预测位置的协方差
+                    const MatrixXd& P = this->filters_[j].getCovariance();
+                    Eigen::Matrix2d covariance;
+                    covariance(0, 0) = P(0, 0); // x的方差
+                    covariance(0, 1) = P(0, 2); // x-y协方差
+                    covariance(1, 0) = P(2, 0); // y-x协方差
+                    covariance(1, 1) = P(2, 2); // y的方差
+                    
+                    // 计算关联代价
+                    double cost = this->computeAssociationCost(predBox, histStd, currBox, currStd, covariance);
+                    
+                    // 应用关联门限
+                    if (cost < this->associationGateThresh_){
+                        costMatrix[i][j] = cost;
                     }
-
                 }
             }
-            bestSims[i] = bestSim;
-            bestMatch[i] = bestMatchInd;
+            
+            // 使用匈牙利算法求解最优匹配
+            this->hungarianAlgorithm(costMatrix, bestMatch);
+        }
+        
+        this->newDetectFlag_ = false;
+    }
+
+    /*!
+     * @brief 计算马氏距离
+     * @param posDiff 位置差异向量 [dx, dy]
+     * @param covariance 协方差矩阵 2x2
+     * @return 马氏距离的平方
+     * 
+     * 马氏距离公式: d^2 = (x - μ)^T * Σ^(-1) * (x - μ)
+     * 其中 Σ 是协方差矩阵
+     */
+    double dynamicDetector::computeMahalanobisDistance(const Eigen::Vector2d& posDiff, const Eigen::Matrix2d& covariance){
+        // 计算协方差矩阵的逆
+        Eigen::Matrix2d covInv = covariance.inverse();
+        
+        // 计算马氏距离的平方
+        double mahalDist = posDiff.transpose() * covInv * posDiff;
+        
+        return mahalDist;
+    }
+
+    /*!
+     * @brief 计算数据关联的总代价
+     * @param predBox 预测的边界框（来自卡尔曼滤波器）
+     * @param predStd 预测时刻的点云标准差
+     * @param measBox 当前测量的边界框
+     * @param measStd 当前测量的点云标准差
+     * @param covariance 预测位置的协方差矩阵
+     * @return 总关联代价（越小越好）
+     * 
+     * 代价函数组成：
+     * 1. 位置代价：马氏距离（考虑预测不确定性）
+     * 2. 尺寸代价：归一化的尺寸差异
+     * 3. 形状代价：点云标准差的变化
+     */
+    double dynamicDetector::computeAssociationCost(const onboardDetector::box3D& predBox, const Eigen::Vector3d& predStd,
+                                                   const onboardDetector::box3D& measBox, const Eigen::Vector3d& measStd,
+                                                   const Eigen::Matrix2d& covariance){
+        // 1. 计算位置代价（马氏距离）
+        Eigen::Vector2d posDiff;
+        posDiff << (measBox.x - predBox.x), (measBox.y - predBox.y);
+        double posCost = this->computeMahalanobisDistance(posDiff, covariance);
+        
+        // 2. 计算尺寸代价（归一化差异）
+        double sizeDiffX = std::abs(measBox.x_width - predBox.x_width);
+        double sizeDiffY = std::abs(measBox.y_width - predBox.y_width);
+        double sizeDiffZ = std::abs(measBox.z_width - predBox.z_width);
+        
+        // 归一化尺寸差异（使用平均尺寸）
+        double avgSizeX = (measBox.x_width + predBox.x_width) / 2.0;
+        double avgSizeY = (measBox.y_width + predBox.y_width) / 2.0;
+        double avgSizeZ = (measBox.z_width + predBox.z_width) / 2.0;
+        
+        double sizeCost = 0.0;
+        if (avgSizeX > 1e-6) sizeCost += (sizeDiffX / avgSizeX) * (sizeDiffX / avgSizeX);
+        if (avgSizeY > 1e-6) sizeCost += (sizeDiffY / avgSizeY) * (sizeDiffY / avgSizeY);
+        if (avgSizeZ > 1e-6) sizeCost += (sizeDiffZ / avgSizeZ) * (sizeDiffZ / avgSizeZ);
+        
+        // 3. 计算点云标准差代价（反映形状变化）
+        Eigen::Vector3d stdDiff = measStd - predStd;
+        double stdCost = stdDiff.squaredNorm();
+        
+        // 加权组合所有代价
+        double totalCost = this->associationPosCostWeight_ * posCost +
+                          this->associationSizeCostWeight_ * sizeCost +
+                          this->associationStdCostWeight_ * stdCost;
+        
+        return totalCost;
+    }
+
+    /*!
+     * @brief 匈牙利算法求解最优分配问题
+     * @param costMatrix 代价矩阵 [numCurr x numHist]
+     * @param assignment 输出匹配结果，assignment[i] = j 表示第i个当前检测匹配到第j个历史轨迹，-1表示未匹配
+     * 
+     * 算法步骤：
+     * 1. 行归约：每行减去该行最小值
+     * 2. 列归约：每列减去该列最小值
+     * 3. 贪婪匹配：优先选择代价小的匹配
+     * 
+     * 注意：这是简化版匈牙利算法，适用于大多数情况
+     */
+    void dynamicDetector::hungarianAlgorithm(const std::vector<std::vector<double>>& costMatrix, std::vector<int>& assignment){
+        if (costMatrix.empty()){
+            assignment.clear();
+            return;
+        }
+        
+        int numRows = costMatrix.size();
+        int numCols = costMatrix[0].size();
+        assignment.resize(numRows, -1);
+        
+        // 创建代价矩阵的副本用于修改
+        std::vector<std::vector<double>> cost = costMatrix;
+        
+        // 1. 行归约，找到每行的最小值，即当前每个障碍物找到与其最合适的历史轨迹
+        for (int i = 0; i < numRows; ++i){
+            double minVal = *std::min_element(cost[i].begin(), cost[i].end()); 
+            if (minVal < 1e8){ // 只处理有效代价，找0元素代价
+                for (int j = 0; j < numCols; ++j){
+                    cost[i][j] -= minVal;
+                }
+            }
+        }
+        
+        // 2. 列归约，找到每列的最小值，即历史轨迹找到与其最合适的当前障碍物
+        // 这两步下来确保行列都有最合适的"零"
+        for (int j = 0; j < numCols; ++j){
+            double minVal = 1e9;
+            for (int i = 0; i < numRows; ++i){
+                minVal = std::min(minVal, cost[i][j]);
+            }
+            if (minVal < 1e8){
+                for (int i = 0; i < numRows; ++i){
+                    cost[i][j] -= minVal;
+                }
+            }
+        }
+        
+        // 3. 贪婪匹配（简化版）
+        std::vector<bool> colUsed(numCols, false);
+        std::vector<std::pair<double, std::pair<int, int>>> candidates;
+        
+        // 收集所有零代价的候选匹配
+        for (int i = 0; i < numRows; ++i){
+            for (int j = 0; j < numCols; ++j){
+                if (cost[i][j] < 1e-6 && costMatrix[i][j] < 1e8){
+                    candidates.push_back({costMatrix[i][j], {i, j}});
+                }
+            }
+        }
+        
+        // 按原始代价排序
+        std::sort(candidates.begin(), candidates.end());
+        
+        // 贪婪分配，遍历排序后的候选列表。如果某一对 (row, col) 对应的行和列都还没有被占用，就锁定这个匹配。
+        std::vector<bool> rowUsed(numRows, false);
+        for (const auto& candidate : candidates){
+            int row = candidate.second.first;
+            int col = candidate.second.second;
+            
+            if (!rowUsed[row] && !colUsed[col]){
+                assignment[row] = col;
+                rowUsed[row] = true;
+                colUsed[col] = true;
+            }
         }
     }
+
 
     // 使用卡尔曼滤波器并更新历史记录
     void dynamicDetector::kalmanFilterAndUpdateHist(const std::vector<int>& bestMatch){
@@ -1401,12 +1455,14 @@ namespace onboardDetector{
         std::vector<std::deque<onboardDetector::box3D>> boxHistTemp; 
         std::vector<std::deque<std::vector<Eigen::Vector3d>>> pcHistTemp;
         std::vector<std::deque<Eigen::Vector3d>> pcCenterHistTemp;
+        std::vector<std::deque<Eigen::Vector3d>> pcStdHistTemp;
         std::vector<onboardDetector::kalman_filter> filtersTemp;
         
         // 为新出现的目标准备的空历史记录模板
         std::deque<onboardDetector::box3D> newSingleBoxHist;
         std::deque<std::vector<Eigen::Vector3d>> newSinglePcHist; 
-        std::deque<Eigen::Vector3d> newSinglePcCenterHist; 
+        std::deque<Eigen::Vector3d> newSinglePcCenterHist;
+        std::deque<Eigen::Vector3d> newSinglePcStdHist;
         onboardDetector::kalman_filter newFilter; // 为新目标准备的卡尔曼滤波器实例
         
         std::vector<onboardDetector::box3D> trackedBBoxesTemp; // 存储当前帧滤波后的所有目标框
@@ -1414,6 +1470,7 @@ namespace onboardDetector{
         newSingleBoxHist.resize(0);
         newSinglePcHist.resize(0);
         newSinglePcCenterHist.resize(0);
+        newSinglePcStdHist.resize(0);
         int numObjs = this->filteredBBoxes_.size(); // 当前帧检测到的目标数量
 
         // --- 遍历当前帧检测到的每一个目标 ---
@@ -1428,6 +1485,7 @@ namespace onboardDetector{
                 boxHistTemp.push_back(this->boxHist_[bestMatch[i]]);
                 pcHistTemp.push_back(this->pcHist_[bestMatch[i]]);
                 pcCenterHistTemp.push_back(this->pcCenterHist_[bestMatch[i]]);
+                pcStdHistTemp.push_back(this->pcStdHist_[bestMatch[i]]);
                 filtersTemp.push_back(this->filters_[bestMatch[i]]);
 
                 // 使用当前检测到的边界框作为测量值，来更新卡尔曼滤波器
@@ -1462,6 +1520,7 @@ namespace onboardDetector{
                 boxHistTemp.push_back(newSingleBoxHist);
                 pcHistTemp.push_back(newSinglePcHist);
                 pcCenterHistTemp.push_back(newSinglePcCenterHist);
+                pcStdHistTemp.push_back(newSinglePcStdHist);
 
                 // 为这个新目标创建一个全新的卡尔曼滤波器
                 onboardDetector::box3D currDetectedBBox = this->filteredBBoxes_[i];
@@ -1481,12 +1540,14 @@ namespace onboardDetector{
                 boxHistTemp[i].pop_back();
                 pcHistTemp[i].pop_back();
                 pcCenterHistTemp[i].pop_back();
+                pcStdHistTemp[i].pop_back();
             }
 
             // 将当前帧的最新估计状态和信息从队列头部推入
             boxHistTemp[i].push_front(newEstimatedBBox); 
             pcHistTemp[i].push_front(this->filteredPcClusters_[i]);
             pcCenterHistTemp[i].push_front(this->filteredPcClusterCenters_[i]);
+            pcStdHistTemp[i].push_front(this->filteredPcClusterStds_[i]);
 
             // 将当前帧的最终跟踪结果存入 trackedBBoxesTemp
             trackedBBoxesTemp.push_back(newEstimatedBBox);
@@ -1523,6 +1584,7 @@ namespace onboardDetector{
         // std::cout << "this->boxHist_[1].size() = "  << this->boxHist_[1].size() << std::endl;
         this->pcHist_ = pcHistTemp;
         this->pcCenterHist_ = pcCenterHistTemp;
+        this->pcStdHist_ = pcStdHistTemp;
         this->filters_ = filtersTemp;
 
         // 更新当前帧的最终跟踪结果
