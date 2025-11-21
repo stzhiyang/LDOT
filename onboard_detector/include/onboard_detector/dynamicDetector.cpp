@@ -448,6 +448,12 @@ namespace onboardDetector{
             ROS_INFO_STREAM(this->hint_ << " classify_uav_threshold: [" << this->classifyUAVMaxSize_ 
                            << ", " << this->classifyUAVCentroidZRatio_ << "]");
         }
+        
+        // 初始化激光雷达检测器（避免每次回调时重复初始化）
+        this->lidarDetector_.reset(new lidarDetector());
+        this->lidarDetector_->setParams(this->lidarDBEpsilon_, this->lidarDBMinPoints_, 
+                                        this->lidarDBUseAdaptive_, this->lidarDBDistanceScale_);
+        ROS_INFO_STREAM(this->hint_ << " Lidar detector initialized");
     }
 
     void dynamicDetector::registerPub(){
@@ -551,6 +557,8 @@ namespace onboardDetector{
     // 获取动态障碍物的服务回调函数。对获取的障碍物按与机器人的距离从小到大排序
     bool dynamicDetector::getDynamicObstacles(onboard_detector::GetDynamicObstacles::Request& req, 
                                               onboard_detector::GetDynamicObstacles::Response& res) {
+        std::lock_guard<std::mutex> lock(bboxMutex_); // 加锁保护动态边界框数据
+        
         // 从服务请求中获取机器人当前的位置
         Eigen::Vector3d currPos = Eigen::Vector3d (req.current_position.x, req.current_position.y, req.current_position.z);
 
@@ -612,9 +620,12 @@ namespace onboardDetector{
         // [Performance Timing] 测量回调函数耗时
         // auto start_time = std::chrono::high_resolution_clock::now();
         
+        std::lock_guard<std::mutex> lock(cloudMutex_); // 加锁保护共享数据
+        
         // 仅用于可视化，存储最新的原始点云消息
         this->hasSensorPose_ = true ;
         this->latestCloud_ = cloudMsg;
+        this->lastCloudTime_ = cloudMsg->header.stamp; // 记录时间戳
 
         // --- 更新位姿信息（提前更新，避免后续重复计算） ---
         Eigen::Matrix4d lidarPoseMatrix;
@@ -708,6 +719,7 @@ namespace onboardDetector{
 
         // 存储处理后的激光雷达点云
         this->lidarCloud_ = groundRoofFilterCloud;
+        hasNewCloud_ = true; // 标记有新数据可用
         
         // 将处理后的点云发布出去，用于可视化
         sensor_msgs::PointCloud2 outputCloud;
@@ -729,9 +741,12 @@ namespace onboardDetector{
         // [Performance Timing] 测量回调函数耗时
         // auto start_time = std::chrono::high_resolution_clock::now();
         
+        std::lock_guard<std::mutex> lock(cloudMutex_); // 加锁保护共享数据
+        
         // 用于可视化
         this->hasSensorPose_ = true ;
         this->latestCloud_ = cloudMsg;
+        this->lastCloudTime_ = cloudMsg->header.stamp; // 记录时间戳
 
         // --- 提前更新位姿信息 ---
         Eigen::Matrix4d lidarPoseMatrix;
@@ -822,6 +837,7 @@ namespace onboardDetector{
 
         // 存储处理后的点云
         this->lidarCloud_ = groundRoofFilterCloud;
+        hasNewCloud_ = true; // 标记有新数据可用
         
         // 发布降采样后的点云
         sensor_msgs::PointCloud2 outputCloud;
@@ -839,12 +855,31 @@ namespace onboardDetector{
     }
 
     // 激光雷达检测定时器回调函数
-    void dynamicDetector::lidarDetectionCB(const ros::TimerEvent&){
+    void dynamicDetector::lidarDetectionCB(const ros::TimerEvent& event){
         // // [Performance Timing] 测量回调函数耗时
         // auto start_time = std::chrono::high_resolution_clock::now();
         
-        this->lidarDetect();
+        // 检查是否有新点云数据
+        if (!hasNewCloud_) {
+            ROS_WARN_THROTTLE(5.0, "%s: No new cloud data available for detection", this->hint_.c_str());
+            return;
+        }
+        
+        // 检查数据时效性（避免处理过时数据）
+        if ((event.current_real - lastCloudTime_).toSec() > 0.5) {
+            ROS_WARN_THROTTLE(5.0, "%s: Cloud data too old (%.3f s), skipping detection", 
+                            this->hint_.c_str(), (event.current_real - lastCloudTime_).toSec());
+            return;
+        }
+        
+        {
+            std::lock_guard<std::mutex> lock(cloudMutex_);
+            this->lidarDetect();
+            hasNewCloud_ = false; // 标记数据已处理
+        }
+        
         this->newDetectFlag_ = true; // get a new detection
+        hasNewDetection_ = true; // 标记有新检测结果
         
         // // [Performance Timing] 输出耗时
         // auto end_time = std::chrono::high_resolution_clock::now();
@@ -856,6 +891,13 @@ namespace onboardDetector{
     void dynamicDetector::trackingCB(const ros::TimerEvent&){
         // // [Performance Timing] 测量回调函数耗时
         // auto start_time = std::chrono::high_resolution_clock::now();
+        
+        // 检查是否有新检测结果
+        if (!hasNewDetection_) {
+            return; // 跳过，避免重复处理相同数据
+        }
+        
+        std::lock_guard<std::mutex> lock(bboxMutex_); // 加锁保护边界框数据
         
         // 数据关联线程
         std::vector<int> bestMatch; // 存储当前检测与历史障碍物的匹配索引。
@@ -874,6 +916,9 @@ namespace onboardDetector{
             this->pcStdHist_.clear();
         }
         
+        hasNewDetection_ = false; // 标记检测结果已处理
+        hasNewTracking_ = true; // 标记有新跟踪结果
+        
         // // [Performance Timing] 输出耗时
         // auto end_time = std::chrono::high_resolution_clock::now();
         // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
@@ -884,6 +929,13 @@ namespace onboardDetector{
     void dynamicDetector::classificationCB(const ros::TimerEvent&){
         // // [Performance Timing] 测量回调函数耗时
         // auto start_time = std::chrono::high_resolution_clock::now();
+        
+        // 检查是否有新跟踪结果
+        if (!hasNewTracking_) {
+            return; // 跳过，避免重复处理相同数据
+        }
+        
+        std::lock_guard<std::mutex> lock(bboxMutex_); // 加锁保护边界框数据
         
         // 创建一个临时向量来存储当前帧检测到的动态边界框
         std::vector<onboardDetector::box3D> dynamicBBoxesTemp;
@@ -1046,6 +1098,8 @@ namespace onboardDetector{
         // 更新最终的动态障碍物列表
         this->dynamicBBoxes_ = dynamicBBoxesTemp;
         
+        hasNewTracking_ = false; // 标记跟踪结果已处理
+        
         // // [Performance Timing] 输出耗时
         // auto end_time = std::chrono::high_resolution_clock::now();
         // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
@@ -1140,14 +1194,16 @@ namespace onboardDetector{
      * 最终结果保存在lidarBBoxes_和lidarClusters_成员变量中。
      */
     void dynamicDetector::lidarDetect(){
-        // 检查激光雷达检测器是否已初始化，如果没有则创建并设置参数
-        if (this->lidarDetector_ == NULL){
-            this->lidarDetector_.reset(new lidarDetector());
-            this->lidarDetector_->setParams(this->lidarDBEpsilon_, this->lidarDBMinPoints_, this->lidarDBUseAdaptive_, this->lidarDBDistanceScale_);
+        // 检查是否有激光雷达点云数据（提前返回避免不必要的处理）
+        if (this->lidarCloud_ == NULL){
+            ROS_WARN_THROTTLE(1.0, "%s: No point cloud available for detection", this->hint_.c_str());
+            return;
         }
 
-        // 检查是否有激光雷达点云数据
-        if (this->lidarCloud_ != NULL){
+        // 执行检测（检测器已在initParam中初始化）
+        // 将点云数据传递给检测器并执行DBSCAN聚类
+        this->lidarDetector_->getPointcloud(this->lidarCloud_);
+        this->lidarDetector_->lidarDBSCAN();
             // 将点云数据传递给检测器并执行DBSCAN聚类
             this->lidarDetector_->getPointcloud(this->lidarCloud_);
             this->lidarDetector_->lidarDBSCAN();
@@ -1176,7 +1232,6 @@ namespace onboardDetector{
             // 保存过滤后的结果
             this->lidarBBoxes_ = lidarBBoxesFiltered;
             this->lidarClusters_ = lidarClustersFiltered;
-        }
 
         // 临时存储来自激光雷达的边界框及其点云特征
         std::vector<onboardDetector::box3D> lidarBBoxesTemp;

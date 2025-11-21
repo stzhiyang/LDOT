@@ -8,6 +8,8 @@
 
 #include <ros/ros.h>
 #include <chrono>
+#include <mutex>
+#include <atomic>
 #include <Eigen/Eigen>
 #include <Eigen/StdVector>
 #include <sensor_msgs/Image.h>
@@ -175,6 +177,15 @@ namespace onboardDetector{
         std::vector<std::deque<Eigen::Vector3d>> pcCenterHist_; // 每个被跟踪物体的点云中心历史
         std::vector<std::deque<Eigen::Vector3d>> pcStdHist_; // 每个被跟踪物体的点云标准差历史
         std::vector<onboardDetector::kalman_filter> filters_; // 每个被跟踪物体对应的卡尔曼滤波器
+
+        // 线程安全与数据同步
+        std::mutex cloudMutex_; // 保护点云数据的互斥锁
+        std::mutex bboxMutex_; // 保护边界框数据的互斥锁
+        std::atomic<bool> hasNewCloud_{false}; // 是否有新点云数据
+        std::atomic<bool> hasNewDetection_{false}; // 是否有新检测结果
+        std::atomic<bool> hasNewTracking_{false}; // 是否有新跟踪结果
+        ros::Time lastCloudTime_; // 最后一次接收点云的时间戳
+        ros::Time lastProcessTime_; // 最后一次处理的时间戳
 
 
     public:
