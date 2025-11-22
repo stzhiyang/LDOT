@@ -765,12 +765,13 @@ namespace onboardDetector{
         if (bestMatch.size()){ // 如果找到匹配。
             this->kalmanFilterAndUpdateHist(bestMatch); // 更新卡尔曼滤波器和历史记录。
         }
-        else { // 如果没有匹配。
+        else { // 如果当前帧没有任何检测结果
             // 清空历史记录。
             this->boxHist_.clear();
             this->pcHist_.clear();
             this->pcCenterHist_.clear();
             this->pcStdHist_.clear();
+            this->filters_.clear(); // 同时清空滤波器
         }
         
         hasNewDetection_ = false; // 标记检测结果已处理
@@ -902,7 +903,7 @@ namespace onboardDetector{
                 int dynaConsistCount = 0;
                 if (int(this->boxHist_[i].size()) >= this->dynamicConsistThresh_){
                     for (int j=0 ; j<this->dynamicConsistThresh_; ++j){
-                        // 如果是动态候选、被识别为人或已经是动态，则计数
+                        // 如果是动态候选、已经是动态，则计数
                         if (this->boxHist_[i][j].is_dynamic_candidate or this->boxHist_[i][j].is_human or this->boxHist_[i][j].is_dynamic){
                             ++dynaConsistCount;
                         }
@@ -978,7 +979,7 @@ namespace onboardDetector{
         double centroid_z = centroid(2);
         
         // 计算x、y轴的最小值和最大值
-        double xy_min = std::min(x_width, y_width);
+        // double xy_min = std::min(x_width, y_width);
         double xy_max = std::max(x_width, y_width);
 
         // 分类为人：z轴宽度大，质心靠下（站立的人形）
@@ -1007,7 +1008,7 @@ namespace onboardDetector{
         std::string classType = bbox.is_human ? "Human" : 
                                bbox.is_che ? "Vehicle" :
                                bbox.is_uav ? "UAV" : "Other";
-        ROS_DEBUG_THROTTLE(2.0, "%s: Classified as %s - Size(%.2f,%.2f,%.2f), Centroid_z=%.2f, xy_max/z=%.2f, z/xy_max=%.2f",
+        ROS_INFO_THROTTLE(2.0, "%s: Classified as %s - Size(%.2f,%.2f,%.2f), Centroid_z=%.2f, xy_max/z=%.2f, z/xy_max=%.2f",
                           this->hint_.c_str(), classType.c_str(),
                           x_width, y_width, z_width, centroid_z,
                           xy_max/z_width, z_width/xy_max);
@@ -1044,8 +1045,8 @@ namespace onboardDetector{
                 continue;
             }
             
-            // 对边界框进行分类
-            this->classifyBox(lidarBBox, lidarClustersRaw[i].centroid);
+            // 待分类的边界框，不过早分类
+            // this->classifyBox(lidarBBox, lidarClustersRaw[i].centroid);
             
             lidarBBoxesFiltered.push_back(lidarBBox);
             lidarClustersFiltered.push_back(lidarClustersRaw[i]);            
@@ -1182,6 +1183,12 @@ namespace onboardDetector{
             int numHistObjs = int(this->boxHist_.size());
             bestMatch.resize(numCurrObjs, -1);
             
+            // 首先对所有历史轨迹的卡尔曼滤波器执行预测步骤
+            for (int j = 0; j < numHistObjs; ++j){
+                this->filters_[j]->setDt(this->dt_);
+                this->filters_[j]->predict();
+            }
+            
             // 构建代价矩阵
             std::vector<std::vector<double>> costMatrix(numCurrObjs, std::vector<double>(numHistObjs, 1e9));
             
@@ -1195,18 +1202,20 @@ namespace onboardDetector{
                     const onboardDetector::box3D& histBox = this->boxHist_[j][0];
                     const Eigen::Vector3d& histStd = this->pcStdHist_[j][0];
                     
-                    // 分类一致性检查：只允许相同类别的物体匹配
-                    // 这样可以避免分类切换导致的滤波器维度不匹配问题
-                    bool classMatch = (currBox.is_human == histBox.is_human) &&
-                                     (currBox.is_uav == histBox.is_uav) &&
-                                     (currBox.is_che == histBox.is_che) &&
-                                     (currBox.is_else == histBox.is_else);
+                    // 分类一致性检查（已禁用）：
+                    // 原始分类逻辑（在lidarDetect中）已被移除，新的稳定分类逻辑在关联之后执行。
+                    // 因此，此处的硬性分类匹配检查不再需要，注释掉可以提高关联的鲁棒性，
+                    // 允许一个（暂未分类的）新检测结果与一个（已分类的）历史轨迹进行匹配。
+                    // bool classMatch = (currBox.is_human == histBox.is_human) &&
+                    //                  (currBox.is_uav == histBox.is_uav) &&
+                    //                  (currBox.is_che == histBox.is_che) &&
+                    //                  (currBox.is_else == histBox.is_else);
                     
-                    if (!classMatch) {
-                        // 分类不一致，设置极大代价，禁止匹配
-                        costMatrix[i][j] = 1e9;
-                        continue;
-                    }
+                    // if (!classMatch) {
+                    //     // 分类不一致，设置极大代价，禁止匹配
+                    //     costMatrix[i][j] = 1e9;
+                    //     continue;
+                    // }
                     
                     // 使用卡尔曼滤波器预测的位置
                     onboardDetector::box3D predBox = histBox;
@@ -1228,34 +1237,38 @@ namespace onboardDetector{
                     
                     // 计算关联代价（根据物体类别使用2D或3D）
                     double cost;
+                    double gateThreshold; // 根据维度选择合适的门限
+                    
                     if (histBox.is_uav || histBox.is_else) {
                         // 3D物体：使用3D马氏距离
                         predBox.z = filterStates(2); // 添加z轴预测
+                        
+                        // 获取状态协方差矩阵P，并构建观测空间的协方差矩阵S = H*P*H^T + R
+                        // 对于位置观测，H矩阵选择状态向量的前3维（x,y,z）
                         const Eigen::MatrixXd& P = this->filters_[j]->getCovariance();
-                        Eigen::Matrix3d covariance3d;
-                        covariance3d(0, 0) = P(0, 0); // x的方差
-                        covariance3d(0, 1) = P(0, 1); // x-y协方差
-                        covariance3d(0, 2) = P(0, 2); // x-z协方差
-                        covariance3d(1, 0) = P(1, 0); // y-x协方差
-                        covariance3d(1, 1) = P(1, 1); // y的方差
-                        covariance3d(1, 2) = P(1, 2); // y-z协方差
-                        covariance3d(2, 0) = P(2, 0); // z-x协方差
-                        covariance3d(2, 1) = P(2, 1); // z-y协方差
-                        covariance3d(2, 2) = P(2, 2); // z的方差
-                        cost = this->computeAssociationCost3D(predBox, histStd, currBox, currStd, covariance3d);
+                        
+                        // 提取位置部分的协方差（状态向量的前3x3块）
+                        Eigen::Matrix3d P_pos = P.block<3, 3>(0, 0);
+                        
+                        cost = this->computeAssociationCost3D(predBox, histStd, currBox, currStd, P_pos);
+                        
+                        // 3D门限：自由度3，99%置信度 -> 11.345
+                        gateThreshold = 11.345;
                     } else {
                         // 2D物体（人和车）：使用2D马氏距离
                         const Eigen::MatrixXd& P = this->filters_[j]->getCovariance();
-                        Eigen::Matrix2d covariance2d;
-                        covariance2d(0, 0) = P(0, 0); // x的方差
-                        covariance2d(0, 1) = P(0, 1); // x-y协方差
-                        covariance2d(1, 0) = P(1, 0); // y-x协方差
-                        covariance2d(1, 1) = P(1, 1); // y的方差
-                        cost = this->computeAssociationCost2D(predBox, histStd, currBox, currStd, covariance2d);
+                        
+                        // 提取位置部分的协方差（状态向量的前2x2块）
+                        Eigen::Matrix2d P_pos = P.block<2, 2>(0, 0);
+                                             
+                        cost = this->computeAssociationCost2D(predBox, histStd, currBox, currStd, P_pos);
+                        
+                        // 2D门限：自由度2，99%置信度 -> 9.21
+                        gateThreshold = 9.21;
                     }
                     
-                    // 应用关联门限
-                    if (cost < this->associationGateThresh_){
+                    // 应用关联门限（使用动态门限）
+                    if (cost < gateThreshold){
                         costMatrix[i][j] = cost;
                     }
                 }
@@ -1263,6 +1276,23 @@ namespace onboardDetector{
             
             // 使用匈牙利算法求解最优匹配
             this->hungarianAlgorithm(costMatrix, bestMatch);
+            
+            // // 统计并输出关联结果
+            // int numMatched = 0;
+            // int numNewTargets = 0;
+            // for (int i = 0; i < numCurrObjs; ++i) {
+            //     if (bestMatch[i] >= 0) {
+            //         numMatched++;
+            //     } else {
+            //         numNewTargets++;
+            //     }
+            // }
+            // int numLostTargets = numHistObjs - numMatched;
+            
+            // // 简洁的日志输出
+            // ROS_INFO_THROTTLE(0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]", 
+            //                  this->hint_.c_str(), numCurrObjs, numHistObjs, 
+            //                  numMatched, numNewTargets, numLostTargets);
         }
         
         this->newDetectFlag_ = false;
@@ -1519,11 +1549,7 @@ namespace onboardDetector{
                 pcStdHistTemp.push_back(this->pcStdHist_[bestMatch[i]]);
                 filtersTemp.push_back(this->filters_[bestMatch[i]]);
 
-                // 设置滤波器时间步长
-                filtersTemp.back()->setDt(this->dt_);
-                
-                // 执行预测步骤
-                filtersTemp.back()->predict();
+                // 注意：预测步骤已经在boxAssociation中执行，这里只需要更新
                 
                 // 准备测量向量（与状态向量维度相同）
                 Eigen::VectorXd measurement;
