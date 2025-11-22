@@ -178,24 +178,6 @@ namespace onboardDetector{
         else{
             cout << this->hint_ << ": Lidar DBSCAN distance scale is set to: " << this->lidarDBDistanceScale_ << endl;
         }
-        
-        // lidar points downsample threshold
-        if(not this->nh_.getParam(this->ns_ + "/downsample_threshold", this->downSampleThresh_)){
-            this->downSampleThresh_ = 4000;
-            cout << this->hint_ << ": No downsample threshold parameter found. Use default: 4000." << endl;
-        }
-        else{
-            cout << this->hint_ << ": Downsample threshold is set to: " << this->downSampleThresh_ << endl;
-        }
-
-        // gaussian downsample rate
-        if (not this->nh_.getParam(this->ns_ + "/gaussian_downsample_rate", this->gaussianDownSampleRate_)){
-            this->gaussianDownSampleRate_ = 2;
-            std::cout << this->hint_ << ": No gaussian downsample rate parameter found. Use default: 2." << std::endl;
-        }
-        else{
-            std::cout << this->hint_ << ": Gaussian downsample rate is set to: " << this->gaussianDownSampleRate_ << std::endl;
-        }
 
         // -------------------------------------------目标跟踪与数据关联参数--------------------------------------------------
         // 数据关联门限阈值（基于卡方分布）
@@ -260,39 +242,6 @@ namespace onboardDetector{
         else{
             std::cout << this->hint_ << ": Dimension threshold for fixing size parameter is set to: " << this->fixSizeDimThresh_ << std::endl;
         } 
-
-        // kalman filter parameters
-        std::vector<double> kalmanFilterParams;
-        if (not this->nh_.getParam(this->ns_ + "/kalman_filter_param", kalmanFilterParams)){
-            this->eP_ = 0.5;
-            this->eQPos_ = 0.5; // pos prediction noise
-            this->eQVel_ = 0.5; // vel prediction noise
-            this->eQAcc_ = 0.5; // acc prediction noise
-            this->eRPos_ = 0.5; // pos measurement noise
-            this->eRVel_ = 0.5; // vel measurement noise
-            this->eRAcc_ = 0.5; // acc measurement noise
-            std::cout << this->hint_ << ": No kalman filter parameter found. Use default: 0.5." << std::endl;
-        }
-        else{
-            this->eP_ = kalmanFilterParams[0];
-            this->eQPos_ = kalmanFilterParams[1]; // pos prediction noise
-            this->eQVel_ = kalmanFilterParams[2]; // vel prediction noise
-            this->eQAcc_ = kalmanFilterParams[3]; // acc prediction noise
-            this->eRPos_ = kalmanFilterParams[4]; // pos measurement noise
-            this->eRVel_ = kalmanFilterParams[5]; // vel measurement noise
-            this->eRAcc_ = kalmanFilterParams[6]; // acc measurement noise
-            std::cout << this->hint_ << ": Kalman filter parameter is set to: [";
-            for (int i=0; i<int(kalmanFilterParams.size()); ++i){
-                double param = kalmanFilterParams[i];
-                if (i != int(kalmanFilterParams.size())-1){
-                    std::cout << param << ", ";
-                }
-                else{
-                    std::cout << param;
-                }
-            }
-            std::cout << "]." << std::endl;
-        }  
 
         // num of frames used in KF for observation
         if (not this->nh_.getParam(this->ns_ + "/kalman_filter_averaging_frames", this->kfAvgFrames_)){
@@ -362,30 +311,6 @@ namespace onboardDetector{
         }
 
         //-----------------------------------------尺寸约束参数--------------------------------------------------------------
-        // constrain target object size
-        if (not this->nh_.getParam(this->ns_ + "/target_constrain_size", this->constrainSize_)){
-            this->constrainSize_ = false;
-            std::cout << this->hint_ << ": No target object constrain size param found. Use default: false." << std::endl;
-        }
-        else{
-            std::cout << this->hint_ << ": Target object constrain is set to: " << this->constrainSize_ << std::endl;
-        }  
-
-        // target object  sizes
-        std::vector<double> targetObjectSizeTemp;
-        if (not this->nh_.getParam(this->ns_ + "/target_object_size", targetObjectSizeTemp)){
-            std::cout << this->hint_ << ": No target object size found. Do not apply target object size." << std::endl;
-        }
-        else{
-            for (size_t i=0; i<targetObjectSizeTemp.size(); i+=3){
-                Eigen::Vector3d targetSize (targetObjectSizeTemp[i+0], targetObjectSizeTemp[i+1], targetObjectSizeTemp[i+2]);
-                this->targetObjectSize_.push_back(targetSize);
-                std::cout << this->hint_ << ": target object size is set to: [" << targetObjectSizeTemp[i+0]  << ", " 
-                << targetObjectSizeTemp[i+1] << ", " <<  targetObjectSizeTemp[i+2] << "]." << std::endl;
-            }
-            
-        }
-
         // max object size
         std::vector<double> maxObjectSizeTemp;
         if(not this->nh_.getParam(this->ns_ + "/max_object_size", maxObjectSizeTemp)){
@@ -457,41 +382,39 @@ namespace onboardDetector{
     }
 
     void dynamicDetector::registerPub(){
-        // 激光雷达边界框发布
-        this->lidarBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/lidar_bboxes", 10);
-
-        // 过滤后的边界框发布
-        this->filteredBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/filtered_bboxes", 10);
-
-        // 跟踪的边界框发布
-        this->trackedBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/tracked_bboxes", 10);
-
-        // 动态边界框发布
-        this->dynamicBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/dynamic_bboxes", 10);
-
-        // 激光雷达聚类发布 
-        this->lidarClustersPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/lidar_clusters", 10);
-
-        // 过滤后的点云发布 
-        this->filteredPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/filtered_point_cloud", 10);
-
-        // 动态点云发布
-        this->dynamicPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/dynamic_point_cloud", 10);
-
-        // 原始动态点云发布
-        this->rawDynamicPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/raw_dynamic_point_cloud", 10);
-
-        // 降采样点可视化发布
-        this->downSamplePointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/downsampled_point_cloud", 10);
-
+        //===========================原始点云过滤与检测器可视化========================================
         // 原始激光雷达点可视化发布
         this->rawLidarPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/raw_lidar_point_cloud", 10);
+
+        // 过滤后点云可视化发布
+        this->downSamplePointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/downsampled_point_cloud", 10);
+
+        // 聚类检测后的点云发布 
+        this->filteredPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/filtered_point_cloud", 10);
+
+        // 聚类检测后的边界框发布
+        this->filteredBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/filtered_bboxes", 10);
+
+        //============================数据跟踪可视化===============================================
+        // 跟踪的边界框发布
+        this->trackedBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/tracked_bboxes", 10);
 
         // 历史轨迹发布
         this->historyTrajPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/history_trajectories", 10);
 
         // 速度可视化发布
         this->velVisPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/velocity_visualizaton", 10);
+  
+
+        //===========================动态检测可视化===============================================
+        // 动态点云发布
+        this->dynamicPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/dynamic_point_cloud", 10);
+
+        // 动态边界框发布
+        this->dynamicBBoxesPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(this->ns_ + "/dynamic_bboxes", 10);
+        
+        // 原始动态点云发布
+        this->rawDynamicPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(this->ns_ + "/raw_dynamic_point_cloud", 10); 
     }   
 
     void dynamicDetector::registerCallback(){
@@ -618,7 +541,7 @@ namespace onboardDetector{
     //转换点云格式，滤波一定范围内的点
     void dynamicDetector::lidarPoseCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const geometry_msgs::PoseStampedConstPtr& pose){
         // [Performance Timing] 测量回调函数耗时
-        auto start_time = std::chrono::high_resolution_clock::now();
+        // auto start_time = std::chrono::high_resolution_clock::now();
         
         std::lock_guard<std::mutex> lock(cloudMutex_); // 加锁保护共享数据
         
@@ -694,11 +617,11 @@ namespace onboardDetector{
         this->downSamplePointsPub_.publish(outputCloud);
         
         // [Performance Timing] 输出耗时
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points: %lu -> %lu", 
-                         this->hint_.c_str(), duration.count() / 1000.0, 
-                         tempCloud->size(), this->lidarCloud_->size());
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points: %lu -> %lu", 
+        //                  this->hint_.c_str(), duration.count() / 1000.0, 
+        //                  tempCloud->size(), this->lidarCloud_->size());
         // ROS_INFO_THROTTLE(1.0, "new pointCloud%s", this->hasNewCloud_);
     }
 
@@ -791,7 +714,7 @@ namespace onboardDetector{
     // 激光雷达检测定时器回调函数
     void dynamicDetector::lidarDetectionCB(const ros::TimerEvent& event){
         // [Performance Timing] 测量回调函数耗时
-        auto start_time = std::chrono::high_resolution_clock::now();
+        // auto start_time = std::chrono::high_resolution_clock::now();
         
         // 检查是否有新点云数据
         if (!hasNewCloud_) {
@@ -816,14 +739,14 @@ namespace onboardDetector{
         hasNewDetection_ = true; // 标记有新检测结果
         
         // [Performance Timing] 输出耗时
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
+        // auto end_time = std::chrono::high_resolution_clock::now();
+        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        // ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
     }
 
     // 跟踪定时器回调函数,有个问题，匹配时，多出的轨迹直接丢掉
     void dynamicDetector::trackingCB(const ros::TimerEvent&){
-        // // [Performance Timing] 测量回调函数耗时
+        // [Performance Timing] 测量回调函数耗时
         // auto start_time = std::chrono::high_resolution_clock::now();
         
         // 检查是否有新检测结果
@@ -853,7 +776,7 @@ namespace onboardDetector{
         hasNewDetection_ = false; // 标记检测结果已处理
         hasNewTracking_ = true; // 标记有新跟踪结果
         
-        // // [Performance Timing] 输出耗时
+        // [Performance Timing] 输出耗时
         // auto end_time = std::chrono::high_resolution_clock::now();
         // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
         // ROS_INFO_THROTTLE(1.0, "%s: trackingCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
@@ -1013,13 +936,7 @@ namespace onboardDetector{
         //----------------------------障碍物检测阶段----------------------------------------
         // 从原始（未降采样）的激光雷达数据中提取并发布动态点云，以获得更密集的视觉效果
         this->publishRawDynamicPoints();
-        // 发布过滤后的点云（通常是灰色的），检测完障碍物的所有点云簇
         this->publishFilteredPoints();
-        // 发布带颜色的激光雷达聚类点云，每个聚类一个随机颜色
-        this->publishLidarClusters(); 
-        // 发布雷达检测器的聚类边界框（灰色）
-        this->publish3dBox(this->lidarBBoxes_, this->lidarBBoxesPub_, 0.5, 0.5, 0.5); 
-        // 等于同上
         this->publish3dBox(this->filteredBBoxes_, this->filteredBBoxesPub_, 0, 1, 1);
 
         //----------------------------障碍物关联和跟踪阶段-------------------------------------
@@ -1049,7 +966,7 @@ namespace onboardDetector{
      * @param bbox 待分类的边界框（引用传递，会修改其分类标志）
      * @param centroid 点云质心坐标 [x, y, z, 1]
      * 分类规则：
-     * - 人：z轴宽度 >= x/y轴最小值的阈值倍数 且 质心z < z轴宽度的阈值倍数
+     * - 人：z轴宽度 >= x/y轴最大值的阈值倍数 且 质心z < z轴宽度的阈值倍数
      * - 车：x/y轴最大宽度 >= z轴的阈值倍数 且 质心z < z轴宽度的阈值倍数
      * - 无人机：x/y/z轴宽度都 < 阈值 且 质心z > z轴宽度的阈值倍数
      * - 其他：不满足以上条件
@@ -1065,7 +982,7 @@ namespace onboardDetector{
         double xy_max = std::max(x_width, y_width);
 
         // 分类为人：z轴宽度大，质心靠下（站立的人形）
-        if (z_width >= xy_min * this->classifyHumanZWidthRatio_ && 
+        if (z_width >= xy_max * this->classifyHumanZWidthRatio_ && 
             centroid_z < z_width * this->classifyHumanCentroidZRatio_) {
             bbox.is_human = true;
         }
@@ -1085,6 +1002,15 @@ namespace onboardDetector{
         else {
             bbox.is_else = true;
         }
+        
+        // 输出分类详细信息（包含物体尺寸和质心高度）
+        std::string classType = bbox.is_human ? "Human" : 
+                               bbox.is_che ? "Vehicle" :
+                               bbox.is_uav ? "UAV" : "Other";
+        ROS_DEBUG_THROTTLE(2.0, "%s: Classified as %s - Size(%.2f,%.2f,%.2f), Centroid_z=%.2f, xy_max/z=%.2f, z/xy_max=%.2f",
+                          this->hint_.c_str(), classType.c_str(),
+                          x_width, y_width, z_width, centroid_z,
+                          xy_max/z_width, z_width/xy_max);
     }
 
     /*!
@@ -2073,41 +1999,6 @@ namespace onboardDetector{
         this->velVisPub_.publish(velVisMsg);
     }
 
-    // 发布激光雷达聚类
-    void dynamicDetector::publishLidarClusters(){
-        sensor_msgs::PointCloud2 lidarClustersMsg;
-        pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
-        for (size_t i=0; i<this->lidarClusters_.size(); ++i){
-            onboardDetector::Cluster & cluster = this->lidarClusters_[i];
-
-            std_msgs::ColorRGBA color;
-            srand(cluster.cluster_id);
-            color.r = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-            color.g = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-            color.b = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-            // color.r = 0.5;
-            // color.g = 0.5;
-            // color.b = 0.5;
-            // color.a = 1.0;
-
-            for (size_t j=0; j<cluster.points->size(); ++j){
-                pcl::PointXYZRGB point;
-                const pcl::PointXYZ & pt = cluster.points->at(j);
-                point.x = pt.x;
-                point.y = pt.y;
-                point.z = pt.z;
-                point.r = color.r * 255;
-                point.g = color.g * 255;
-                point.b = color.b * 255;
-                colored_cloud->push_back(point);
-            }
-        }
-        pcl::toROSMsg(*colored_cloud, lidarClustersMsg);
-        lidarClustersMsg.header.frame_id = "map";
-        lidarClustersMsg.header.stamp = ros::Time::now();
-        this->lidarClustersPub_.publish(lidarClustersMsg);
-    }
-
     // 发布过滤后的点
     void dynamicDetector::publishFilteredPoints(){
         sensor_msgs::PointCloud2 filteredPointsMsg;
@@ -2244,46 +2135,30 @@ namespace onboardDetector{
 
     // 用户函数：获取动态障碍物历史
     void dynamicDetector::getDynamicObstaclesHist(std::vector<std::vector<Eigen::Vector3d>>& posHist, std::vector<std::vector<Eigen::Vector3d>>& velHist, std::vector<std::vector<Eigen::Vector3d>>& sizeHist, const Eigen::Vector3d &robotSize){
-		posHist.clear();
+        posHist.clear();
         velHist.clear();
         sizeHist.clear();
 
         if (this->boxHist_.size()){
-            for (size_t i=0 ; i<this->boxHist_.size() ; ++i){
-                if (this->boxHist_[i][0].is_dynamic or this->boxHist_[i][0].is_human){   
-                    bool findMatch = false;     
-                    if (this->constrainSize_){
-                        for (Eigen::Vector3d targetSize : this->targetObjectSize_){
-                            double xdiff = std::abs(this->boxHist_[i][0].x_width - targetSize(0));
-                            double ydiff = std::abs(this->boxHist_[i][0].y_width - targetSize(1));
-                            double zdiff = std::abs(this->boxHist_[i][0].z_width - targetSize(2)); 
-                            if (xdiff < 0.8 and ydiff < 0.8 and zdiff < 1.0){
-                                findMatch = true;
-                            }
-                        }
+            for (size_t i=0; i<this->boxHist_.size(); ++i){
+                if (this->boxHist_[i][0].is_dynamic or this->boxHist_[i][0].is_human){
+                    std::vector<Eigen::Vector3d> obPosHist, obVelHist, obSizeHist;
+                    for (size_t j=0; j<this->boxHist_[i].size(); ++j){
+                        Eigen::Vector3d pos(this->boxHist_[i][j].x, this->boxHist_[i][j].y, this->boxHist_[i][j].z);
+                        Eigen::Vector3d vel(this->boxHist_[i][j].Vx, this->boxHist_[i][j].Vy, 0);
+                        Eigen::Vector3d size(this->boxHist_[i][j].x_width, this->boxHist_[i][j].y_width, this->boxHist_[i][j].z_width);
+                        size += robotSize;
+                        obPosHist.push_back(pos);
+                        obVelHist.push_back(vel);
+                        obSizeHist.push_back(size);
                     }
-                    else{
-                        findMatch = true;
-                    }
-                    if (findMatch){
-                        std::vector<Eigen::Vector3d> obPosHist, obVelHist, obSizeHist;
-                        for (size_t j=0; j<this->boxHist_[i].size() ; ++j){
-                            Eigen::Vector3d pos(this->boxHist_[i][j].x, this->boxHist_[i][j].y, this->boxHist_[i][j].z);
-                            Eigen::Vector3d vel(this->boxHist_[i][j].Vx, this->boxHist_[i][j].Vy, 0);
-                            Eigen::Vector3d size(this->boxHist_[i][j].x_width, this->boxHist_[i][j].y_width, this->boxHist_[i][j].z_width);
-                            size += robotSize;
-                            obPosHist.push_back(pos);
-                            obVelHist.push_back(vel);
-                            obSizeHist.push_back(size);
-                        }
-                        posHist.push_back(obPosHist);
-                        velHist.push_back(obVelHist);
-                        sizeHist.push_back(obSizeHist);
-                    }
+                    posHist.push_back(obPosHist);
+                    velHist.push_back(obVelHist);
+                    sizeHist.push_back(obSizeHist);
                 }
             }
         }
-	}
+    }
 
     // 将Livox CustomMsg格式转换为PointCloud2格式
     void dynamicDetector::convertCustomMsgToPointCloud2(const livox_ros_driver2::CustomMsgConstPtr& customMsg, sensor_msgs::PointCloud2& cloud){

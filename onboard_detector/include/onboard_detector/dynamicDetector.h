@@ -105,8 +105,6 @@ namespace onboardDetector{
         double lidarDBEpsilon_; // 激光雷达DBSCAN的搜索半径
         bool lidarDBUseAdaptive_; // 是否启用基于距离的自适应DBSCAN
         double lidarDBDistanceScale_; // 自适应DBSCAN的距离缩放因子
-        int gaussianDownSampleRate_; // 高斯降采样率
-        int downSampleThresh_; // 降采样后的点云数量阈值
 
         // 目标跟踪与数据关联参数
         double associationGateThresh_; // 数据关联的卡方检验门限阈值
@@ -116,14 +114,6 @@ namespace onboardDetector{
         int histSize_; // 跟踪历史的长度
         int fixSizeHistThresh_; // 固定边界框尺寸的历史长度阈值
         double fixSizeDimThresh_; // 固定边界框尺寸的维度变化阈值
-        // 卡尔曼滤波器参数
-        double eP_; // 初始不确定性
-        double eQPos_; // 过程噪声 - 位置
-        double eQVel_; // 过程噪声 - 速度
-        double eQAcc_; // 过程噪声 - 加速度
-        double eRPos_; // 测量噪声 - 位置
-        double eRVel_; // 测量噪声 - 速度
-        double eRAcc_; // 测量噪声 - 加速度
         int kfAvgFrames_; // 用于计算观测速度的帧数
 
         // 动态/静态分类参数
@@ -135,8 +125,6 @@ namespace onboardDetector{
         int dynamicConsistThresh_; // 动态一致性检查的帧数阈值
 
         // 尺寸约束参数
-        bool constrainSize_; // 是否启用目标尺寸约束
-        std::vector<Eigen::Vector3d> targetObjectSize_; // 目标物体的典型尺寸
         Eigen::Vector3d maxObjectSize_; // 物体的最大尺寸阈值
 
         // 分类阈值参数

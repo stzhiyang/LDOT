@@ -20,8 +20,6 @@ time_step: 0.1 # 系统运行的时间步长 (秒), 约等于 30Hz，点云频�
 # 点云过滤参数
 ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.8   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
-downsample_threshold: 3500    # 点云降采样的阈值, 超过该数量则进行降采样0
-gaussian_downsample_rate: 6   # 高斯降采样的比率0
 
 # DBSCAN 激光雷达聚类参数
 lidar_detection_range: [10.0, 10.0, 3.0]  # 激光雷达最大检测范围 [x, y, z] (米)
@@ -31,28 +29,24 @@ lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (t
 lidar_DBSCAN_distance_scale: 0.05  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
 
 # 尺寸约束
-target_constrain_size: false # 是否启用目标尺寸约束0
-target_object_size: [0.45, 0.35, 1.8] # 期望的目标物体尺寸 [长, 宽, 高] (米)0
-max_object_size: [6.0, 6.0, 2.5] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
+max_object_size: [5.0, 5.0, 2.5] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
 
-# 类别约束，[box中z、x/y的宽度比较, 质心z高度 < z轴宽度的倍数]
-classify_human_threshold: [2.0, 0.7]   # z >= x/y
-classify_vehicle_threshold: [1.5, 0.7] # x/y >= z
+# 类别约束，[box中z、x/y的宽度比较, 质心z高度  z轴宽度的倍数]
+classify_human_threshold: [2.0, 0.8]   # z >= x/y
+classify_vehicle_threshold: [1.1, 0.8] # x/y >= z
 classify_uav_threshold: [0.6, 1.2] # z/y/z <
 
 # 目标跟踪与数据关联
-# 新的数据关联方法：基于马氏距离和匈牙利算法
-association_gate_threshold: 9.21  # 关联门限阈值（卡方分布，自由度3，99%置信度）
+association_gate_threshold: 7.815   # 关联门限阈值（卡方分布，自由度3，99%置信度）
 association_pos_cost_weight: 1.0  # 位置代价权重（马氏距离）
-association_size_cost_weight: 0.5 # 尺寸代价权重（归一化差异）
-association_std_cost_weight: 0.3  # 点云标准差代价权重（形状变化）
+association_size_cost_weight: 0.2 # 尺寸代价权重（归一化差异）
+association_std_cost_weight: 0.1  # 点云标准差代价权重（形状变化）
 history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
 fix_size_history_threshold: 10 # 固定目标尺寸的历史帧数阈值, 当一个目标被连续跟踪超过该帧数后, 其尺寸将被固定
 fix_size_dimension_threshold: 0.4 # 固定目标尺寸的维度比例阈值, 用于判断是否固定尺寸
 # 如果所有三个维度的相对差异都小于fix_size_dimension_threshold（默认为0.4，即40%），则将目标的尺寸固定为历史记录中的值
 # 一旦尺寸被固定，后续帧中的目标将保持相同的尺寸，即使检测算法给出不同的尺寸
-kalman_filter_param: [0.25, 0.01, 0.05, 0.05, 0.04, 0.3, 0.6] # 卡尔曼滤波器参数
-kalman_filter_averaging_frames: 10 # 卡尔曼滤波器状态平均的帧数
+kalman_filter_averaging_frames: 2 # 卡尔曼滤波器状态平均的帧数
 
 # 动态/静态分类
 frame_skip: 4 # 比较两个点云聚类以判断动态性时跳过的帧数
