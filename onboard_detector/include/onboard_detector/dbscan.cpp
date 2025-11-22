@@ -8,85 +8,101 @@
 */
 #include <onboard_detector/dbscan.h>
 #include <iostream>
+#include <algorithm>
 
 namespace onboardDetector{
-    // 运行DBSCAN聚类算法
-    int DBSCAN::run()
+    // 构建KD-Tree用于快速邻域搜索
+    void DBSCAN::buildKdTree()
     {
-        // 从1开始初始化聚类ID
-        int clusterID = 1;
-        vector<Point>::iterator iter;
-        // 遍历所有点
-        for(iter = m_points.begin(); iter != m_points.end(); ++iter)
+        m_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
+        m_cloud->width = m_pointSize;
+        m_cloud->height = 1;
+        m_cloud->points.resize(m_pointSize);
+        
+        for (size_t i = 0; i < m_pointSize; ++i)
         {
-            // 如果点尚未被分类
-            if ( iter->clusterID == UNCLASSIFIED )
-            {
-                // 尝试从该点开始扩展一个新的聚类
-                if ( expandCluster(*iter, clusterID) != FAILURE )
-                {
-                    // 如果成功，为下一个聚类准备新的ID
-                    clusterID += 1;
-                }
-            }
+            m_cloud->points[i].x = m_points[i].x;
+            m_cloud->points[i].y = m_points[i].y;
+            m_cloud->points[i].z = m_points[i].z;
         }
-
-        return 0;
+        
+        m_kdtree.setInputCloud(m_cloud);
     }
 
-    // 从一个核心点扩展一个聚类
-    int DBSCAN::expandCluster(Point point, int clusterID)
-    {    
-        // 找到当前点的邻域内的所有点（作为种子点）
-        vector<int> clusterSeeds = calculateCluster(point);
+    // 使用KD-Tree进行邻域搜索（优化版本）
+    vector<int> DBSCAN::calculateClusterKdTree(Point point, int pointIdx)
+    {
+        vector<int> clusterIndex;
+        vector<int> pointIdxRadiusSearch;
+        vector<float> pointRadiusSquaredDistance;
+        
+        // 获取当前点的自适应epsilon值
+        double adaptiveEps = getAdaptiveEpsilon(point);
+        double searchRadius = sqrt(adaptiveEps);  // KD-Tree使用实际距离，不是距离平方
+        
+        pcl::PointXYZ searchPoint;
+        searchPoint.x = point.x;
+        searchPoint.y = point.y;
+        searchPoint.z = point.z;
+        
+        // 使用KD-Tree进行半径搜索，时间复杂度O(log N)
+        if (m_kdtree.radiusSearch(searchPoint, searchRadius, pointIdxRadiusSearch, pointRadiusSquaredDistance) > 0)
+        {
+            clusterIndex = pointIdxRadiusSearch;
+        }
+        
+        return clusterIndex;
+    }
+
+    // 使用KD-Tree优化的expandCluster函数
+    int DBSCAN::expandClusterKdTree(int pointIdx, int clusterID)
+    {
+        Point point = m_points[pointIdx];
+        
+        // 使用KD-Tree找到当前点的邻域内的所有点（作为种子点）
+        vector<int> clusterSeeds = calculateClusterKdTree(point, pointIdx);
 
         // 如果邻域内的点数小于m_minPoints，则该点不是核心点，可能为噪声点
-        if ( clusterSeeds.size() < m_minPoints )
+        if (clusterSeeds.size() < m_minPoints)
         {
-            point.clusterID = NOISE;
+            m_points[pointIdx].clusterID = NOISE;
             return FAILURE;
         }
         else
         {
             // 将所有种子点分配给当前聚类
-            int index = 0, indexCorePoint = 0;
-            vector<int>::iterator iterSeeds;
-            for( iterSeeds = clusterSeeds.begin(); iterSeeds != clusterSeeds.end(); ++iterSeeds)
+            for (int idx : clusterSeeds)
             {
-                m_points.at(*iterSeeds).clusterID = clusterID; // m_points中找到*iterSeeds
-                // 找到核心点在种子点列表中的索引
-                if (m_points.at(*iterSeeds).x == point.x && m_points.at(*iterSeeds).y == point.y && m_points.at(*iterSeeds).z == point.z )
-                {
-                    indexCorePoint = index;
-                }
-                ++index;
+                m_points[idx].clusterID = clusterID;
             }
+            
             // 从种子点列表中移除核心点自身，避免重复处理
-            clusterSeeds.erase(clusterSeeds.begin()+indexCorePoint);
+            clusterSeeds.erase(std::remove(clusterSeeds.begin(), clusterSeeds.end(), pointIdx), clusterSeeds.end());
 
             // 遍历所有种子点，继续扩展聚类
-            for( vector<int>::size_type i = 0, n = clusterSeeds.size(); i < n; ++i )
+            for (size_t i = 0; i < clusterSeeds.size(); ++i)
             {
-                // 找到当前种子点的邻域
-                vector<int> clusterNeighors = calculateCluster(m_points.at(clusterSeeds[i]));
+                int seedIdx = clusterSeeds[i];
+                
+                // 使用KD-Tree找到当前种子点的邻域
+                vector<int> clusterNeighbors = calculateClusterKdTree(m_points[seedIdx], seedIdx);
 
                 // 如果这个种子点也是一个核心点
-                if ( clusterNeighors.size() >= m_minPoints )
+                if (clusterNeighbors.size() >= m_minPoints)
                 {
-                    vector<int>::iterator iterNeighors;
-                    for ( iterNeighors = clusterNeighors.begin(); iterNeighors != clusterNeighors.end(); ++iterNeighors )
+                    for (int neighborIdx : clusterNeighbors)
                     {
                         // 如果邻域中的点是未分类或噪声点
-                        if ( m_points.at(*iterNeighors).clusterID == UNCLASSIFIED || m_points.at(*iterNeighors).clusterID == NOISE )
+                        if (m_points[neighborIdx].clusterID == UNCLASSIFIED || 
+                            m_points[neighborIdx].clusterID == NOISE)
                         {
                             // 如果是未分类的点，则将其添加到种子列表中以供后续扩展
-                            if ( m_points.at(*iterNeighors).clusterID == UNCLASSIFIED )
+                            if (m_points[neighborIdx].clusterID == UNCLASSIFIED)
                             {
-                                clusterSeeds.push_back(*iterNeighors);
-                                n = clusterSeeds.size();
+                                clusterSeeds.push_back(neighborIdx);
                             }
                             // 将该邻域点分配给当前聚类
-                            m_points.at(*iterNeighors).clusterID = clusterID;
+                            m_points[neighborIdx].clusterID = clusterID;
                         }
                     }
                 }
@@ -96,32 +112,28 @@ namespace onboardDetector{
         }
     }
 
-    // 计算并返回一个点在其epsilon邻域内的所有点的索引指针地址
-    vector<int> DBSCAN::calculateCluster(Point point)
+    // 运行DBSCAN聚类算法（KD-Tree优化版本）
+    int DBSCAN::run()
     {
-        int index = 0;
-        vector<Point>::iterator iter;
-        vector<int> clusterIndex;
-        // 获取当前点的自适应epsilon值
-        double adaptiveEps = getAdaptiveEpsilon(point);
-        // 遍历所有点
-        for( iter = m_points.begin(); iter != m_points.end(); ++iter)
+        // 从1开始初始化聚类ID
+        int clusterID = 1;
+        
+        // 遍历所有点（使用索引而不是迭代器以配合KD-Tree）
+        for (size_t i = 0; i < m_points.size(); ++i)
         {
-            // 如果两个点之间的距离（的平方）小于或等于epsilon（的平方）
-            if ( calculateDistance(point, *iter) <= adaptiveEps )
+            // 如果点尚未被分类
+            if (m_points[i].clusterID == UNCLASSIFIED)
             {
-                // 将该点的索引添加到邻域索引列表中
-                clusterIndex.push_back(index);
+                // 尝试从该点开始扩展一个新的聚类（使用KD-Tree优化版本）
+                if (expandClusterKdTree(i, clusterID) != FAILURE)
+                {
+                    // 如果成功，为下一个聚类准备新的ID
+                    clusterID += 1;
+                }
             }
-            index++;
         }
-        return clusterIndex;
-    }
 
-    // 计算两个点之间的欧氏距离的平方
-    inline double DBSCAN::calculateDistance(const Point& pointCore, const Point& pointTarget )
-    {
-        return pow(pointCore.x - pointTarget.x,2)+pow(pointCore.y - pointTarget.y,2)+pow(pointCore.z - pointTarget.z,2);
+        return 0;
     }
 
     // 计算点到原点（传感器位置）的距离

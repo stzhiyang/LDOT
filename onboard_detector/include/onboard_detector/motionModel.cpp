@@ -415,8 +415,11 @@ void CTRA_Model::normalizeYaw(Eigen::VectorXd& state) {
 }
 
 void CTRA_Model::normalizeYawInResidual(Eigen::VectorXd& residual) {
-    // 残差中没有yaw (只有位置测量)
-    // 不需要处理
+    // CTRA模型测量向量: [x, y, v, a, yaw, yaw_rate]
+    // 需要归一化residual中的yaw (索引4)
+    if (residual.size() >= 5) {
+        residual(4) = wrapToPi(residual(4));
+    }
 }
 
 } // namespace onboardDetector

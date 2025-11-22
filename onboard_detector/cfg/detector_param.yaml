@@ -31,7 +31,7 @@ lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (t
 lidar_DBSCAN_distance_scale: 0.05  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
 
 # 尺寸约束
-target_constrain_size: false # 是否启用目标尺寸约束
+target_constrain_size: false # 是否启用目标尺寸约束0
 target_object_size: [0.45, 0.35, 1.8] # 期望的目标物体尺寸 [长, 宽, 高] (米)0
 max_object_size: [6.0, 6.0, 2.5] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
 

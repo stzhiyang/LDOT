@@ -8,6 +8,9 @@
 
 #include <vector>
 #include <cmath>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/kdtree/kdtree_flann.h>
 
 #define UNCLASSIFIED -1
 #define CORE_POINT 1
@@ -34,15 +37,16 @@ namespace onboardDetector{
             m_pointSize = points.size();
             m_useAdaptiveEps = useAdaptive;
             m_distanceScale = distScale;
+            buildKdTree();  // 构建KD-Tree
         }
         ~DBSCAN(){}
 
         int run();
-        vector<int> calculateCluster(Point point);
-        int expandCluster(Point point, int clusterID);
-        inline double calculateDistance(const Point& pointCore, const Point& pointTarget);
+        vector<int> calculateClusterKdTree(Point point, int pointIdx);  // 使用KD-Tree的版本
+        int expandClusterKdTree(int pointIdx, int clusterID);  // 使用KD-Tree的版本
         inline double calculateDistanceToOrigin(const Point& point);  // 计算点到原点的距离
         inline double getAdaptiveEpsilon(const Point& point);  // 获取自适应epsilon
+        void buildKdTree();  // 构建KD-Tree
         
     public:
         vector<Point> m_points;
@@ -53,6 +57,10 @@ namespace onboardDetector{
         float m_epsilon;  // 基础epsilon值
         bool m_useAdaptiveEps;  // 是否使用基于距离的自适应epsilon
         float m_distanceScale;  // 距离缩放因子，用于计算自适应epsilon
+        
+        // KD-Tree相关成员
+        pcl::PointCloud<pcl::PointXYZ>::Ptr m_cloud;
+        pcl::KdTreeFLANN<pcl::PointXYZ> m_kdtree;
     };
 }
 #endif // DBSCAN_H

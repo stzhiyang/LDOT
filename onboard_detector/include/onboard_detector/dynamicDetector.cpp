@@ -618,7 +618,7 @@ namespace onboardDetector{
     //转换点云格式，滤波一定范围内的点
     void dynamicDetector::lidarPoseCB(const sensor_msgs::PointCloud2ConstPtr& cloudMsg, const geometry_msgs::PoseStampedConstPtr& pose){
         // [Performance Timing] 测量回调函数耗时
-        // auto start_time = std::chrono::high_resolution_clock::now();
+        auto start_time = std::chrono::high_resolution_clock::now();
         
         std::lock_guard<std::mutex> lock(cloudMutex_); // 加锁保护共享数据
         
@@ -662,24 +662,6 @@ namespace onboardDetector{
                 continue;
             }
             preTransformCloud->push_back(pt);
-            
-            //均匀密度降采样
-            // // 计算点到传感器的距离
-            // double dist = std::sqrt(pt.x * pt.x + pt.y * pt.y);
-            // // 使用平滑的S型曲线计算采样概率
-            // // 采用 tanh 函数实现平滑过渡
-            // double normalized_dist = (dist - characteristic_dist) / characteristic_dist;
-            // // tanh函数：从-1平滑过渡到+1
-            // // 映射到采样率：从0.3平滑增长到0.8
-            // double tanh_value = std::tanh(normalized_dist);
-            // double sampling_prob = 0.50 + 0.25 * tanh_value;
-            // // dist=0时 prob≈0.35, dist=characteristic_dist时 prob=0.55, dist→∞时 prob≈0.80
-            // // 确保概率在合理范围内
-            // sampling_prob = std::max(0.20, std::min(sampling_prob, 0.85));
-            // double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
-            // if (r < sampling_prob) {
-            //     preTransformCloud->push_back(pt);
-            // }
         }
 
         // --- 坐标变换 ---
@@ -700,23 +682,6 @@ namespace onboardDetector{
             }
         }
 
-        // // --- 空间自适应体素网格降采样 ---
-        // pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud (new pcl::PointCloud<pcl::PointXYZ>());
-        
-        // if (groundRoofFilterCloud->size() > this->downSampleThresh_) {
-        //     // 根据点云密度自适应调整体素大小
-        //     double density_ratio = static_cast<double>(groundRoofFilterCloud->size()) / static_cast<double>(this->downSampleThresh_);
-        //     float adaptive_leaf_size = 0.1f * std::sqrt(density_ratio);
-        //     adaptive_leaf_size = std::max(0.08f, std::min(adaptive_leaf_size, 0.3f)); // 限制在合理范围内
-            
-        //     pcl::VoxelGrid<pcl::PointXYZ> sor;
-        //     sor.setInputCloud(groundRoofFilterCloud);
-        //     sor.setLeafSize(adaptive_leaf_size, adaptive_leaf_size, adaptive_leaf_size);
-        //     sor.filter(*downsampledCloud);
-        // } else {
-        //     downsampledCloud = groundRoofFilterCloud;
-        // }
-
         // 存储处理后的激光雷达点云
         this->lidarCloud_ = groundRoofFilterCloud;
         hasNewCloud_ = true; // 标记有新数据可用
@@ -729,11 +694,12 @@ namespace onboardDetector{
         this->downSamplePointsPub_.publish(outputCloud);
         
         // [Performance Timing] 输出耗时
-        // auto end_time = std::chrono::high_resolution_clock::now();
-        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        // ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points: %lu -> %lu", 
-        //                  this->hint_.c_str(), duration.count() / 1000.0, 
-        //                  tempCloud->size(), this->lidarCloud_->size());
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points: %lu -> %lu", 
+                         this->hint_.c_str(), duration.count() / 1000.0, 
+                         tempCloud->size(), this->lidarCloud_->size());
+        // ROS_INFO_THROTTLE(1.0, "new pointCloud%s", this->hasNewCloud_);
     }
 
     // 里程计回调函数，处理点云和里程计数据
@@ -782,23 +748,6 @@ namespace onboardDetector{
                 continue;
             }
             preTransformCloud->push_back(pt);
-            
-            // // 计算点到传感器的距离
-            // double dist = std::sqrt(pt.x * pt.x + pt.y * pt.y);
-            // // 使用平滑的S型曲线计算采样概率
-            // // 采用 tanh 函数实现平滑过渡
-            // double normalized_dist = (dist - characteristic_dist) / characteristic_dist;
-            // // tanh函数：从-1平滑过渡到+1
-            // // 映射到采样率：从0.3平滑增长到0.8
-            // double tanh_value = std::tanh(normalized_dist);
-            // double sampling_prob = 0.50 + 0.25 * tanh_value;
-            // // dist=0时 prob≈0.35, dist=characteristic_dist时 prob=0.55, dist→∞时 prob≈0.80
-            // // 确保概率在合理范围内
-            // sampling_prob = std::max(0.20, std::min(sampling_prob, 0.85));
-            // double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
-            // if (r < sampling_prob) {
-            //     preTransformCloud->push_back(pt);
-            // }
         }
 
         // --- 坐标变换 ---
@@ -819,22 +768,6 @@ namespace onboardDetector{
             }
         }
 
-        // // --- 空间自适应体素网格降采样 ---
-        // pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud (new pcl::PointCloud<pcl::PointXYZ>());
-        // if (groundRoofFilterCloud->size() > this->downSampleThresh_) {
-        //     // 根据点云密度自适应调整体素大小
-        //     double density_ratio = static_cast<double>(groundRoofFilterCloud->size()) / static_cast<double>(this->downSampleThresh_);
-        //     float adaptive_leaf_size = 0.1f * std::sqrt(density_ratio);
-        //     adaptive_leaf_size = std::max(0.08f, std::min(adaptive_leaf_size, 0.3f)); // 限制在合理范围内
-            
-        //     pcl::VoxelGrid<pcl::PointXYZ> sor;
-        //     sor.setInputCloud(groundRoofFilterCloud);
-        //     sor.setLeafSize(adaptive_leaf_size, adaptive_leaf_size, adaptive_leaf_size);
-        //     sor.filter(*downsampledCloud);
-        // } else {
-        //     downsampledCloud = groundRoofFilterCloud;
-        // }
-
         // 存储处理后的点云
         this->lidarCloud_ = groundRoofFilterCloud;
         hasNewCloud_ = true; // 标记有新数据可用
@@ -852,12 +785,13 @@ namespace onboardDetector{
         // ROS_INFO_THROTTLE(1.0, "%s: lidarOdomCB took %.3f ms, points: %lu -> %lu", 
         //                  this->hint_.c_str(), duration.count() / 1000.0,
         //                  tempCloud->size(), this->lidarCloud_->size());
+        // ROS_INFO_THROTTLE(1.0, "new pointCloud%s", this->hasNewCloud_);
     }
 
     // 激光雷达检测定时器回调函数
     void dynamicDetector::lidarDetectionCB(const ros::TimerEvent& event){
-        // // [Performance Timing] 测量回调函数耗时
-        // auto start_time = std::chrono::high_resolution_clock::now();
+        // [Performance Timing] 测量回调函数耗时
+        auto start_time = std::chrono::high_resolution_clock::now();
         
         // 检查是否有新点云数据
         if (!hasNewCloud_) {
@@ -881,10 +815,10 @@ namespace onboardDetector{
         this->newDetectFlag_ = true; // get a new detection
         hasNewDetection_ = true; // 标记有新检测结果
         
-        // // [Performance Timing] 输出耗时
-        // auto end_time = std::chrono::high_resolution_clock::now();
-        // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        // ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
+        // [Performance Timing] 输出耗时
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms", this->hint_.c_str(), duration.count() / 1000.0);
     }
 
     // 跟踪定时器回调函数,有个问题，匹配时，多出的轨迹直接丢掉
@@ -944,16 +878,7 @@ namespace onboardDetector{
         // 注意：在某些情况下，我们不需要执行动态障碍物识别
         for (size_t i=0; i<this->pcHist_.size() ; ++i){
             // ===================================================================================
-            // 情况一：如果目标已被YOLO等外部检测器识别为人类，则直接视为动态（此功能当前被注释掉）
-            // if (this->boxHist_[i][0].is_human){
-            //     dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
-            //     continue;
-            // }
-            // ===================================================================================
-
-
-            // ===================================================================================
-            // 情况二：历史记录长度不足以进行分类
+            // 情况一：历史记录长度不足以进行分类
             // 确定用于比较的当前帧与历史帧之间的时间间隔（帧数）
             int curFrameGap;
             if (int(this->pcHist_[i].size()) < this->skipFrame_+1){
@@ -968,7 +893,7 @@ namespace onboardDetector{
 
 
             // ==================================================================================
-            // 情况三：强制动态（如果一个障碍物在过去一段时间内被频繁分类为动态，则强制认定其为动态）
+            // 情况二：强制动态（如果一个障碍物在过去一段时间内被频繁分类为动态，则强制认定其为动态）
             int dynaFrames = 0;
             if (int(this->boxHist_[i].size()) > this->forceDynaCheckRange_){
                 for (int j=1 ; j<this->forceDynaCheckRange_+1 ; ++j){
@@ -1069,33 +994,7 @@ namespace onboardDetector{
             }
         }
 
-        // --- 可选步骤：根据目标尺寸过滤动态障碍物 ---
-        if (this->constrainSize_){
-            std::vector<onboardDetector::box3D> dynamicBBoxesBeforeConstrain = dynamicBBoxesTemp;
-            dynamicBBoxesTemp.clear();
-
-            // 遍历所有初步认定的动态障碍物
-            for (onboardDetector::box3D ob : dynamicBBoxesBeforeConstrain){
-                bool findMatch = false;
-                // 检查其尺寸是否与预设的“目标尺寸”之一匹配
-                for (Eigen::Vector3d targetSize : this->targetObjectSize_){
-                    double xdiff = std::abs(ob.x_width - targetSize(0));
-                    double ydiff = std::abs(ob.y_width - targetSize(1));
-                    double zdiff = std::abs(ob.z_width - targetSize(2)); 
-                    // 如果尺寸差异在容忍范围内
-                    if (xdiff < 0.8 and ydiff < 0.8 and zdiff < 1.0){
-                        findMatch = true;
-                    }
-                }
-
-                // 如果尺寸匹配，则保留该障碍物
-                if (findMatch){
-                    dynamicBBoxesTemp.push_back(ob);
-                }
-            }
-        }
-
-        // 更新最终的动态障碍物列表
+        // 直接更新最终的动态障碍物列表（已移除尺寸过滤）
         this->dynamicBBoxes_ = dynamicBBoxesTemp;
         
         hasNewTracking_ = false; // 标记跟踪结果已处理
@@ -1204,34 +1103,31 @@ namespace onboardDetector{
         // 将点云数据传递给检测器并执行DBSCAN聚类
         this->lidarDetector_->getPointcloud(this->lidarCloud_);
         this->lidarDetector_->lidarDBSCAN();
-            // 将点云数据传递给检测器并执行DBSCAN聚类
-            this->lidarDetector_->getPointcloud(this->lidarCloud_);
-            this->lidarDetector_->lidarDBSCAN();
 
-            // 获取聚类结果和对应的边界框
-            std::vector<onboardDetector::Cluster> lidarClustersRaw = this->lidarDetector_->getClusters();
-            std::vector<onboardDetector::Cluster> lidarClustersFiltered;
-            std::vector<onboardDetector::box3D> lidarBBoxesRaw = this->lidarDetector_->getBBoxes();
-            std::vector<onboardDetector::box3D> lidarBBoxesFiltered;
-            
-            // 遍历所有边界框，过滤掉尺寸过大的对象并进行分类
-            for (int i=0; i<int(lidarBBoxesRaw.size()); ++i){
-                onboardDetector::box3D lidarBBox = lidarBBoxesRaw[i];
-                // 过滤掉尺寸超过阈值的边界框
-                if(lidarBBox.x_width > this->maxObjectSize_(0) || lidarBBox.y_width > this->maxObjectSize_(1) || lidarBBox.z_width > this->maxObjectSize_(2)){
-                    continue;
-                }
-                
-                // 对边界框进行分类
-                this->classifyBox(lidarBBox, lidarClustersRaw[i].centroid);
-                
-                lidarBBoxesFiltered.push_back(lidarBBox);
-                lidarClustersFiltered.push_back(lidarClustersRaw[i]);            
+        // 获取聚类结果和对应的边界框
+        std::vector<onboardDetector::Cluster> lidarClustersRaw = this->lidarDetector_->getClusters();
+        std::vector<onboardDetector::Cluster> lidarClustersFiltered;
+        std::vector<onboardDetector::box3D> lidarBBoxesRaw = this->lidarDetector_->getBBoxes();
+        std::vector<onboardDetector::box3D> lidarBBoxesFiltered;
+        
+        // 遍历所有边界框，过滤掉尺寸过大的对象并进行分类
+        for (int i=0; i<int(lidarBBoxesRaw.size()); ++i){
+            onboardDetector::box3D lidarBBox = lidarBBoxesRaw[i];
+            // 过滤掉尺寸超过阈值的边界框
+            if(lidarBBox.x_width > this->maxObjectSize_(0) || lidarBBox.y_width > this->maxObjectSize_(1) || lidarBBox.z_width > this->maxObjectSize_(2)){
+                continue;
             }
             
-            // 保存过滤后的结果
-            this->lidarBBoxes_ = lidarBBoxesFiltered;
-            this->lidarClusters_ = lidarClustersFiltered;
+            // 对边界框进行分类
+            this->classifyBox(lidarBBox, lidarClustersRaw[i].centroid);
+            
+            lidarBBoxesFiltered.push_back(lidarBBox);
+            lidarClustersFiltered.push_back(lidarClustersRaw[i]);            
+        }
+        
+        // 保存过滤后的结果
+        this->lidarBBoxes_ = lidarBBoxesFiltered;
+        this->lidarClusters_ = lidarClustersFiltered;
 
         // 临时存储来自激光雷达的边界框及其点云特征
         std::vector<onboardDetector::box3D> lidarBBoxesTemp;
@@ -1372,6 +1268,19 @@ namespace onboardDetector{
                     // 获取历史轨迹的最新状态
                     const onboardDetector::box3D& histBox = this->boxHist_[j][0];
                     const Eigen::Vector3d& histStd = this->pcStdHist_[j][0];
+                    
+                    // 分类一致性检查：只允许相同类别的物体匹配
+                    // 这样可以避免分类切换导致的滤波器维度不匹配问题
+                    bool classMatch = (currBox.is_human == histBox.is_human) &&
+                                     (currBox.is_uav == histBox.is_uav) &&
+                                     (currBox.is_che == histBox.is_che) &&
+                                     (currBox.is_else == histBox.is_else);
+                    
+                    if (!classMatch) {
+                        // 分类不一致，设置极大代价，禁止匹配
+                        costMatrix[i][j] = 1e9;
+                        continue;
+                    }
                     
                     // 使用卡尔曼滤波器预测的位置
                     onboardDetector::box3D predBox = histBox;
@@ -1717,6 +1626,7 @@ namespace onboardDetector{
                 }
                 
                 // 根据不同类别的运动模型准备不同维度的测量
+                // 注意：数据关联时已确保分类一致性，所以这里直接使用当前检测的分类
                 if (currDetectedBBox.is_human) {
                     // 人：2D CA模型，测量 [x, y, vx, vy, ax, ay]
                     measurement.resize(6);
@@ -1774,7 +1684,7 @@ namespace onboardDetector{
                     measurement(5) = vz;
                 }
                 
-                // 执行更新步骤
+                // 执行更新步骤（数据关联已保证分类一致性，维度必然匹配）
                 filtersTemp.back()->update(measurement);
                 
                 // 从滤波器中提取更新后的状态
@@ -1839,7 +1749,7 @@ namespace onboardDetector{
                 newEstimatedBBox.y_width = currDetectedBBox.y_width;
                 newEstimatedBBox.z_width = currDetectedBBox.z_width;
                 
-                // 继承其他标志位
+                // 继承当前检测的分类标志
                 newEstimatedBBox.is_dynamic = currDetectedBBox.is_dynamic;
                 newEstimatedBBox.is_human = currDetectedBBox.is_human;
                 newEstimatedBBox.is_che = currDetectedBBox.is_che;
