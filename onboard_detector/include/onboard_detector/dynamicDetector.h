@@ -29,7 +29,7 @@
 #include <livox_ros_driver2/CustomMsg.h>
 #include <onboard_detector/dbscan.h>
 #include <onboard_detector/lidarDetector.h>
-#include <onboard_detector/kalmanFilter.h>
+#include <onboard_detector/multiModelKalmanFilter.h>
 #include <onboard_detector/utils.h>
 #include <onboard_detector/GetDynamicObstacles.h>
 
@@ -176,7 +176,7 @@ namespace onboardDetector{
         std::vector<std::deque<std::vector<Eigen::Vector3d>>> pcHist_; // 每个被跟踪物体的点云历史
         std::vector<std::deque<Eigen::Vector3d>> pcCenterHist_; // 每个被跟踪物体的点云中心历史
         std::vector<std::deque<Eigen::Vector3d>> pcStdHist_; // 每个被跟踪物体的点云标准差历史
-        std::vector<onboardDetector::kalman_filter> filters_; // 每个被跟踪物体对应的卡尔曼滤波器
+        std::vector<std::shared_ptr<KalmanFilterBase>> filters_; // 每个被跟踪物体对应的多模型卡尔曼滤波器
 
         // 线程安全与数据同步
         std::mutex cloudMutex_; // 保护点云数据的互斥锁
@@ -221,16 +221,16 @@ namespace onboardDetector{
 
         // 数据关联与跟踪函数
         void boxAssociation(std::vector<int>& bestMatch); // 边界框数据关联（基于马氏距离和匈牙利算法）
-        double computeMahalanobisDistance(const Eigen::Vector2d& posDiff, const Eigen::Matrix2d& covariance); // 计算马氏距离
-        double computeAssociationCost(const onboardDetector::box3D& predBox, const Eigen::Vector3d& predStd,
-                                      const onboardDetector::box3D& measBox, const Eigen::Vector3d& measStd,
-                                      const Eigen::Matrix2d& covariance); // 计算关联代价
+        double computeMahalanobisDistance(const Eigen::Vector2d& posDiff, const Eigen::Matrix2d& covariance); // 计算2D马氏距离
+        double computeMahalanobisDistance3D(const Eigen::Vector3d& posDiff, const Eigen::Matrix3d& covariance); // 计算3D马氏距离
+        double computeAssociationCost2D(const onboardDetector::box3D& predBox, const Eigen::Vector3d& predStd,
+                                        const onboardDetector::box3D& measBox, const Eigen::Vector3d& measStd,
+                                        const Eigen::Matrix2d& covariance); // 计算2D物体的关联代价
+        double computeAssociationCost3D(const onboardDetector::box3D& predBox, const Eigen::Vector3d& predStd,
+                                        const onboardDetector::box3D& measBox, const Eigen::Vector3d& measStd,
+                                        const Eigen::Matrix3d& covariance); // 计算3D物体的关联代价
         void hungarianAlgorithm(const std::vector<std::vector<double>>& costMatrix, std::vector<int>& assignment); // 匈牙利算法
         void kalmanFilterAndUpdateHist(const std::vector<int>& bestMatch); // 卡尔曼滤波与更新历史
-        void kalmanFilterMatrixVel(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R); // 设置速度模型KF矩阵
-        void kalmanFilterMatrixAcc(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R); // 设置加速度模型KF矩阵
-        void getKalmanObservationVel(const onboardDetector::box3D& currDetectedBBox, int bestMatchIdx, MatrixXd& Z); // 获取速度观测值
-        void getKalmanObservationAcc(const onboardDetector::box3D& currDetectedBBox, int bestMatchIdx, MatrixXd& Z); // 获取加速度观测值
 
 
         // 可视化函数

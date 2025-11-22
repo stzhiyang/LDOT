@@ -147,7 +147,7 @@ include_directories(
 add_library(${PROJECT_NAME}
    include/${PROJECT_NAME}/dynamicDetector.cpp
    include/${PROJECT_NAME}/dbscan.cpp
-   include/${PROJECT_NAME}/kalmanFilter.cpp
+   include/${PROJECT_NAME}/motionModel.cpp
    include/${PROJECT_NAME}/fakeDetector.cpp
    include/${PROJECT_NAME}/lidarDetector.cpp
 )

@@ -1297,11 +1297,61 @@ namespace onboardDetector{
                 this->pcCenterHist_[i].push_back(this->filteredPcClusterCenters_[i]);
                 this->pcStdHist_[i].push_back(this->filteredPcClusterStds_[i]);
                 
-                // 初始化卡尔曼滤波器
-                MatrixXd states, A, B, H, P, Q, R;
-                this->kalmanFilterMatrixAcc(this->filteredBBoxes_[i], states, A, B, H, P, Q, R);
-                onboardDetector::kalman_filter newFilter;
-                newFilter.setup(states, A, B, H, P, Q, R);
+                // 初始化多模型卡尔曼滤波器
+                auto& bbox = this->filteredBBoxes_[i];
+                auto newFilter = createKalmanFilter(
+                    bbox.is_human,
+                    bbox.is_che,
+                    bbox.is_uav,
+                    bbox.is_else
+                );
+                
+                newFilter->setDt(this->dt_);
+                
+                // 准备初始检测向量（与状态向量维度相同，速度和加速度初始化为0）
+                Eigen::VectorXd detection;
+                if (bbox.is_human) {
+                    // 2D CA: [x, y, vx, vy, ax, ay]
+                    detection.resize(6);
+                    detection(0) = bbox.x;
+                    detection(1) = bbox.y;
+                    detection(2) = 0.0;  // vx
+                    detection(3) = 0.0;  // vy
+                    detection(4) = 0.0;  // ax
+                    detection(5) = 0.0;  // ay
+                } else if (bbox.is_uav) {
+                    // 3D CA: [x, y, z, vx, vy, vz, ax, ay, az]
+                    detection.resize(9);
+                    detection(0) = bbox.x;
+                    detection(1) = bbox.y;
+                    detection(2) = bbox.z;
+                    detection(3) = 0.0;  // vx
+                    detection(4) = 0.0;  // vy
+                    detection(5) = 0.0;  // vz
+                    detection(6) = 0.0;  // ax
+                    detection(7) = 0.0;  // ay
+                    detection(8) = 0.0;  // az
+                } else if (bbox.is_che) {
+                    // CTRA: [x, y, v, a, yaw, yaw_rate]
+                    detection.resize(6);
+                    detection(0) = bbox.x;
+                    detection(1) = bbox.y;
+                    detection(2) = 0.0;  // v
+                    detection(3) = 0.0;  // a
+                    detection(4) = 0.0;  // yaw
+                    detection(5) = 0.0;  // yaw_rate
+                } else {
+                    // 3D CV: [x, y, z, vx, vy, vz]
+                    detection.resize(6);
+                    detection(0) = bbox.x;
+                    detection(1) = bbox.y;
+                    detection(2) = bbox.z;
+                    detection(3) = 0.0;  // vx
+                    detection(4) = 0.0;  // vy
+                    detection(5) = 0.0;  // vz
+                }
+                
+                newFilter->initialize(detection);
                 this->filters_.push_back(newFilter);
             }
         }
@@ -1325,20 +1375,49 @@ namespace onboardDetector{
                     
                     // 使用卡尔曼滤波器预测的位置
                     onboardDetector::box3D predBox = histBox;
-                    const MatrixXd& filterStates = this->filters_[j].getStates();
-                    predBox.x = filterStates(0, 0);
-                    predBox.y = filterStates(2, 0);
+                    const Eigen::VectorXd& filterStates = this->filters_[j]->getState();
                     
-                    // 获取预测位置的协方差
-                    const MatrixXd& P = this->filters_[j].getCovariance();
-                    Eigen::Matrix2d covariance;
-                    covariance(0, 0) = P(0, 0); // x的方差
-                    covariance(0, 1) = P(0, 2); // x-y协方差
-                    covariance(1, 0) = P(2, 0); // y-x协方差
-                    covariance(1, 1) = P(2, 2); // y的方差
+                    // 根据不同的滤波器类型提取位置
+                    if (histBox.is_human) {
+                        // 2D CA: [x, y, vx, vy, ax, ay]
+                        predBox.x = filterStates(0);
+                        predBox.y = filterStates(1);
+                    } else if (histBox.is_uav || histBox.is_else) {
+                        // 3D CA/CV: [x, y, z, ...]
+                        predBox.x = filterStates(0);
+                        predBox.y = filterStates(1);
+                    } else { // 车 CTRA: [x, y, v, a, yaw, yaw_rate]
+                        predBox.x = filterStates(0);
+                        predBox.y = filterStates(1);
+                    }
                     
-                    // 计算关联代价
-                    double cost = this->computeAssociationCost(predBox, histStd, currBox, currStd, covariance);
+                    // 计算关联代价（根据物体类别使用2D或3D）
+                    double cost;
+                    if (histBox.is_uav || histBox.is_else) {
+                        // 3D物体：使用3D马氏距离
+                        predBox.z = filterStates(2); // 添加z轴预测
+                        const Eigen::MatrixXd& P = this->filters_[j]->getCovariance();
+                        Eigen::Matrix3d covariance3d;
+                        covariance3d(0, 0) = P(0, 0); // x的方差
+                        covariance3d(0, 1) = P(0, 1); // x-y协方差
+                        covariance3d(0, 2) = P(0, 2); // x-z协方差
+                        covariance3d(1, 0) = P(1, 0); // y-x协方差
+                        covariance3d(1, 1) = P(1, 1); // y的方差
+                        covariance3d(1, 2) = P(1, 2); // y-z协方差
+                        covariance3d(2, 0) = P(2, 0); // z-x协方差
+                        covariance3d(2, 1) = P(2, 1); // z-y协方差
+                        covariance3d(2, 2) = P(2, 2); // z的方差
+                        cost = this->computeAssociationCost3D(predBox, histStd, currBox, currStd, covariance3d);
+                    } else {
+                        // 2D物体（人和车）：使用2D马氏距离
+                        const Eigen::MatrixXd& P = this->filters_[j]->getCovariance();
+                        Eigen::Matrix2d covariance2d;
+                        covariance2d(0, 0) = P(0, 0); // x的方差
+                        covariance2d(0, 1) = P(0, 1); // x-y协方差
+                        covariance2d(1, 0) = P(1, 0); // y-x协方差
+                        covariance2d(1, 1) = P(1, 1); // y的方差
+                        cost = this->computeAssociationCost2D(predBox, histStd, currBox, currStd, covariance2d);
+                    }
                     
                     // 应用关联门限
                     if (cost < this->associationGateThresh_){
@@ -1355,7 +1434,7 @@ namespace onboardDetector{
     }
 
     /*!
-     * @brief 计算马氏距离
+     * @brief 计算2D马氏距离
      * @param posDiff 位置差异向量 [dx, dy]
      * @param covariance 协方差矩阵 2x2
      * @return 马氏距离的平方
@@ -1374,26 +1453,91 @@ namespace onboardDetector{
     }
 
     /*!
-     * @brief 计算数据关联的总代价
+     * @brief 计算3D马氏距离
+     * @param posDiff 位置差异向量 [dx, dy, dz]
+     * @param covariance 协方差矩阵 3x3
+     * @return 马氏距离的平方
+     */
+    double dynamicDetector::computeMahalanobisDistance3D(const Eigen::Vector3d& posDiff, const Eigen::Matrix3d& covariance){
+        // 计算协方差矩阵的逆
+        Eigen::Matrix3d covInv = covariance.inverse();
+        
+        // 计算马氏距离的平方
+        double mahalDist = posDiff.transpose() * covInv * posDiff;
+        
+        return mahalDist;
+    }
+
+    /*!
+     * @brief 计算2D物体（人和车）的数据关联总代价
      * @param predBox 预测的边界框（来自卡尔曼滤波器）
      * @param predStd 预测时刻的点云标准差
      * @param measBox 当前测量的边界框
      * @param measStd 当前测量的点云标准差
-     * @param covariance 预测位置的协方差矩阵
+     * @param covariance 预测位置的2D协方差矩阵
      * @return 总关联代价（越小越好）
      * 
      * 代价函数组成：
-     * 1. 位置代价：马氏距离（考虑预测不确定性）
+     * 1. 位置代价：2D马氏距离（仅考虑x, y）
      * 2. 尺寸代价：归一化的尺寸差异
      * 3. 形状代价：点云标准差的变化
      */
-    double dynamicDetector::computeAssociationCost(const onboardDetector::box3D& predBox, const Eigen::Vector3d& predStd,
-                                                   const onboardDetector::box3D& measBox, const Eigen::Vector3d& measStd,
-                                                   const Eigen::Matrix2d& covariance){
+    double dynamicDetector::computeAssociationCost2D(const onboardDetector::box3D& predBox, const Eigen::Vector3d& predStd,
+                                                     const onboardDetector::box3D& measBox, const Eigen::Vector3d& measStd,
+                                                     const Eigen::Matrix2d& covariance){
         // 1. 计算位置代价（马氏距离）
         Eigen::Vector2d posDiff;
         posDiff << (measBox.x - predBox.x), (measBox.y - predBox.y);
         double posCost = this->computeMahalanobisDistance(posDiff, covariance);
+        
+        // 2. 计算尺寸代价（归一化差异）
+        double sizeDiffX = std::abs(measBox.x_width - predBox.x_width);
+        double sizeDiffY = std::abs(measBox.y_width - predBox.y_width);
+        double sizeDiffZ = std::abs(measBox.z_width - predBox.z_width);
+        
+        // 归一化尺寸差异（使用平均尺寸）
+        double avgSizeX = (measBox.x_width + predBox.x_width) / 2.0;
+        double avgSizeY = (measBox.y_width + predBox.y_width) / 2.0;
+        double avgSizeZ = (measBox.z_width + predBox.z_width) / 2.0;
+        
+        double sizeCost = 0.0;
+        if (avgSizeX > 1e-6) sizeCost += (sizeDiffX / avgSizeX) * (sizeDiffX / avgSizeX);
+        if (avgSizeY > 1e-6) sizeCost += (sizeDiffY / avgSizeY) * (sizeDiffY / avgSizeY);
+        if (avgSizeZ > 1e-6) sizeCost += (sizeDiffZ / avgSizeZ) * (sizeDiffZ / avgSizeZ);
+        
+        // 3. 计算点云标准差代价（反映形状变化）
+        Eigen::Vector3d stdDiff = measStd - predStd;
+        double stdCost = stdDiff.squaredNorm();
+        
+        // 加权组合所有代价
+        double totalCost = this->associationPosCostWeight_ * posCost +
+                          this->associationSizeCostWeight_ * sizeCost +
+                          this->associationStdCostWeight_ * stdCost;
+        
+        return totalCost;
+    }
+
+    /*!
+     * @brief 计算3D物体（无人机和其他类）的数据关联总代价
+     * @param predBox 预测的边界框（来自卡尔曼滤波器）
+     * @param predStd 预测时刻的点云标准差
+     * @param measBox 当前测量的边界框
+     * @param measStd 当前测量的点云标准差
+     * @param covariance 预测位置的3D协方差矩阵
+     * @return 总关联代价（越小越好）
+     * 
+     * 代价函数组成：
+     * 1. 位置代价：3D马氏距离（考虑x, y, z）
+     * 2. 尺寸代价：归一化的尺寸差异
+     * 3. 形状代价：点云标准差的变化
+     */
+    double dynamicDetector::computeAssociationCost3D(const onboardDetector::box3D& predBox, const Eigen::Vector3d& predStd,
+                                                     const onboardDetector::box3D& measBox, const Eigen::Vector3d& measStd,
+                                                     const Eigen::Matrix3d& covariance){
+        // 1. 计算3D位置代价（马氏距离）
+        Eigen::Vector3d posDiff;
+        posDiff << (measBox.x - predBox.x), (measBox.y - predBox.y), (measBox.z - predBox.z);
+        double posCost = this->computeMahalanobisDistance3D(posDiff, covariance);
         
         // 2. 计算尺寸代价（归一化差异）
         double sizeDiffX = std::abs(measBox.x_width - predBox.x_width);
@@ -1505,20 +1649,17 @@ namespace onboardDetector{
     // 使用卡尔曼滤波器并更新历史记录
     void dynamicDetector::kalmanFilterAndUpdateHist(const std::vector<int>& bestMatch){
         // --- 初始化临时容器 ---
-        // 这些临时容器用于构建下一帧的跟踪历史和滤波器列表
-        // 这样做可以避免在迭代过程中直接修改正在使用的成员变量
         std::vector<std::deque<onboardDetector::box3D>> boxHistTemp; 
         std::vector<std::deque<std::vector<Eigen::Vector3d>>> pcHistTemp;
         std::vector<std::deque<Eigen::Vector3d>> pcCenterHistTemp;
         std::vector<std::deque<Eigen::Vector3d>> pcStdHistTemp;
-        std::vector<onboardDetector::kalman_filter> filtersTemp;
+        std::vector<std::shared_ptr<KalmanFilterBase>> filtersTemp;
         
         // 为新出现的目标准备的空历史记录模板
         std::deque<onboardDetector::box3D> newSingleBoxHist;
         std::deque<std::vector<Eigen::Vector3d>> newSinglePcHist; 
         std::deque<Eigen::Vector3d> newSinglePcCenterHist;
         std::deque<Eigen::Vector3d> newSinglePcStdHist;
-        onboardDetector::kalman_filter newFilter; // 为新目标准备的卡尔曼滤波器实例
         
         std::vector<onboardDetector::box3D> trackedBBoxesTemp; // 存储当前帧滤波后的所有目标框
 
@@ -1530,10 +1671,10 @@ namespace onboardDetector{
 
         // --- 遍历当前帧检测到的每一个目标 ---
         for (int i=0 ; i<numObjs ; i++){
+            onboardDetector::box3D currDetectedBBox = this->filteredBBoxes_[i];
             onboardDetector::box3D newEstimatedBBox; // 用于存储卡尔曼滤波后的状态
 
             // bestMatch[i] 存储的是当前第 i 个检测框所匹配到的历史轨迹的索引
-            // 如果 bestMatch[i] >= 0，说明匹配成功
             if (bestMatch[i]>=0){
                 // --- 情况1：目标匹配成功 (老目标) ---
                 // 继承该目标之前的历史记录和滤波器
@@ -1543,31 +1684,167 @@ namespace onboardDetector{
                 pcStdHistTemp.push_back(this->pcStdHist_[bestMatch[i]]);
                 filtersTemp.push_back(this->filters_[bestMatch[i]]);
 
-                // 使用当前检测到的边界框作为测量值，来更新卡尔曼滤波器
-                onboardDetector::box3D currDetectedBBox = this->filteredBBoxes_[i];
-
-                // 根据当前测量值和历史信息，生成卡尔曼滤波器的观测向量 Z
-                Eigen::MatrixXd Z;
-                this->getKalmanObservationAcc(currDetectedBBox, bestMatch[i], Z);
-                // 滤波器中最后一个放入的KF，执行的 estimate 步骤（预测+更新），控制输入 u 设为0
-                filtersTemp.back().estimate(Z, MatrixXd::Zero(6,1));
+                // 设置滤波器时间步长
+                filtersTemp.back()->setDt(this->dt_);
                 
-                // 从滤波器中提取更新后的状态（位置、速度、加速度）
-                newEstimatedBBox.x = filtersTemp.back().output(0);
-                newEstimatedBBox.y = filtersTemp.back().output(1);
-                newEstimatedBBox.z = currDetectedBBox.z; // Z轴位置直接使用测量值，不通过滤波
-                newEstimatedBBox.Vx = filtersTemp.back().output(2);
-                newEstimatedBBox.Vy = filtersTemp.back().output(3);
-                newEstimatedBBox.Ax = filtersTemp.back().output(4);
-                newEstimatedBBox.Ay = filtersTemp.back().output(5);   
+                // 执行预测步骤
+                filtersTemp.back()->predict();
+                
+                // 准备测量向量（与状态向量维度相同）
+                Eigen::VectorXd measurement;
+                
+                // 计算速度和加速度的观测值（使用历史数据）
+                int k = this->kfAvgFrames_;
+                int historySize = this->boxHist_[bestMatch[i]].size();
+                if (historySize < k) {
+                    k = historySize;
+                }
+                
+                double vx = 0.0, vy = 0.0, vz = 0.0;
+                double ax = 0.0, ay = 0.0, az = 0.0;
+                
+                if (k > 0) {
+                    onboardDetector::box3D& prevBBox = this->boxHist_[bestMatch[i]][k-1];
+                    double dt_k = this->dt_ * k;
+                    
+                    vx = (currDetectedBBox.x - prevBBox.x) / dt_k;
+                    vy = (currDetectedBBox.y - prevBBox.y) / dt_k;
+                    vz = (currDetectedBBox.z - prevBBox.z) / dt_k;
+                    
+                    ax = (vx - prevBBox.Vx) / dt_k;
+                    ay = (vy - prevBBox.Vy) / dt_k;
+                    az = (vz - prevBBox.Vz) / dt_k;
+                }
+                
+                // 根据不同类别的运动模型准备不同维度的测量
+                if (currDetectedBBox.is_human) {
+                    // 人：2D CA模型，测量 [x, y, vx, vy, ax, ay]
+                    measurement.resize(6);
+                    measurement(0) = currDetectedBBox.x;
+                    measurement(1) = currDetectedBBox.y;
+                    measurement(2) = vx;
+                    measurement(3) = vy;
+                    measurement(4) = ax;
+                    measurement(5) = ay;
+                } 
+                else if (currDetectedBBox.is_uav) {
+                    // 无人机：3D CA模型，测量 [x, y, z, vx, vy, vz, ax, ay, az]
+                    measurement.resize(9);
+                    measurement(0) = currDetectedBBox.x;
+                    measurement(1) = currDetectedBBox.y;
+                    measurement(2) = currDetectedBBox.z;
+                    measurement(3) = vx;
+                    measurement(4) = vy;
+                    measurement(5) = vz;
+                    measurement(6) = ax;
+                    measurement(7) = ay;
+                    measurement(8) = az;
+                } 
+                else if (currDetectedBBox.is_che) {
+                    // 车：CTRA模型，测量 [x, y, v, a, yaw, yaw_rate]
+                    // 从vx, vy计算v和yaw
+                    double v = std::sqrt(vx*vx + vy*vy);
+                    double yaw = std::atan2(vy, vx);
+                    double a = std::sqrt(ax*ax + ay*ay);
+                    
+                    // 计算yaw_rate（如果有足够的历史）
+                    double yaw_rate = 0.0;
+                    if (k > 1 && historySize > k) {
+                        onboardDetector::box3D& prevBBox2 = this->boxHist_[bestMatch[i]][k];
+                        double prev_yaw = std::atan2(prevBBox2.Vy, prevBBox2.Vx);
+                        yaw_rate = (yaw - prev_yaw) / (this->dt_ * k);
+                    }
+                    
+                    measurement.resize(6);
+                    measurement(0) = currDetectedBBox.x;
+                    measurement(1) = currDetectedBBox.y;
+                    measurement(2) = v;
+                    measurement(3) = a;
+                    measurement(4) = yaw;
+                    measurement(5) = yaw_rate;
+                } 
+                else {
+                    // 其他：3D CV模型，测量 [x, y, z, vx, vy, vz]
+                    measurement.resize(6);
+                    measurement(0) = currDetectedBBox.x;
+                    measurement(1) = currDetectedBBox.y;
+                    measurement(2) = currDetectedBBox.z;
+                    measurement(3) = vx;
+                    measurement(4) = vy;
+                    measurement(5) = vz;
+                }
+                
+                // 执行更新步骤
+                filtersTemp.back()->update(measurement);
+                
+                // 从滤波器中提取更新后的状态
+                const Eigen::VectorXd& state = filtersTemp.back()->getState();
+                
+                if (currDetectedBBox.is_human) {
+                    // 人：2D CA模型 [x, y, vx, vy, ax, ay]
+                    newEstimatedBBox.x = state(0);
+                    newEstimatedBBox.y = state(1);
+                    newEstimatedBBox.z = currDetectedBBox.z;  // Z直接用测量值
+                    newEstimatedBBox.Vx = state(2);
+                    newEstimatedBBox.Vy = state(3);
+                    newEstimatedBBox.Ax = state(4);
+                    newEstimatedBBox.Ay = state(5);
+                    newEstimatedBBox.Vz = 0.0;
+                    newEstimatedBBox.Az = 0.0;
+                } 
+                else if (currDetectedBBox.is_uav) {
+                    // 无人机：3D CA模型 [x, y, z, vx, vy, vz, ax, ay, az]
+                    newEstimatedBBox.x = state(0);
+                    newEstimatedBBox.y = state(1);
+                    newEstimatedBBox.z = state(2);
+                    newEstimatedBBox.Vx = state(3);
+                    newEstimatedBBox.Vy = state(4);
+                    newEstimatedBBox.Vz = state(5);
+                    newEstimatedBBox.Ax = state(6);
+                    newEstimatedBBox.Ay = state(7);
+                    newEstimatedBBox.Az = state(8);
+                } 
+                else if (currDetectedBBox.is_che) {
+                    // 车：CTRA模型 [x, y, v, a, yaw, yaw_rate]
+                    newEstimatedBBox.x = state(0);
+                    newEstimatedBBox.y = state(1);
+                    newEstimatedBBox.z = currDetectedBBox.z;  // Z直接用测量值
+                    
+                    double v = state(2);
+                    double yaw = state(4);
+                    newEstimatedBBox.Vx = v * std::cos(yaw);
+                    newEstimatedBBox.Vy = v * std::sin(yaw);
+                    newEstimatedBBox.Vz = 0.0;
+                    
+                    double a = state(3);
+                    newEstimatedBBox.Ax = a * std::cos(yaw);
+                    newEstimatedBBox.Ay = a * std::sin(yaw);
+                    newEstimatedBBox.Az = 0.0;
+                } 
+                else {
+                    // 其他：3D CV模型 [x, y, z, vx, vy, vz]
+                    newEstimatedBBox.x = state(0);
+                    newEstimatedBBox.y = state(1);
+                    newEstimatedBBox.z = state(2);
+                    newEstimatedBBox.Vx = state(3);
+                    newEstimatedBBox.Vy = state(4);
+                    newEstimatedBBox.Vz = state(5);
+                    newEstimatedBBox.Ax = 0.0;
+                    newEstimatedBBox.Ay = 0.0;
+                    newEstimatedBBox.Az = 0.0;
+                }
                           
                 // 边界框的尺寸直接使用当前测量值
                 newEstimatedBBox.x_width = currDetectedBBox.x_width;
                 newEstimatedBBox.y_width = currDetectedBBox.y_width;
                 newEstimatedBBox.z_width = currDetectedBBox.z_width;
+                
                 // 继承其他标志位
                 newEstimatedBBox.is_dynamic = currDetectedBBox.is_dynamic;
                 newEstimatedBBox.is_human = currDetectedBBox.is_human;
+                newEstimatedBBox.is_che = currDetectedBBox.is_che;
+                newEstimatedBBox.is_uav = currDetectedBBox.is_uav;
+                newEstimatedBBox.is_else = currDetectedBBox.is_else;
             }
             else{
                 // --- 情况2：目标未匹配 (新目标) ---
@@ -1577,19 +1854,74 @@ namespace onboardDetector{
                 pcCenterHistTemp.push_back(newSinglePcCenterHist);
                 pcStdHistTemp.push_back(newSinglePcStdHist);
 
-                // 为这个新目标创建一个全新的卡尔曼滤波器
-                onboardDetector::box3D currDetectedBBox = this->filteredBBoxes_[i];
-                MatrixXd states, A, B, H, P, Q, R;    
-                this->kalmanFilterMatrixAcc(currDetectedBBox, states, A, B, H, P, Q, R);
+                // 根据物体类别创建相应的卡尔曼滤波器
+                auto newFilter = createKalmanFilter(
+                    currDetectedBBox.is_human,
+                    currDetectedBBox.is_che,
+                    currDetectedBBox.is_uav,
+                    currDetectedBBox.is_else
+                );
                 
-                newFilter.setup(states, A, B, H, P, Q, R);
+                newFilter->setDt(this->dt_);
+                
+                // 准备初始检测向量（与状态向量维度相同，速度和加速度初始化为0）
+                Eigen::VectorXd detection;
+                if (currDetectedBBox.is_human) {
+                    // 2D CA: [x, y, vx, vy, ax, ay]
+                    detection.resize(6);
+                    detection(0) = currDetectedBBox.x;
+                    detection(1) = currDetectedBBox.y;
+                    detection(2) = 0.0;  // vx
+                    detection(3) = 0.0;  // vy
+                    detection(4) = 0.0;  // ax
+                    detection(5) = 0.0;  // ay
+                } else if (currDetectedBBox.is_uav) {
+                    // 3D CA: [x, y, z, vx, vy, vz, ax, ay, az]
+                    detection.resize(9);
+                    detection(0) = currDetectedBBox.x;
+                    detection(1) = currDetectedBBox.y;
+                    detection(2) = currDetectedBBox.z;
+                    detection(3) = 0.0;  // vx
+                    detection(4) = 0.0;  // vy
+                    detection(5) = 0.0;  // vz
+                    detection(6) = 0.0;  // ax
+                    detection(7) = 0.0;  // ay
+                    detection(8) = 0.0;  // az
+                } else if (currDetectedBBox.is_che) {
+                    // CTRA: [x, y, v, a, yaw, yaw_rate]
+                    detection.resize(6);
+                    detection(0) = currDetectedBBox.x;
+                    detection(1) = currDetectedBBox.y;
+                    detection(2) = 0.0;  // v
+                    detection(3) = 0.0;  // a
+                    detection(4) = 0.0;  // yaw
+                    detection(5) = 0.0;  // yaw_rate
+                } else {
+                    // 3D CV: [x, y, z, vx, vy, vz]
+                    detection.resize(6);
+                    detection(0) = currDetectedBBox.x;
+                    detection(1) = currDetectedBBox.y;
+                    detection(2) = currDetectedBBox.z;
+                    detection(3) = 0.0;  // vx
+                    detection(4) = 0.0;  // vy
+                    detection(5) = 0.0;  // vz
+                }
+                
+                // 初始化滤波器
+                newFilter->initialize(detection);
                 filtersTemp.push_back(newFilter);
+                
                 // 对于新目标，其初始估计状态就是它的第一次测量值
                 newEstimatedBBox = currDetectedBBox;
+                newEstimatedBBox.Vx = 0.0;
+                newEstimatedBBox.Vy = 0.0;
+                newEstimatedBBox.Vz = 0.0;
+                newEstimatedBBox.Ax = 0.0;
+                newEstimatedBBox.Ay = 0.0;
+                newEstimatedBBox.Az = 0.0;
             }
 
             // --- 更新历史记录队列 ---
-            // 如果历史记录的长度达到了设定的最大值
             if (int(boxHistTemp[i].size()) == this->histSize_){
                 // 从队列尾部移除最老的数据
                 boxHistTemp[i].pop_back();
@@ -1609,137 +1941,32 @@ namespace onboardDetector{
         }
   
         // --- 后处理：稳定边界框尺寸 ---
-        // 如果已经有跟踪历史
         if (boxHistTemp.size()){
-            // 再次遍历所有当前帧的目标
             for (size_t i=0; i<trackedBBoxesTemp.size(); ++i){ 
-                // 如果一个目标的跟踪历史足够长
                 if (int(boxHistTemp[i].size()) >= this->fixSizeHistThresh_){
-                    // 并且当前帧与上一帧的尺寸变化在阈值范围内（尺寸趋于稳定）
                     if ((abs(trackedBBoxesTemp[i].x_width-boxHistTemp[i][1].x_width)/boxHistTemp[i][1].x_width) <= this->fixSizeDimThresh_ &&
                         (abs(trackedBBoxesTemp[i].y_width-boxHistTemp[i][1].y_width)/boxHistTemp[i][1].y_width) <= this->fixSizeDimThresh_&&
                         (abs(trackedBBoxesTemp[i].z_width-boxHistTemp[i][1].z_width)/boxHistTemp[i][1].z_width) <= this->fixSizeDimThresh_){
-                        // 则强制将当前尺寸设为上一帧的尺寸，以防止尺寸抖动
                         trackedBBoxesTemp[i].x_width = boxHistTemp[i][1].x_width;
                         trackedBBoxesTemp[i].y_width = boxHistTemp[i][1].y_width;
                         trackedBBoxesTemp[i].z_width = boxHistTemp[i][1].z_width;
-                        // 同时更新历史记录中的最新值
                         boxHistTemp[i][0].x_width = trackedBBoxesTemp[i].x_width;
                         boxHistTemp[i][0].y_width = trackedBBoxesTemp[i].y_width;
                         boxHistTemp[i][0].z_width = trackedBBoxesTemp[i].z_width;
                     }
-
                 }
             }
         }
         
         // --- 更新类的成员变量 ---
-        // 用新构建的临时历史记录和滤波器列表，替换掉旧的成员变量
         this->boxHist_ = boxHistTemp;
-        // std::cout << "this->boxHist_[1].size() = "  << this->boxHist_[1].size() << std::endl;
         this->pcHist_ = pcHistTemp;
         this->pcCenterHist_ = pcCenterHistTemp;
         this->pcStdHist_ = pcStdHistTemp;
         this->filters_ = filtersTemp;
-
-        // 更新当前帧的最终跟踪结果
-        this->trackedBBoxes_=  trackedBBoxesTemp;
+        this->trackedBBoxes_ = trackedBBoxesTemp;
     }
 
-    // 设置速度模型的卡尔曼滤波器矩阵
-    void dynamicDetector::kalmanFilterMatrixVel(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R){
-        states.resize(4,1);
-        states(0) = currDetectedBBox.x;
-        states(1) = currDetectedBBox.y;
-        // 将速度和加速度初始化为零
-        states(2) = 0.;
-        states(3) = 0.;
-
-        MatrixXd ATemp;
-        ATemp.resize(4, 4);
-        ATemp <<  0, 0, 1, 0,
-                  0, 0, 0, 1,
-                  0, 0, 0, 0,
-                  0 ,0, 0, 0;
-        A = MatrixXd::Identity(4,4) + this->dt_*ATemp;
-        B = MatrixXd::Zero(4, 4);
-        H = MatrixXd::Identity(4, 4);
-        P = MatrixXd::Identity(4, 4) * this->eP_;
-        Q = MatrixXd::Identity(4, 4);
-        Q(0,0) *= this->eQPos_; Q(1,1) *= this->eQPos_; Q(2,2) *= this->eQVel_; Q(3,3) *= this->eQVel_; 
-        R = MatrixXd::Identity(4, 4);
-        R(0,0) *= this->eRPos_; R(1,1) *= this->eRPos_; R(2,2) *= this->eRVel_; R(3,3) *= this->eRVel_;
-
-    }
-
-    // 设置加速度模型的卡尔曼滤波器矩阵
-    void dynamicDetector::kalmanFilterMatrixAcc(const onboardDetector::box3D& currDetectedBBox, MatrixXd& states, MatrixXd& A, MatrixXd& B, MatrixXd& H, MatrixXd& P, MatrixXd& Q, MatrixXd& R){
-        states.resize(6,1);
-        states(0) = currDetectedBBox.x;
-        states(1) = currDetectedBBox.y;
-        // 将速度和加速度初始化为零
-        states(2) = 0.;
-        states(3) = 0.;
-        states(4) = 0.;
-        states(5) = 0.;
-
-        MatrixXd ATemp;
-        ATemp.resize(6, 6);
-
-        ATemp <<  1, 0, this->dt_, 0, 0.5*pow(this->dt_, 2), 0,
-                  0, 1, 0, this->dt_, 0, 0.5*pow(this->dt_, 2),
-                  0, 0, 1, 0, this->dt_, 0,
-                  0 ,0, 0, 1, 0, this->dt_,
-                  0, 0, 0, 0, 1, 0,
-                  0, 0, 0, 0, 0, 1;
-        A = ATemp;
-        B = MatrixXd::Zero(6, 6);
-        H = MatrixXd::Identity(6, 6);
-        P = MatrixXd::Identity(6, 6) * this->eP_;
-        Q = MatrixXd::Identity(6, 6);
-        Q(0,0) *= this->eQPos_; Q(1,1) *= this->eQPos_; Q(2,2) *= this->eQVel_; Q(3,3) *= this->eQVel_; Q(4,4) *= this->eQAcc_; Q(5,5) *= this->eQAcc_;
-        R = MatrixXd::Identity(6, 6);
-        R(0,0) *= this->eRPos_; R(1,1) *= this->eRPos_; R(2,2) *= this->eRVel_; R(3,3) *= this->eRVel_; R(4,4) *= this->eRAcc_; R(5,5) *= this->eRAcc_;
-    }
-
-    // 获取速度模型的卡尔曼滤波器观测值
-    void dynamicDetector::getKalmanObservationVel(const onboardDetector::box3D& currDetectedBBox, int bestMatchIdx, MatrixXd& Z){
-        Z.resize(4,1);
-        Z(0) = currDetectedBBox.x; 
-        Z(1) = currDetectedBBox.y;
-
-        // 使用前k帧进行速度估计
-        int k = this->kfAvgFrames_;
-        int historySize = this->boxHist_[bestMatchIdx].size();
-        if (historySize < k){
-            k = historySize;
-        }
-        onboardDetector::box3D prevMatchBBox = this->boxHist_[bestMatchIdx][k-1];
-
-        Z(2) = (currDetectedBBox.x-prevMatchBBox.x)/(this->dt_*k);
-        Z(3) = (currDetectedBBox.y-prevMatchBBox.y)/(this->dt_*k);
-    }
-
-    // 获取加速度模型的卡尔曼滤波器观测值
-    void dynamicDetector::getKalmanObservationAcc(const onboardDetector::box3D& currDetectedBBox, int bestMatchIdx, MatrixXd& Z){
-        Z.resize(6, 1);
-        Z(0) = currDetectedBBox.x;
-        Z(1) = currDetectedBBox.y;
-
-        // 计算用于速度估计的历史帧数，不能超过预设的平均帧数和实际历史大小的最小值
-        int k = this->kfAvgFrames_;
-        int historySize = this->boxHist_[bestMatchIdx].size();
-        if (historySize < k){
-            k = historySize;
-        }
-        onboardDetector::box3D prevMatchBBox = this->boxHist_[bestMatchIdx][k-1];
-
-        Z(2) = (currDetectedBBox.x - prevMatchBBox.x)/(this->dt_*k);
-        Z(3) = (currDetectedBBox.y - prevMatchBBox.y)/(this->dt_*k);
-        Z(4) = (Z(2) - prevMatchBBox.Vx)/(this->dt_*k);
-        Z(5) = (Z(3) - prevMatchBBox.Vy)/(this->dt_*k);
-    }
- 
     // 获取动态点云
     void dynamicDetector::getDynamicPc(std::vector<Eigen::Vector3d>& dynamicPc){
         Eigen::Vector3d curPoint;
