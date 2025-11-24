@@ -12,8 +12,28 @@
 #include <Eigen/Dense>
 #include <cmath>
 #include <iostream>
+#include <vector>
 
 namespace onboardDetector {
+
+struct CA_Params {
+  double jerk_sigma;
+  std::vector<double> init_cov;
+  std::vector<double> meas_noise;
+  double z_process_noise = 0.01; // Only for 2D
+};
+
+struct CV_Params {
+  double acc_sigma;
+  std::vector<double> init_cov;
+  std::vector<double> meas_noise;
+};
+
+struct CTRA_Params {
+  std::vector<double> init_cov;
+  std::vector<double> process_noise;
+  std::vector<double> meas_noise;
+};
 
 /**
  * @brief 抽象运动模型基类
@@ -84,7 +104,11 @@ public:
    * @param use_3d true表示3D模型(无人机)，false表示2D模型(人)
    * @param sigma 过程噪声标准差 (jerk noise)
    */
-  explicit CA_Model(bool use_3d = false, double sigma = 1.0);
+  /**
+   * @param params CA模型参数
+   * @param use_3d true表示3D模型(无人机)，false表示2D模型(人)
+   */
+  explicit CA_Model(const CA_Params &params, bool use_3d = false);
 
   Eigen::VectorXd getInitState(const Eigen::VectorXd &detection) override;
   Eigen::MatrixXd getInitCovP() override;
@@ -100,6 +124,7 @@ public:
 
 private:
   bool use_3d_; // 是否使用3D模型
+  CA_Params params_;
 };
 
 /**
@@ -113,7 +138,10 @@ public:
   /**
    * @param sigma 过程噪声标准差 (acceleration noise)
    */
-  explicit CV_Model(double sigma = 1.0);
+  /**
+   * @param params CV模型参数
+   */
+  explicit CV_Model(const CV_Params &params);
 
   Eigen::VectorXd getInitState(const Eigen::VectorXd &detection) override;
   Eigen::MatrixXd getInitCovP() override;
@@ -126,6 +154,9 @@ public:
   void normalizeYaw(Eigen::VectorXd &state) override {} // CV模型无yaw
   void normalizeYawInResidual(Eigen::VectorXd &residual) override {
   } // CV模型无yaw
+
+private:
+  CV_Params params_;
 };
 
 /**
@@ -145,7 +176,10 @@ public:
   /**
    * @param sigma 过程噪声标准差
    */
-  explicit CTRA_Model(double sigma = 1.0);
+  /**
+   * @param params CTRA模型参数
+   */
+  explicit CTRA_Model(const CTRA_Params &params);
 
   Eigen::VectorXd getInitState(const Eigen::VectorXd &detection) override;
   Eigen::MatrixXd getInitCovP() override;
@@ -158,6 +192,9 @@ public:
 
   void normalizeYaw(Eigen::VectorXd &state) override;
   void normalizeYawInResidual(Eigen::VectorXd &residual) override;
+
+private:
+  CTRA_Params params_;
 };
 
 } // namespace onboardDetector

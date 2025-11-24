@@ -12,8 +12,9 @@ namespace onboardDetector {
 // CA Model Implementation (2D for human, 3D for UAV)
 // ============================================================================
 
-CA_Model::CA_Model(bool use_3d, double sigma) : use_3d_(use_3d) {
-  sigma_ = sigma;
+CA_Model::CA_Model(const CA_Params &params, bool use_3d)
+    : use_3d_(use_3d), params_(params) {
+  sigma_ = params_.jerk_sigma;
   if (use_3d_) {
     // 3D模型 (无人机): [x, y, z, vx, vy, vz, ax, ay, az]
     state_dim_ = 9;
@@ -42,16 +43,8 @@ Eigen::MatrixXd CA_Model::getInitCovP() {
   // 初始协方差矩阵
   Eigen::MatrixXd P = Eigen::MatrixXd::Identity(state_dim_, state_dim_);
 
-  if (use_3d_) {
-    // 3D模型: [x, y, z, vx, vy, vz, ax, ay, az]
-    P.diagonal() << 0.1, 0.1, 0.1, // pos
-        1.0, 1.0, 1.0,             // vel
-        10.0, 10.0, 10.0;          // acc
-  } else {
-    // 2D模型 (Human): [x, y, z, vx, vy, ax, ay]
-    P.diagonal() << 0.1, 0.1, 0.1, // pos
-        1.0, 1.0,                  // vel
-        10.0, 10.0;                // acc
+  for (int i = 0; i < state_dim_ && i < params_.init_cov.size(); ++i) {
+    P(i, i) = params_.init_cov[i];
   }
 
   return P;
@@ -99,7 +92,7 @@ Eigen::MatrixXd CA_Model::getProcessNoiseQ() {
     setQBlock(1, 4, 6); // y
 
     // z轴独立噪声 (假设静止或缓慢移动)
-    Q(2, 2) = 0.01;
+    Q(2, 2) = params_.z_process_noise;
   }
 
   return Q;
@@ -109,9 +102,9 @@ Eigen::MatrixXd CA_Model::getMeasNoiseR() {
   // 测量噪声 - [x, y, z]
   Eigen::MatrixXd R = Eigen::MatrixXd::Identity(meas_dim_, meas_dim_);
 
-  R(0, 0) = 0.1; // x
-  R(1, 1) = 0.1; // y
-  R(2, 2) = 0.1; // z
+  for (int i = 0; i < meas_dim_ && i < params_.meas_noise.size(); ++i) {
+    R(i, i) = params_.meas_noise[i];
+  }
 
   return R;
 }
@@ -178,8 +171,8 @@ Eigen::VectorXd CA_Model::stateToMeasurement(const Eigen::VectorXd &state) {
 // CV Model Implementation (3D)
 // ============================================================================
 
-CV_Model::CV_Model(double sigma) {
-  sigma_ = sigma;
+CV_Model::CV_Model(const CV_Params &params) : params_(params) {
+  sigma_ = params_.acc_sigma;
   // 状态向量: [x, y, z, vx, vy, vz]
   state_dim_ = 6;
   meas_dim_ = 3; // 测量: [x, y, z]
@@ -200,8 +193,9 @@ Eigen::VectorXd CV_Model::getInitState(const Eigen::VectorXd &detection) {
 Eigen::MatrixXd CV_Model::getInitCovP() {
   Eigen::MatrixXd P = Eigen::MatrixXd::Identity(state_dim_, state_dim_);
 
-  P.diagonal() << 0.1, 0.1, 0.1, // pos
-      1.0, 1.0, 1.0;             // vel
+  for (int i = 0; i < state_dim_ && i < params_.init_cov.size(); ++i) {
+    P(i, i) = params_.init_cov[i];
+  }
 
   return P;
 }
@@ -241,9 +235,9 @@ Eigen::MatrixXd CV_Model::getMeasNoiseR() {
   // 测量噪声 - [x, y, z]
   Eigen::MatrixXd R = Eigen::MatrixXd::Identity(meas_dim_, meas_dim_);
 
-  R(0, 0) = 0.1; // x
-  R(1, 1) = 0.1; // y
-  R(2, 2) = 0.1; // z
+  for (int i = 0; i < meas_dim_ && i < params_.meas_noise.size(); ++i) {
+    R(i, i) = params_.meas_noise[i];
+  }
 
   return R;
 }
@@ -285,8 +279,8 @@ Eigen::VectorXd CV_Model::stateToMeasurement(const Eigen::VectorXd &state) {
 // CTRA Model Implementation (for vehicles)
 // ============================================================================
 
-CTRA_Model::CTRA_Model(double sigma) {
-  sigma_ = sigma;
+CTRA_Model::CTRA_Model(const CTRA_Params &params) : params_(params) {
+  sigma_ = 1.0; // Not used for CTRA process noise Q in this implementation
   // 状态向量: [x, y, z, v, a, yaw, yaw_rate]
   state_dim_ = 7;
   meas_dim_ = 3; // 测量: [x, y, z]
@@ -307,11 +301,9 @@ Eigen::VectorXd CTRA_Model::getInitState(const Eigen::VectorXd &detection) {
 Eigen::MatrixXd CTRA_Model::getInitCovP() {
   Eigen::MatrixXd P = Eigen::MatrixXd::Identity(state_dim_, state_dim_);
 
-  P.diagonal() << 0.1, 0.1, 0.1, // pos
-      1.0,                       // v
-      10.0,                      // a
-      0.5,                       // yaw
-      1.0;                       // yaw_rate
+  for (int i = 0; i < state_dim_ && i < params_.init_cov.size(); ++i) {
+    P(i, i) = params_.init_cov[i];
+  }
 
   return P;
 }
@@ -319,12 +311,9 @@ Eigen::MatrixXd CTRA_Model::getInitCovP() {
 Eigen::MatrixXd CTRA_Model::getProcessNoiseQ() {
   Eigen::MatrixXd Q = Eigen::MatrixXd::Identity(state_dim_, state_dim_);
 
-  // 简单对角噪声，因为CTRA非线性较强，且z轴独立
-  Q.diagonal() << 0.1, 0.1, 0.01, // pos (z noise small)
-      1.0,                        // v
-      10.0,                       // a
-      0.1,                        // yaw
-      1.0;                        // yaw_rate
+  for (int i = 0; i < state_dim_ && i < params_.process_noise.size(); ++i) {
+    Q(i, i) = params_.process_noise[i];
+  }
 
   return Q;
 }
@@ -333,9 +322,9 @@ Eigen::MatrixXd CTRA_Model::getMeasNoiseR() {
   // 测量噪声 - [x, y, z]
   Eigen::MatrixXd R = Eigen::MatrixXd::Identity(meas_dim_, meas_dim_);
 
-  R(0, 0) = 0.1; // x
-  R(1, 1) = 0.1; // y
-  R(2, 2) = 0.1; // z
+  for (int i = 0; i < meas_dim_ && i < params_.meas_noise.size(); ++i) {
+    R(i, i) = params_.meas_noise[i];
+  }
 
   return R;
 }

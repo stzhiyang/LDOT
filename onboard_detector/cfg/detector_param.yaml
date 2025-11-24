@@ -38,9 +38,9 @@ classify_uav_threshold: [0.8, 1.2] # z/y/z <
 
 # 目标跟踪与数据关联
 association_gate_threshold: 7.815   # 关联门限阈值（卡方分布，自由度3，99%置信度）
-association_pos_cost_weight: 0.7  # 位置代价权重（马氏距离）
-association_size_cost_weight: 0.2 # 尺寸代价权重（归一化差异）
-association_std_cost_weight: 0.5  # 点云标准差代价权重（形状变化）
+association_pos_cost_weight: 1.0    # 位置代价权重（欧式距离），最可靠
+association_size_cost_weight: 0.0   # 尺寸代价权重，设为0（完全忽略,避免除零NaN）
+association_std_cost_weight: 0.0    # 点云标准差代价权重（完全忽略）
 history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
 kalman_filter_averaging_frames: 5 # 卡尔曼滤波器状态平均的帧数
 
@@ -53,3 +53,29 @@ frames_force_dynamic: 10 # 在历史轨迹中搜索动态障碍物的范围 (帧
 frames_force_dynamic_check_range: 15 # 强制判断为动态障碍物的检查范围阈值 (帧数)
 # 连续k帧被投票为动态的障碍物才被最终分类为动态, k为此处的阈值
 dynamic_consistency_threshold: 10
+
+# 卡尔曼滤波器参数
+kalman_filter:
+  # Constant Acceleration Model (Jerk noise)
+  ca_model:
+    human: # 2D Model [x, y, z, vx, vy, ax, ay]
+      jerk_sigma: 1.0
+      init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0]
+      meas_noise: [0.1, 0.1, 0.1]
+      z_process_noise: 0.01
+    uav: # 3D Model [x, y, z, vx, vy, vz, ax, ay, az]
+      jerk_sigma: 1.0
+      init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0]
+      meas_noise: [0.1, 0.1, 0.1]
+
+  # Constant Velocity Model (Acceleration noise)
+  cv_model: # [x, y, z, vx, vy, vz]
+    acc_sigma: 3.0
+    init_cov: [0.5, 0.5, 0.5, 2.0, 2.0, 2.0]
+    meas_noise: [0.3, 0.3, 0.3]
+
+  # Constant Turn Rate and Acceleration Model
+  ctra_model: # [x, y, z, v, a, yaw, yaw_rate]
+    init_cov: [0.1, 0.1, 0.1, 1.0, 10.0, 0.5, 1.0]
+    process_noise: [0.1, 0.1, 0.01, 1.0, 10.0, 0.1, 1.0]
+    meas_noise: [0.1, 0.1, 0.1]

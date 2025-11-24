@@ -3,6 +3,7 @@
     ---------------------------------
     function implementation of dynamic osbtacle detector
 */
+#include <cmath> // for std::isfinite
 #include <onboard_detector/dynamicDetector.h>
 
 namespace onboardDetector {
@@ -464,6 +465,75 @@ void dynamicDetector::initParam() {
                                 << this->classifyUAVCentroidZRatio_ << "]");
   }
 
+  // -----------------------------------------卡尔曼滤波器参数--------------------------------------------------------------
+  // CA Model (Human)
+  if (not this->nh_.getParam(this->ns_ +
+                                 "/kalman_filter/ca_model/human/jerk_sigma",
+                             this->kfParams_.ca_human.jerk_sigma)) {
+    this->kfParams_.ca_human.jerk_sigma = 1.0;
+  }
+  if (not this->nh_.getParam(this->ns_ +
+                                 "/kalman_filter/ca_model/human/init_cov",
+                             this->kfParams_.ca_human.init_cov)) {
+    this->kfParams_.ca_human.init_cov = {0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0};
+  }
+  if (not this->nh_.getParam(this->ns_ +
+                                 "/kalman_filter/ca_model/human/meas_noise",
+                             this->kfParams_.ca_human.meas_noise)) {
+    this->kfParams_.ca_human.meas_noise = {0.1, 0.1, 0.1};
+  }
+  if (not this->nh_.getParam(
+          this->ns_ + "/kalman_filter/ca_model/human/z_process_noise",
+          this->kfParams_.ca_human.z_process_noise)) {
+    this->kfParams_.ca_human.z_process_noise = 0.01;
+  }
+
+  // CA Model (UAV)
+  if (not this->nh_.getParam(this->ns_ +
+                                 "/kalman_filter/ca_model/uav/jerk_sigma",
+                             this->kfParams_.ca_uav.jerk_sigma)) {
+    this->kfParams_.ca_uav.jerk_sigma = 1.0;
+  }
+  if (not this->nh_.getParam(this->ns_ + "/kalman_filter/ca_model/uav/init_cov",
+                             this->kfParams_.ca_uav.init_cov)) {
+    this->kfParams_.ca_uav.init_cov = {0.1, 0.1,  0.1,  1.0, 1.0,
+                                       1.0, 10.0, 10.0, 10.0};
+  }
+  if (not this->nh_.getParam(this->ns_ +
+                                 "/kalman_filter/ca_model/uav/meas_noise",
+                             this->kfParams_.ca_uav.meas_noise)) {
+    this->kfParams_.ca_uav.meas_noise = {0.1, 0.1, 0.1};
+  }
+
+  // CV Model
+  if (not this->nh_.getParam(this->ns_ + "/kalman_filter/cv_model/acc_sigma",
+                             this->kfParams_.cv.acc_sigma)) {
+    this->kfParams_.cv.acc_sigma = 3.0;
+  }
+  if (not this->nh_.getParam(this->ns_ + "/kalman_filter/cv_model/init_cov",
+                             this->kfParams_.cv.init_cov)) {
+    this->kfParams_.cv.init_cov = {0.5, 0.5, 0.5, 2.0, 2.0, 2.0};
+  }
+  if (not this->nh_.getParam(this->ns_ + "/kalman_filter/cv_model/meas_noise",
+                             this->kfParams_.cv.meas_noise)) {
+    this->kfParams_.cv.meas_noise = {0.3, 0.3, 0.3};
+  }
+
+  // CTRA Model
+  if (not this->nh_.getParam(this->ns_ + "/kalman_filter/ctra_model/init_cov",
+                             this->kfParams_.ctra.init_cov)) {
+    this->kfParams_.ctra.init_cov = {0.1, 0.1, 0.1, 1.0, 10.0, 0.5, 1.0};
+  }
+  if (not this->nh_.getParam(this->ns_ +
+                                 "/kalman_filter/ctra_model/process_noise",
+                             this->kfParams_.ctra.process_noise)) {
+    this->kfParams_.ctra.process_noise = {0.1, 0.1, 0.01, 1.0, 10.0, 0.1, 1.0};
+  }
+  if (not this->nh_.getParam(this->ns_ + "/kalman_filter/ctra_model/meas_noise",
+                             this->kfParams_.ctra.meas_noise)) {
+    this->kfParams_.ctra.meas_noise = {0.1, 0.1, 0.1};
+  }
+
   // 初始化激光雷达检测器（避免每次回调时重复初始化）
   this->lidarDetector_.reset(new lidarDetector());
   this->lidarDetector_->setParams(
@@ -902,6 +972,8 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
 
   // 检查是否有新检测结果
   if (!hasNewDetection_) {
+    ROS_WARN_THROTTLE(5.0, "%s: No new detection available for tracking",
+                      this->hint_.c_str());
     return; // 跳过，避免重复处理相同数据
   }
 
@@ -921,7 +993,7 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
     this->pcHist_.clear();
     this->pcCenterHist_.clear();
     this->pcStdHist_.clear();
-    this->filters_.clear(); // 同时清空滤波器
+    // this->filters_.clear(); // 同时清空滤波器
   }
 
   hasNewDetection_ = false; // 标记检测结果已处理
@@ -1211,9 +1283,6 @@ void dynamicDetector::lidarDetect() {
       continue;
     }
 
-    // 待分类的边界框，不过早分类
-    // this->classifyBox(lidarBBox, lidarClustersRaw[i].centroid);
-
     lidarBBoxesFiltered.push_back(lidarBBox);
     lidarClustersFiltered.push_back(lidarClustersRaw[i]);
   }
@@ -1294,8 +1363,8 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
       auto newFilter = createKalmanFilter(false, // is_human
                                           false, // is_che
                                           false, // is_uav
-                                          true   // is_else -> 强制使用 3D CV
-      );
+                                          true,  // is_else -> 强制使用 3D CV
+                                          this->kfParams_);
 
       newFilter->setDt(this->dt_);
 
@@ -1336,38 +1405,26 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
         const onboardDetector::box3D &histBox = this->boxHist_[j][0];
         const Eigen::Vector3d &histStd = this->pcStdHist_[j][0];
 
-        // 分类一致性检查（已禁用）：
-        // 原始分类逻辑（在lidarDetect中）已被移除，新的稳定分类逻辑在关联之后执行。
-        // 因此，此处的硬性分类匹配检查不再需要，注释掉可以提高关联的鲁棒性，
-        // 允许一个（暂未分类的）新检测结果与一个（已分类的）历史轨迹进行匹配。
-        // bool classMatch = (currBox.is_human == histBox.is_human) &&
-        //                  (currBox.is_uav == histBox.is_uav) &&
-        //                  (currBox.is_che == histBox.is_che) &&
-        //                  (currBox.is_else == histBox.is_else);
-
-        // if (!classMatch) {
-        //     // 分类不一致，设置极大代价，禁止匹配
-        //     costMatrix[i][j] = 1e9;
-        //     continue;
-        // }
-
-        // 使用卡尔曼滤波器预测的位置
+        // 使用卡尔曼滤波器预测的位置构建预测bbox
+        // 注意：predBox的位置来自卡尔曼滤波预测，尺寸保持历史值（尺寸不参与状态估计）
         onboardDetector::box3D predBox = histBox;
         const Eigen::VectorXd &filterStates = this->filters_[j]->getState();
 
-        // 根据不同的滤波器类型提取位置
-        if (histBox.is_human) {
-          // 2D CA: [x, y, vx, vy, ax, ay]
+        // 根据不同的滤波器类型提取预测位置
+        if (histBox.is_human || histBox.is_che) {
+          // 2D CA: [x, y, vx, vy, ax, ay],车 CTRA: [x, y, v, a, yaw, yaw_rate]
           predBox.x = filterStates(0);
           predBox.y = filterStates(1);
         } else if (histBox.is_uav || histBox.is_else) {
           // 3D CA/CV: [x, y, z, ...]
           predBox.x = filterStates(0);
           predBox.y = filterStates(1);
-        } else { // 车 CTRA: [x, y, v, a, yaw, yaw_rate]
-          predBox.x = filterStates(0);
-          predBox.y = filterStates(1);
+          predBox.z = filterStates(2); // 3D物体需要z轴预测
         }
+
+        // 预测状态使用历史尺寸和点云标准差（这些不参与卡尔曼滤波）
+        // predBox的尺寸已经在初始化时从histBox复制，无需额外设置
+        const Eigen::Vector3d &predStd = histStd; // 点云标准差使用历史值
 
         // 计算关联代价（根据物体类别使用2D或3D）
         double cost;
@@ -1375,8 +1432,6 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
 
         if (histBox.is_uav || histBox.is_else) {
           // 3D物体：使用3D马氏距离
-          predBox.z = filterStates(2); // 添加z轴预测
-
           // 获取状态协方差矩阵P，并构建观测空间的协方差矩阵S = H*P*H^T + R
           // 对于位置观测，H矩阵选择状态向量的前3维（x,y,z）
           const Eigen::MatrixXd &P = this->filters_[j]->getCovariance();
@@ -1384,28 +1439,40 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
           // 提取位置部分的协方差（状态向量的前3x3块）
           Eigen::Matrix3d P_pos = P.block<3, 3>(0, 0);
 
-          cost = this->computeAssociationCost3D(predBox, histStd, currBox,
+          cost = this->computeAssociationCost3D(predBox, predStd, currBox,
                                                 currStd, P_pos);
 
-          // 3D门限：自由度3，99%置信度 -> 11.345
-          gateThreshold = 11.345;
+          // 3D门限:欧式距离平方,设为25.0(约5米),适应卡尔曼滤波预测误差
+          // 如果后续优化了卡尔曼滤波,可以收紧此门限
+          gateThreshold = 25.0;
         } else {
-          // 2D物体（人和车）：使用2D马氏距离
+          // 2D物体(人和车):使用2D欧式距离
           const Eigen::MatrixXd &P = this->filters_[j]->getCovariance();
 
-          // 提取位置部分的协方差（状态向量的前2x2块）
+          // 提取位置部分的协方差(状态向量的前2x2块)
           Eigen::Matrix2d P_pos = P.block<2, 2>(0, 0);
 
-          cost = this->computeAssociationCost2D(predBox, histStd, currBox,
+          cost = this->computeAssociationCost2D(predBox, predStd, currBox,
                                                 currStd, P_pos);
 
-          // 2D门限：自由度2，99%置信度 -> 9.21
-          gateThreshold = 9.21;
+          // 2D门限:欧式距离平方,设为25.0(约5米),适应卡尔曼滤波预测误差
+          // 如果后续优化了卡尔曼滤波,可以收紧此门限
+          gateThreshold = 25.0;
         }
 
-        // 应用关联门限（使用动态门限）
+        // 应用关联门限(使用动态门限)
         if (cost < gateThreshold) {
           costMatrix[i][j] = cost;
+          // 调试:输出通过门限的匹配
+          // ROS_DEBUG_THROTTLE(
+          //     0.5, "%s: Match [curr:%d->hist:%d] PASS: cost=%.2f <
+          //     gate=%.2f", this->hint_.c_str(), i, j, cost, gateThreshold);
+        } else {
+          // 调试:输出被门限拒绝的匹配
+          ROS_WARN_THROTTLE(
+              1.0,
+              "%s: Match [curr:%d->hist:%d] REJECT: cost=%.2f >= gate=%.2f",
+              this->hint_.c_str(), i, j, cost, gateThreshold);
         }
       }
     }
@@ -1447,13 +1514,21 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
 double
 dynamicDetector::computeMahalanobisDistance(const Eigen::Vector2d &posDiff,
                                             const Eigen::Matrix2d &covariance) {
-  // 计算协方差矩阵的逆
-  Eigen::Matrix2d covInv = covariance.inverse();
+  // 简化策略:直接使用欧式距离,忽略协方差
+  // 原因:马氏距离在协方差不准确时会产生异常高的代价值
+  return posDiff.squaredNorm();
 
-  // 计算马氏距离的平方
-  double mahalDist = posDiff.transpose() * covInv * posDiff;
-
-  return mahalDist;
+  // 原来的马氏距离计算已禁用
+  // double det = covariance.determinant();
+  // if (std::abs(det) < 1e-10) {
+  //   return posDiff.squaredNorm();
+  // }
+  // Eigen::Matrix2d covInv = covariance.inverse();
+  // double mahalDist = posDiff.transpose() * covInv * posDiff;
+  // if (!std::isfinite(mahalDist)) {
+  //   return posDiff.squaredNorm();
+  // }
+  // return mahalDist;
 }
 
 /*!
@@ -1464,13 +1539,21 @@ dynamicDetector::computeMahalanobisDistance(const Eigen::Vector2d &posDiff,
  */
 double dynamicDetector::computeMahalanobisDistance3D(
     const Eigen::Vector3d &posDiff, const Eigen::Matrix3d &covariance) {
-  // 计算协方差矩阵的逆
-  Eigen::Matrix3d covInv = covariance.inverse();
+  // 简化策略:直接使用欧式距离,忽略协方差
+  // 原因:马氏距离在协方差不准确时会产生异常高的代价值
+  return posDiff.squaredNorm();
 
-  // 计算马氏距离的平方
-  double mahalDist = posDiff.transpose() * covInv * posDiff;
-
-  return mahalDist;
+  // 原来的马氏距离计算已禁用
+  // double det = covariance.determinant();
+  // if (std::abs(det) < 1e-10) {
+  //   return posDiff.squaredNorm();
+  // }
+  // Eigen::Matrix3d covInv = covariance.inverse();
+  // double mahalDist = posDiff.transpose() * covInv * posDiff;
+  // if (!std::isfinite(mahalDist)) {
+  //   return posDiff.squaredNorm();
+  // }
+  // return mahalDist;
 }
 
 /*!
@@ -1496,32 +1579,9 @@ double dynamicDetector::computeAssociationCost2D(
   posDiff << (measBox.x - predBox.x), (measBox.y - predBox.y);
   double posCost = this->computeMahalanobisDistance(posDiff, covariance);
 
-  // 2. 计算尺寸代价（归一化差异）
-  double sizeDiffX = std::abs(measBox.x_width - predBox.x_width);
-  double sizeDiffY = std::abs(measBox.y_width - predBox.y_width);
-  double sizeDiffZ = std::abs(measBox.z_width - predBox.z_width);
-
-  // 归一化尺寸差异（使用平均尺寸）
-  double avgSizeX = (measBox.x_width + predBox.x_width) / 2.0;
-  double avgSizeY = (measBox.y_width + predBox.y_width) / 2.0;
-  double avgSizeZ = (measBox.z_width + predBox.z_width) / 2.0;
-
-  double sizeCost = 0.0;
-  if (avgSizeX > 1e-6)
-    sizeCost += (sizeDiffX / avgSizeX) * (sizeDiffX / avgSizeX);
-  if (avgSizeY > 1e-6)
-    sizeCost += (sizeDiffY / avgSizeY) * (sizeDiffY / avgSizeY);
-  if (avgSizeZ > 1e-6)
-    sizeCost += (sizeDiffZ / avgSizeZ) * (sizeDiffZ / avgSizeZ);
-
-  // 3. 计算点云标准差代价（反映形状变化）
-  Eigen::Vector3d stdDiff = measStd - predStd;
-  double stdCost = stdDiff.squaredNorm();
-
-  // 加权组合所有代价
-  double totalCost = this->associationPosCostWeight_ * posCost +
-                     this->associationSizeCostWeight_ * sizeCost +
-                     this->associationStdCostWeight_ * stdCost;
+  // 尺寸和标准差代价已禁用(权重为0),直接返回位置代价
+  // 这避免了不必要的除零和NaN风险
+  double totalCost = this->associationPosCostWeight_ * posCost;
 
   return totalCost;
 }
@@ -1550,32 +1610,9 @@ double dynamicDetector::computeAssociationCost3D(
       (measBox.z - predBox.z);
   double posCost = this->computeMahalanobisDistance3D(posDiff, covariance);
 
-  // 2. 计算尺寸代价（归一化差异）
-  double sizeDiffX = std::abs(measBox.x_width - predBox.x_width);
-  double sizeDiffY = std::abs(measBox.y_width - predBox.y_width);
-  double sizeDiffZ = std::abs(measBox.z_width - predBox.z_width);
-
-  // 归一化尺寸差异（使用平均尺寸）
-  double avgSizeX = (measBox.x_width + predBox.x_width) / 2.0;
-  double avgSizeY = (measBox.y_width + predBox.y_width) / 2.0;
-  double avgSizeZ = (measBox.z_width + predBox.z_width) / 2.0;
-
-  double sizeCost = 0.0;
-  if (avgSizeX > 1e-6)
-    sizeCost += (sizeDiffX / avgSizeX) * (sizeDiffX / avgSizeX);
-  if (avgSizeY > 1e-6)
-    sizeCost += (sizeDiffY / avgSizeY) * (sizeDiffY / avgSizeY);
-  if (avgSizeZ > 1e-6)
-    sizeCost += (sizeDiffZ / avgSizeZ) * (sizeDiffZ / avgSizeZ);
-
-  // 3. 计算点云标准差代价（反映形状变化）
-  Eigen::Vector3d stdDiff = measStd - predStd;
-  double stdCost = stdDiff.squaredNorm();
-
-  // 加权组合所有代价
-  double totalCost = this->associationPosCostWeight_ * posCost +
-                     this->associationSizeCostWeight_ * sizeCost +
-                     this->associationStdCostWeight_ * stdCost;
+  // 尺寸和标准差代价已禁用(权重为0),直接返回位置代价
+  // 这避免了不必要的除零和NaN风险
+  double totalCost = this->associationPosCostWeight_ * posCost;
 
   return totalCost;
 }
@@ -1717,6 +1754,9 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
 
       double vx = 0.0, vy = 0.0, vz = 0.0;
       double ax = 0.0, ay = 0.0, az = 0.0;
+      (void)ax;
+      (void)ay;
+      (void)az;
 
       if (k > 0) {
         onboardDetector::box3D &prevBBox = this->boxHist_[bestMatch[i]][k - 1];
@@ -1778,8 +1818,8 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       auto newFilter = createKalmanFilter(false, // is_human
                                           false, // is_che
                                           false, // is_uav
-                                          true   // is_else -> 强制使用 3D CV
-      );
+                                          true,  // is_else -> 强制使用 3D CV
+                                          this->kfParams_);
 
       newFilter->setDt(this->dt_);
 

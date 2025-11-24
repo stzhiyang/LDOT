@@ -104,9 +104,9 @@ private:
   Eigen::Matrix4d body2Lidar_; // 机体坐标系到激光雷达坐标系的变换矩阵
 
   // ROS话题名称与模式参数
-  int localizationMode_;   // 定位模式 (0: Pose, 1: Odometry)
-  bool useLivoxCustomMsg_; // 是否使用Livox CustomMsg格式 (true: CustomMsg,
-                           // false: PointCloud2)
+  int localizationMode_;       // 定位模式 (0: Pose, 1: Odometry)
+  bool useLivoxCustomMsg_;     // 是否使用Livox CustomMsg格式 (true: CustomMsg,
+                               // false: PointCloud2)
   std::string lidarTopicName_; // 激光雷达点云话题
   std::string poseTopicName_;  // 位姿话题
   std::string odomTopicName_;  // 里程计话题
@@ -150,6 +150,9 @@ private:
   double classifyVehicleCentroidZRatio_; // 车：质心z高度 < z轴宽度的倍数
   double classifyUAVMaxSize_;            // 无人机：x/y/z轴宽度 < 该值(米)
   double classifyUAVCentroidZRatio_;     // 无人机：质心z高度 > z轴宽度的倍数
+
+  // 卡尔曼滤波器参数
+  KF_Params kfParams_;
 
   // 传感器原始数据
   Eigen::Vector3d position_;         // 机器人当前位置
