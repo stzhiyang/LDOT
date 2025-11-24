@@ -38,13 +38,11 @@ classify_uav_threshold: [0.8, 1.2] # z/y/z <
 
 # 目标跟踪与数据关联
 association_gate_threshold: 7.815   # 关联门限阈值（卡方分布，自由度3，99%置信度）
-association_pos_cost_weight: 1.0  # 位置代价权重（马氏距离）
+association_pos_cost_weight: 0.7  # 位置代价权重（马氏距离）
 association_size_cost_weight: 0.2 # 尺寸代价权重（归一化差异）
-association_std_cost_weight: 0.1  # 点云标准差代价权重（形状变化）
+association_std_cost_weight: 0.5  # 点云标准差代价权重（形状变化）
 history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
-fix_size_history_threshold: 10 # 固定目标尺寸的历史帧数阈值, 当一个目标被连续跟踪超过该帧数后, 其尺寸将被固定
-fix_size_dimension_threshold: 0.4 # 固定目标尺寸的维度比例阈值, 用于判断是否固定尺寸
-kalman_filter_averaging_frames: 2 # 卡尔曼滤波器状态平均的帧数
+kalman_filter_averaging_frames: 5 # 卡尔曼滤波器状态平均的帧数
 
 # 动态/静态分类
 frame_skip: 4 # 比较两个点云聚类以判断动态性时跳过的帧数
