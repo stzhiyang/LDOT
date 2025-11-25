@@ -37,10 +37,9 @@ classify_vehicle_threshold: [1, 0.8] # x/y >= z
 classify_uav_threshold: [0.8, 1.2] # z/y/z <
 
 # 目标跟踪与数据关联
-association_gate_threshold: 7.815   # 关联门限阈值（卡方分布，自由度3，99%置信度）
-association_pos_cost_weight: 1.0    # 位置代价权重（欧式距离），最可靠
-association_size_cost_weight: 0.0   # 尺寸代价权重，设为0（完全忽略,避免除零NaN）
-association_std_cost_weight: 0.0    # 点云标准差代价权重（完全忽略）
+association_gate_confidence: 0.3  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
+association_pos_cost_weight: 0.6    # 位置代价权重（马氏距离），考虑不确定性
+association_iou_cost_weight: 0.4    # 3D IoU代价权重，反映空间重叠度
 history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
 kalman_filter_averaging_frames: 5 # 卡尔曼滤波器状态平均的帧数
 
@@ -59,23 +58,28 @@ kalman_filter:
   # Constant Acceleration Model (Jerk noise)
   ca_model:
     human: # 2D Model [x, y, z, vx, vy, ax, ay]
-      jerk_sigma: 1.0
+      jerk_sigma: 3.0 # 增大过程噪声，允许更剧烈的加加速度变化，减少预测滞后
       init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0]
       meas_noise: [0.1, 0.1, 0.1]
       z_process_noise: 0.01
     uav: # 3D Model [x, y, z, vx, vy, vz, ax, ay, az]
-      jerk_sigma: 1.0
+      jerk_sigma: 3.0 # 增大过程噪声，适应无人机的高机动性
       init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0]
       meas_noise: [0.1, 0.1, 0.1]
 
   # Constant Velocity Model (Acceleration noise)
   cv_model: # [x, y, z, vx, vy, vz]
-    acc_sigma: 3.0
+    acc_sigma: 3.0 # 增大加速度噪声（假设目标可能有较大加速度），提高对变速运动的响应
     init_cov: [0.5, 0.5, 0.5, 2.0, 2.0, 2.0]
-    meas_noise: [0.3, 0.3, 0.3]
+    meas_noise: [0.5, 0.5, 0.5]
 
   # Constant Turn Rate and Acceleration Model
   ctra_model: # [x, y, z, v, a, yaw, yaw_rate]
     init_cov: [0.1, 0.1, 0.1, 1.0, 10.0, 0.5, 1.0]
     process_noise: [0.1, 0.1, 0.01, 1.0, 10.0, 0.1, 1.0]
     meas_noise: [0.1, 0.1, 0.1]
+
+
+
+
+    

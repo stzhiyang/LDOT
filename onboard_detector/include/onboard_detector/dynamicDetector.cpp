@@ -224,17 +224,26 @@ void dynamicDetector::initParam() {
   }
 
   // -------------------------------------------目标跟踪与数据关联参数--------------------------------------------------
-  // 数据关联门限阈值（基于卡方分布）
-  if (not this->nh_.getParam(this->ns_ + "/association_gate_threshold",
-                             this->associationGateThresh_)) {
-    this->associationGateThresh_ = 9.21; // 自由度为3的卡方分布，置信度99%
-    cout
-        << this->hint_
-        << ": No association gate threshold parameter found. Use default: 9.21."
-        << endl;
+  // 读取关联置信度（默认 0.99）
+  if (not this->nh_.getParam(this->ns_ + "/association_gate_confidence",
+                             this->associationGateConfidence_)) {
+    this->associationGateConfidence_ = 0.99;
+    cout << this->hint_
+         << ": No association_gate_confidence param, use default 0.99." << endl;
   } else {
-    cout << this->hint_ << ": Association gate threshold is set to: "
-         << this->associationGateThresh_ << "." << endl;
+    cout << this->hint_ << ": Association gate confidence set to: "
+         << this->associationGateConfidence_ << endl;
+  }
+  // 根据置信度计算 2D / 3D 门限（卡方分布）
+  {
+    boost::math::chi_squared_distribution<double> chi2_2d(2);
+    boost::math::chi_squared_distribution<double> chi2_3d(3);
+    this->gateThreshold2D_ =
+        boost::math::quantile(chi2_2d, this->associationGateConfidence_);
+    this->gateThreshold3D_ =
+        boost::math::quantile(chi2_3d, this->associationGateConfidence_);
+    cout << this->hint_ << ": gateThreshold2D = " << this->gateThreshold2D_
+         << ", gateThreshold3D = " << this->gateThreshold3D_ << endl;
   }
 
   // 位置代价权重
@@ -249,27 +258,15 @@ void dynamicDetector::initParam() {
          << this->associationPosCostWeight_ << "." << endl;
   }
 
-  // 尺寸代价权重
-  if (not this->nh_.getParam(this->ns_ + "/association_size_cost_weight",
-                             this->associationSizeCostWeight_)) {
-    this->associationSizeCostWeight_ = 0.5;
+  // IoU代价权重
+  if (not this->nh_.getParam(this->ns_ + "/association_iou_cost_weight",
+                             this->associationIoUCostWeight_)) {
+    this->associationIoUCostWeight_ = 0.4;
     cout << this->hint_
-         << ": No size cost weight parameter found. Use default: 0.5." << endl;
+         << ": No IoU cost weight parameter found. Use default: 0.4." << endl;
   } else {
     cout << this->hint_
-         << ": Size cost weight is set to: " << this->associationSizeCostWeight_
-         << "." << endl;
-  }
-
-  // 点云标准差代价权重
-  if (not this->nh_.getParam(this->ns_ + "/association_std_cost_weight",
-                             this->associationStdCostWeight_)) {
-    this->associationStdCostWeight_ = 0.3;
-    cout << this->hint_
-         << ": No std cost weight parameter found. Use default: 0.3." << endl;
-  } else {
-    cout << this->hint_
-         << ": Std cost weight is set to: " << this->associationStdCostWeight_
+         << ": IoU cost weight is set to: " << this->associationIoUCostWeight_
          << "." << endl;
   }
 
@@ -1235,16 +1232,16 @@ void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
     bbox.is_else = true;
   }
 
-  // 输出分类详细信息（包含物体尺寸和质心高度）
-  std::string classType = bbox.is_human ? "Human"
-                          : bbox.is_che ? "Vehicle"
-                          : bbox.is_uav ? "UAV"
-                                        : "Other";
-  ROS_INFO_THROTTLE(2.0,
-                    "%s: Classified as %s - Size(%.2f,%.2f,%.2f), "
-                    "Centroid_z=%.2f, xy_max/z=%.2f, z/xy_max=%.2f",
-                    this->hint_.c_str(), classType.c_str(), x_width, y_width,
-                    z_width, centroid_z, xy_max / z_width, z_width / xy_max);
+  // // 输出分类详细信息（包含物体尺寸和质心高度）
+  // std::string classType = bbox.is_human ? "Human"
+  //                         : bbox.is_che ? "Vehicle"
+  //                         : bbox.is_uav ? "UAV"
+  //                                       : "Other";
+  // ROS_INFO_THROTTLE(2.0,
+  //                   "%s: Classified as %s - Size(%.2f,%.2f,%.2f), "
+  //                   "Centroid_z=%.2f, xy_max/z=%.2f, z/xy_max=%.2f",
+  //                   this->hint_.c_str(), classType.c_str(), x_width, y_width,
+  //                   z_width, centroid_z, xy_max / z_width, z_width / xy_max);
 }
 
 /*!
@@ -1442,9 +1439,8 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
           cost = this->computeAssociationCost3D(predBox, predStd, currBox,
                                                 currStd, P_pos);
 
-          // 3D门限:欧式距离平方,设为25.0(约5米),适应卡尔曼滤波预测误差
-          // 如果后续优化了卡尔曼滤波,可以收紧此门限
-          gateThreshold = 25.0;
+          // 3D门限: 使用配置参数 associationGateThresh_（基于卡方分布）
+          gateThreshold = this->gateThreshold3D_;
         } else {
           // 2D物体(人和车):使用2D欧式距离
           const Eigen::MatrixXd &P = this->filters_[j]->getCovariance();
@@ -1455,9 +1451,8 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
           cost = this->computeAssociationCost2D(predBox, predStd, currBox,
                                                 currStd, P_pos);
 
-          // 2D门限:欧式距离平方,设为25.0(约5米),适应卡尔曼滤波预测误差
-          // 如果后续优化了卡尔曼滤波,可以收紧此门限
-          gateThreshold = 25.0;
+          // 2D门限: 使用配置参数 associationGateThresh_（基于卡方分布）
+          gateThreshold = this->gateThreshold2D_;
         }
 
         // 应用关联门限(使用动态门限)
@@ -1514,21 +1509,19 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
 double
 dynamicDetector::computeMahalanobisDistance(const Eigen::Vector2d &posDiff,
                                             const Eigen::Matrix2d &covariance) {
-  // 简化策略:直接使用欧式距离,忽略协方差
-  // 原因:马氏距离在协方差不准确时会产生异常高的代价值
-  return posDiff.squaredNorm();
-
-  // 原来的马氏距离计算已禁用
-  // double det = covariance.determinant();
-  // if (std::abs(det) < 1e-10) {
-  //   return posDiff.squaredNorm();
-  // }
-  // Eigen::Matrix2d covInv = covariance.inverse();
-  // double mahalDist = posDiff.transpose() * covInv * posDiff;
-  // if (!std::isfinite(mahalDist)) {
-  //   return posDiff.squaredNorm();
-  // }
-  // return mahalDist;
+  // 计算马氏距离，使用协方差矩阵的逆
+  double det = covariance.determinant();
+  if (std::abs(det) < 1e-10) {
+    // 协方差矩阵奇异，退化为欧式距离
+    return posDiff.squaredNorm();
+  }
+  Eigen::Matrix2d covInv = covariance.inverse();
+  double mahalDist = posDiff.transpose() * covInv * posDiff;
+  if (!std::isfinite(mahalDist)) {
+    // 计算异常，退化为欧式距离
+    return posDiff.squaredNorm();
+  }
+  return mahalDist;
 }
 
 /*!
@@ -1539,36 +1532,91 @@ dynamicDetector::computeMahalanobisDistance(const Eigen::Vector2d &posDiff,
  */
 double dynamicDetector::computeMahalanobisDistance3D(
     const Eigen::Vector3d &posDiff, const Eigen::Matrix3d &covariance) {
-  // 简化策略:直接使用欧式距离,忽略协方差
-  // 原因:马氏距离在协方差不准确时会产生异常高的代价值
-  return posDiff.squaredNorm();
+  // 计算马氏距离，使用协方差矩阵的逆
+  double det = covariance.determinant();
+  if (std::abs(det) < 1e-10) {
+    // 协方差矩阵奇异，退化为欧式距离
+    return posDiff.squaredNorm();
+  }
+  Eigen::Matrix3d covInv = covariance.inverse();
+  double mahalDist = posDiff.transpose() * covInv * posDiff;
+  if (!std::isfinite(mahalDist)) {
+    // 计算异常，退化为欧式距离
+    return posDiff.squaredNorm();
+  }
+  return mahalDist;
+}
 
-  // 原来的马氏距离计算已禁用
-  // double det = covariance.determinant();
-  // if (std::abs(det) < 1e-10) {
-  //   return posDiff.squaredNorm();
-  // }
-  // Eigen::Matrix3d covInv = covariance.inverse();
-  // double mahalDist = posDiff.transpose() * covInv * posDiff;
-  // if (!std::isfinite(mahalDist)) {
-  //   return posDiff.squaredNorm();
-  // }
-  // return mahalDist;
+/*!
+ * @brief 计算两个3D边界框的IoU (Intersection over Union)
+ * @param box1 第一个边界框
+ * @param box2 第二个边界框
+ * @return IoU值，范围 [0, 1]，值越大表示重叠度越高
+ *
+ * IoU计算公式：IoU = Volume(Intersection) / Volume(Union)
+ * 其中：
+ * - Intersection: 两个边界框的交集体积
+ * - Union: 两个边界框的并集体积 = Vol1 + Vol2 - Intersection
+ */
+double dynamicDetector::compute3DIoU(const onboardDetector::box3D &box1,
+                                     const onboardDetector::box3D &box2) {
+  // 计算每个边界框在x、y、z轴上的最小值和最大值
+  double box1_x_min = box1.x - box1.x_width / 2.0;
+  double box1_x_max = box1.x + box1.x_width / 2.0;
+  double box1_y_min = box1.y - box1.y_width / 2.0;
+  double box1_y_max = box1.y + box1.y_width / 2.0;
+  double box1_z_min = box1.z - box1.z_width / 2.0;
+  double box1_z_max = box1.z + box1.z_width / 2.0;
+
+  double box2_x_min = box2.x - box2.x_width / 2.0;
+  double box2_x_max = box2.x + box2.x_width / 2.0;
+  double box2_y_min = box2.y - box2.y_width / 2.0;
+  double box2_y_max = box2.y + box2.y_width / 2.0;
+  double box2_z_min = box2.z - box2.z_width / 2.0;
+  double box2_z_max = box2.z + box2.z_width / 2.0;
+
+  // 计算x、y、z三个维度的重叠长度
+  double x_overlap = std::max(0.0, std::min(box1_x_max, box2_x_max) -
+                                       std::max(box1_x_min, box2_x_min));
+  double y_overlap = std::max(0.0, std::min(box1_y_max, box2_y_max) -
+                                       std::max(box1_y_min, box2_y_min));
+  double z_overlap = std::max(0.0, std::min(box1_z_max, box2_z_max) -
+                                       std::max(box1_z_min, box2_z_min));
+
+  // 计算交集体积
+  double intersection = x_overlap * y_overlap * z_overlap;
+
+  // 计算两个边界框的体积
+  double vol1 = box1.x_width * box1.y_width * box1.z_width;
+  double vol2 = box2.x_width * box2.y_width * box2.z_width;
+
+  // 计算并集体积
+  double union_vol = vol1 + vol2 - intersection;
+
+  // 避免除零
+  if (union_vol < 1e-10) {
+    return 0.0;
+  }
+
+  // 计算IoU
+  double iou = intersection / union_vol;
+
+  // 确保IoU在[0, 1]范围内
+  return std::max(0.0, std::min(1.0, iou));
 }
 
 /*!
  * @brief 计算2D物体（人和车）的数据关联总代价
  * @param predBox 预测的边界框（来自卡尔曼滤波器）
- * @param predStd 预测时刻的点云标准差
+ * @param predStd 预测时刻的点云标准差（未使用）
  * @param measBox 当前测量的边界框
- * @param measStd 当前测量的点云标准差
+ * @param measStd 当前测量的点云标准差（未使用）
  * @param covariance 预测位置的2D协方差矩阵
  * @return 总关联代价（越小越好）
  *
  * 代价函数组成：
- * 1. 位置代价：2D马氏距离（仅考虑x, y）
- * 2. 尺寸代价：归一化的尺寸差异
- * 3. 形状代价：点云标准差的变化
+ * 1. 位置代价：2D马氏距离（考虑x, y和不确定性）
+ * 2. IoU代价：3D边界框重叠度（1-IoU）
  */
 double dynamicDetector::computeAssociationCost2D(
     const onboardDetector::box3D &predBox, const Eigen::Vector3d &predStd,
@@ -1579,9 +1627,19 @@ double dynamicDetector::computeAssociationCost2D(
   posDiff << (measBox.x - predBox.x), (measBox.y - predBox.y);
   double posCost = this->computeMahalanobisDistance(posDiff, covariance);
 
-  // 尺寸和标准差代价已禁用(权重为0),直接返回位置代价
-  // 这避免了不必要的除零和NaN风险
-  double totalCost = this->associationPosCostWeight_ * posCost;
+  // 2. 计算IoU代价（IoU越大，代价越小）
+  double iou = this->compute3DIoU(predBox, measBox);
+  double iouCost = 1.0 - iou; // IoU=1时代价为0，IoU=0时代价为1
+
+  // 加权总代价
+  double totalCost = this->associationPosCostWeight_ * posCost +
+                     this->associationIoUCostWeight_ * iouCost;
+
+  // 调试：输出各项代价的详细信息
+  // ROS_DEBUG_THROTTLE(0.5,
+  //                   "%s: Cost2D - pos:%.2f iou:%.2f(%.3f) size:%.2f std:%.2f
+  //                   total:%.2f", this->hint_.c_str(), posCost, iouCost, iou,
+  //                   sizeCost, stdCost, totalCost);
 
   return totalCost;
 }
@@ -1589,16 +1647,15 @@ double dynamicDetector::computeAssociationCost2D(
 /*!
  * @brief 计算3D物体（无人机和其他类）的数据关联总代价
  * @param predBox 预测的边界框（来自卡尔曼滤波器）
- * @param predStd 预测时刻的点云标准差
+ * @param predStd 预测时刻的点云标准差（未使用）
  * @param measBox 当前测量的边界框
- * @param measStd 当前测量的点云标准差
+ * @param measStd 当前测量的点云标准差（未使用）
  * @param covariance 预测位置的3D协方差矩阵
  * @return 总关联代价（越小越好）
  *
  * 代价函数组成：
- * 1. 位置代价：3D马氏距离（考虑x, y, z）
- * 2. 尺寸代价：归一化的尺寸差异
- * 3. 形状代价：点云标准差的变化
+ * 1. 位置代价：3D马氏距离（考虑x, y, z和不确定性）
+ * 2. IoU代价：3D边界框重叠度（1-IoU）
  */
 double dynamicDetector::computeAssociationCost3D(
     const onboardDetector::box3D &predBox, const Eigen::Vector3d &predStd,
@@ -1610,9 +1667,18 @@ double dynamicDetector::computeAssociationCost3D(
       (measBox.z - predBox.z);
   double posCost = this->computeMahalanobisDistance3D(posDiff, covariance);
 
-  // 尺寸和标准差代价已禁用(权重为0),直接返回位置代价
-  // 这避免了不必要的除零和NaN风险
-  double totalCost = this->associationPosCostWeight_ * posCost;
+  // 2. 计算IoU代价（IoU越大，代价越小）
+  double iou = this->compute3DIoU(predBox, measBox);
+  double iouCost = 1.0 - iou; // IoU=1时代价为0，IoU=0时代价为1
+
+  // 加权总代价
+  double totalCost = this->associationPosCostWeight_ * posCost +
+                     this->associationIoUCostWeight_ * iouCost;
+
+  // 调试：输出各项代价的详细信息
+  // ROS_DEBUG_THROTTLE(0.5,
+  //                   "%s: Cost3D - pos:%.2f iou:%.2f(%.3f) total:%.2f",
+  //                   this->hint_.c_str(), posCost, iouCost, iou, totalCost);
 
   return totalCost;
 }

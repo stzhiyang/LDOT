@@ -9,6 +9,7 @@
 #include <Eigen/Eigen>
 #include <Eigen/StdVector>
 #include <atomic>
+#include <boost/math/distributions/chi_squared.hpp> // 用于根据置信度计算卡方分布阈值
 #include <chrono>
 #include <geometry_msgs/PoseStamped.h>
 #include <livox_ros_driver2/CustomMsg.h>
@@ -125,10 +126,11 @@ private:
   double lidarDBDistanceScale_; // 自适应DBSCAN的距离缩放因子
 
   // 目标跟踪与数据关联参数
-  double associationGateThresh_;     // 数据关联的卡方检验门限阈值
+  double associationGateConfidence_; // 数据关联的置信度 (0~1)
+  double gateThreshold3D_;           // 3D门限: 根据置信度计算三维卡方阈值
+  double gateThreshold2D_;           // 2D门限: 根据置信度计算二维卡方阈值
   double associationPosCostWeight_;  // 位置代价的权重
-  double associationSizeCostWeight_; // 尺寸代价的权重
-  double associationStdCostWeight_;  // 点云标准差代价的权重
+  double associationIoUCostWeight_;  // 3D IoU代价的权重
   int histSize_;                     // 跟踪历史的长度
   int kfAvgFrames_;                  // 用于计算观测速度的帧数
 
@@ -251,6 +253,8 @@ public:
   double computeMahalanobisDistance3D(
       const Eigen::Vector3d &posDiff,
       const Eigen::Matrix3d &covariance); // 计算3D马氏距离
+  double compute3DIoU(const onboardDetector::box3D &box1,
+                      const onboardDetector::box3D &box2); // 计算3D IoU
   double computeAssociationCost2D(
       const onboardDetector::box3D &predBox, const Eigen::Vector3d &predStd,
       const onboardDetector::box3D &measBox, const Eigen::Vector3d &measStd,
