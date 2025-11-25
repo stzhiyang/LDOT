@@ -128,7 +128,6 @@ private:
   // 目标跟踪与数据关联参数
   double associationGateConfidence_; // 数据关联的置信度 (0~1)
   double gateThreshold3D_;           // 3D门限: 根据置信度计算三维卡方阈值
-  double gateThreshold2D_;           // 2D门限: 根据置信度计算二维卡方阈值
   double associationPosCostWeight_;  // 位置代价的权重
   double associationIoUCostWeight_;  // 3D IoU代价的权重
   int histSize_;                     // 跟踪历史的长度
@@ -152,6 +151,11 @@ private:
   double classifyVehicleCentroidZRatio_; // 车：质心z高度 < z轴宽度的倍数
   double classifyUAVMaxSize_;            // 无人机：x/y/z轴宽度 < 该值(米)
   double classifyUAVCentroidZRatio_;     // 无人机：质心z高度 > z轴宽度的倍数
+
+  // 分类与模型切换参数
+  int classificationStartFrame_;   // 跟踪多少帧后开始进行分类和模型切换
+  double classifyHumanPcaRatio_;   // PCA特征: z_std / xy_std 的阈值
+  double classifyVehiclePcaRatio_; // PCA特征: xy_std / z_std 的阈值
 
   // 卡尔曼滤波器参数
   KF_Params kfParams_;
@@ -194,6 +198,7 @@ private:
       pcCenterHist_; // 每个被跟踪物体的点云中心历史
   std::vector<std::deque<Eigen::Vector3d>>
       pcStdHist_; // 每个被跟踪物体的点云标准差历史
+  std::vector<Eigen::Vector3d> maxHistorySizes_; // 每个被跟踪物体的历史最大尺寸
   std::vector<std::shared_ptr<KalmanFilterBase>>
       filters_; // 每个被跟踪物体对应的多模型卡尔曼滤波器
 
@@ -240,25 +245,23 @@ public:
 
   // 检测模块函数
   void lidarDetect(); // 执行激光雷达检测
-  void classifyBox(onboardDetector::box3D &bbox,
-                   const Eigen::Vector4f &centroid); // 对单个边界框进行分类
+  void
+  classifyBox(onboardDetector::box3D &bbox, const Eigen::Vector4f &centroid,
+              const Eigen::Vector3d &clusterStd,
+              const Eigen::Vector3d &maxHistorySize); // 对单个边界框进行分类
+  void
+  switchKalmanModel(int index,
+                    const onboardDetector::box3D &bbox); // 切换卡尔曼滤波模型
 
   // 数据关联与跟踪函数
   void
   boxAssociation(std::vector<int>
                      &bestMatch); // 边界框数据关联（基于马氏距离和匈牙利算法）
-  double computeMahalanobisDistance(
-      const Eigen::Vector2d &posDiff,
-      const Eigen::Matrix2d &covariance); // 计算2D马氏距离
   double computeMahalanobisDistance3D(
       const Eigen::Vector3d &posDiff,
       const Eigen::Matrix3d &covariance); // 计算3D马氏距离
   double compute3DIoU(const onboardDetector::box3D &box1,
                       const onboardDetector::box3D &box2); // 计算3D IoU
-  double computeAssociationCost2D(
-      const onboardDetector::box3D &predBox, const Eigen::Vector3d &predStd,
-      const onboardDetector::box3D &measBox, const Eigen::Vector3d &measStd,
-      const Eigen::Matrix2d &covariance); // 计算2D物体的关联代价
   double computeAssociationCost3D(
       const onboardDetector::box3D &predBox, const Eigen::Vector3d &predStd,
       const onboardDetector::box3D &measBox, const Eigen::Vector3d &measStd,

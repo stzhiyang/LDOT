@@ -234,16 +234,13 @@ void dynamicDetector::initParam() {
     cout << this->hint_ << ": Association gate confidence set to: "
          << this->associationGateConfidence_ << endl;
   }
-  // 根据置信度计算 2D / 3D 门限（卡方分布）
+  // 根据置信度计算 3D 门限（卡方分布）
   {
-    boost::math::chi_squared_distribution<double> chi2_2d(2);
     boost::math::chi_squared_distribution<double> chi2_3d(3);
-    this->gateThreshold2D_ =
-        boost::math::quantile(chi2_2d, this->associationGateConfidence_);
     this->gateThreshold3D_ =
         boost::math::quantile(chi2_3d, this->associationGateConfidence_);
-    cout << this->hint_ << ": gateThreshold2D = " << this->gateThreshold2D_
-         << ", gateThreshold3D = " << this->gateThreshold3D_ << endl;
+    cout << this->hint_ << ": gateThreshold3D = " << this->gateThreshold3D_
+         << endl;
   }
 
   // 位置代价权重
@@ -280,22 +277,6 @@ void dynamicDetector::initParam() {
     std::cout << this->hint_
               << ": History for tracking is set to: " << this->histSize_
               << std::endl;
-  }
-
-  // 固定尺寸功能已移除
-
-  // num of frames used in KF for observation
-  if (not this->nh_.getParam(this->ns_ + "/kalman_filter_averaging_frames",
-                             this->kfAvgFrames_)) {
-    this->kfAvgFrames_ = 10;
-    std::cout << this->hint_
-              << ": No number of frames used in KF for observation parameter "
-                 "found. Use default: 10."
-              << std::endl;
-  } else {
-    std::cout << this->hint_
-              << ": Number of frames used in KF for observation is set to: "
-              << this->kfAvgFrames_ << std::endl;
   }
 
   //-------------------------------------动态/静态分类参数----------------------------------------------------
@@ -460,6 +441,29 @@ void dynamicDetector::initParam() {
     ROS_INFO_STREAM(this->hint_ << " classify_uav_threshold: ["
                                 << this->classifyUAVMaxSize_ << ", "
                                 << this->classifyUAVCentroidZRatio_ << "]");
+    ROS_INFO_STREAM(this->hint_ << " classify_uav_threshold: ["
+                                << this->classifyUAVMaxSize_ << ", "
+                                << this->classifyUAVCentroidZRatio_ << "]");
+  }
+
+  // 分类与模型切换参数
+  if (not this->nh_.getParam(this->ns_ + "/classification_start_frame",
+                             this->classificationStartFrame_)) {
+    this->classificationStartFrame_ = 10;
+    ROS_WARN_STREAM(this->hint_
+                    << " No classification_start_frame param. Use default: 10");
+  }
+  if (not this->nh_.getParam(this->ns_ + "/classify_human_pca_ratio",
+                             this->classifyHumanPcaRatio_)) {
+    this->classifyHumanPcaRatio_ = 1.5;
+    ROS_WARN_STREAM(this->hint_
+                    << " No classify_human_pca_ratio param. Use default: 1.5");
+  }
+  if (not this->nh_.getParam(this->ns_ + "/classify_vehicle_pca_ratio",
+                             this->classifyVehiclePcaRatio_)) {
+    this->classifyVehiclePcaRatio_ = 1.5;
+    ROS_WARN_STREAM(this->hint_ << " No classify_vehicle_pca_ratio param. Use "
+                                   "default: 1.5");
   }
 
   // -----------------------------------------卡尔曼滤波器参数--------------------------------------------------------------
@@ -980,16 +984,81 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
   std::vector<int> bestMatch;      // 存储当前检测与历史障碍物的匹配索引。
   this->boxAssociation(bestMatch); // 执行边界框关联。
 
-  // kalman filter tracking
-  // 卡尔曼滤波跟踪
-  if (bestMatch.size()) {                       // 如果找到匹配。
-    this->kalmanFilterAndUpdateHist(bestMatch); // 更新卡尔曼滤波器和历史记录。
+  // --- 1. 先进行物体分类(针对匹配成功的旧轨迹) ---
+  if (bestMatch.size()) {
+    for (int i = 0; i < int(bestMatch.size()); ++i) {
+      if (bestMatch[i] >= 0) { // 匹配成功的旧轨迹
+        int histIndex = bestMatch[i];
+
+        // 1.1 更新历史最大尺寸
+        double curr_x = this->filteredBBoxes_[i].x_width;
+        double curr_y = this->filteredBBoxes_[i].y_width;
+        double curr_z = this->filteredBBoxes_[i].z_width;
+        if (curr_x > this->maxHistorySizes_[histIndex].x())
+          this->maxHistorySizes_[histIndex].x() = curr_x;
+        if (curr_y > this->maxHistorySizes_[histIndex].y())
+          this->maxHistorySizes_[histIndex].y() = curr_y;
+        if (curr_z > this->maxHistorySizes_[histIndex].z())
+          this->maxHistorySizes_[histIndex].z() = curr_z;
+
+        // 1.2 检查是否需要进行分类
+        // 首次分类：达到classification_start_frame且从未分类过(is_else=true表示默认状态)
+        // 重新分类：距离上次分类已经过了一定帧数(classification_start_frame的一半)
+        bool needClassify = false;
+
+        if (int(this->boxHist_[histIndex].size()) ==
+            this->classificationStartFrame_) {
+          // 刚达到分类阈值,进行首次分类
+          needClassify = true;
+        } else if (int(this->boxHist_[histIndex].size()) >
+                   this->classificationStartFrame_) {
+          // 已经分类过,每隔一定帧数重新分类一次
+          int framesSinceClassification = this->boxHist_[histIndex].size() -
+                                          this->classificationStartFrame_;
+          int reclassifyInterval =
+              std::max(20, this->classificationStartFrame_ / 2); // 重新分类间隔
+
+          if (framesSinceClassification % reclassifyInterval == 0) {
+            needClassify = true;
+          }
+        }
+
+        if (needClassify) {
+          Eigen::Vector4f centroid;
+          centroid << this->filteredPcClusterCenters_[i](0),
+              this->filteredPcClusterCenters_[i](1),
+              this->filteredPcClusterCenters_[i](2), 1.0;
+
+          // 对当前检测框进行分类,结果写入filteredBBoxes_[i]
+          this->classifyBox(this->filteredBBoxes_[i], centroid,
+                            this->filteredPcClusterStds_[i],
+                            this->maxHistorySizes_[histIndex]);
+
+          // 立即切换卡尔曼滤波模型(在更新之前)
+          this->switchKalmanModel(histIndex, this->filteredBBoxes_[i]);
+        } else {
+          // 未达到分类或重新分类条件,继承历史分类结果
+          this->filteredBBoxes_[i].is_human =
+              this->boxHist_[histIndex][0].is_human;
+          this->filteredBBoxes_[i].is_che = this->boxHist_[histIndex][0].is_che;
+          this->filteredBBoxes_[i].is_uav = this->boxHist_[histIndex][0].is_uav;
+          this->filteredBBoxes_[i].is_else =
+              this->boxHist_[histIndex][0].is_else;
+        }
+      }
+    }
+  }
+
+  // --- 2. 卡尔曼滤波跟踪(此时filteredBBoxes_已包含最新的分类信息) ---
+  if (bestMatch.size()) {
+    this->kalmanFilterAndUpdateHist(bestMatch); // 更新卡尔曼滤波器和历史记录
   } else {                                      // 如果当前帧没有任何检测结果
     // 清空历史记录。
     this->boxHist_.clear();
     this->pcHist_.clear();
     this->pcCenterHist_.clear();
     this->pcStdHist_.clear();
+    this->maxHistorySizes_.clear();
     // this->filters_.clear(); // 同时清空滤波器
   }
 
@@ -1004,7 +1073,7 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
   // this->hint_.c_str(), duration.count() / 1000.0);
 }
 
-// 分类定时器回调函数
+// 动静态分类定时器回调函数
 void dynamicDetector::classificationCB(const ros::TimerEvent &) {
   // // [Performance Timing] 测量回调函数耗时
   // auto start_time = std::chrono::high_resolution_clock::now();
@@ -1190,58 +1259,196 @@ void dynamicDetector::visCB(const ros::TimerEvent &) {
 }
 
 /*!
- * @brief 对单个边界框进行物体分类
+ * @brief 对单个边界框进行物体分类 (重构版)
  * @param bbox 待分类的边界框（引用传递，会修改其分类标志）
  * @param centroid 点云质心坐标 [x, y, z, 1]
- * 分类规则：
- * - 人：z轴宽度 >= x/y轴最大值的阈值倍数 且 质心z < z轴宽度的阈值倍数
- * - 车：x/y轴最大宽度 >= z轴的阈值倍数 且 质心z < z轴宽度的阈值倍数
- * - 无人机：x/y/z轴宽度都 < 阈值 且 质心z > z轴宽度的阈值倍数
- * - 其他：不满足以上条件
+ * @param clusterStd 点云PCA标准差 [std_x, std_y, std_z]
+ * @param maxHistorySize 历史最大尺寸 [max_x, max_y, max_z]
  */
 void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
-                                  const Eigen::Vector4f &centroid) {
-  double x_width = bbox.x_width;
-  double y_width = bbox.y_width;
-  double z_width = bbox.z_width;
+                                  const Eigen::Vector4f &centroid,
+                                  const Eigen::Vector3d &clusterStd,
+                                  const Eigen::Vector3d &maxHistorySize) {
+  // 使用历史最大尺寸进行判断，抵抗遮挡和距离衰减
+  double x_width = maxHistorySize.x();
+  double y_width = maxHistorySize.y();
+  double z_width = maxHistorySize.z();
   double centroid_z = centroid(2);
 
   // 计算x、y轴的最小值和最大值
-  // double xy_min = std::min(x_width, y_width);
   double xy_max = std::max(x_width, y_width);
 
-  // 分类为人：z轴宽度大，质心靠下（站立的人形）
+  // PCA 特征提取
+  double pca_z = clusterStd(2);
+  double pca_xy_max = std::max(clusterStd(0), clusterStd(1));
+
+  // 重置分类标志
+  bbox.is_human = false;
+  bbox.is_che = false;
+  bbox.is_uav = false;
+  bbox.is_else = false;
+
+  // 1. 分类为人：
+  // - 尺寸：高瘦 (z > xy * ratio)
+  // - 形态(PCA)：Z轴离散度主导 (pca_z > pca_xy * ratio)
+  // - 质心：靠下
   if (z_width >= xy_max * this->classifyHumanZWidthRatio_ &&
+      pca_z > pca_xy_max * this->classifyHumanPcaRatio_ &&
       centroid_z < z_width * this->classifyHumanCentroidZRatio_) {
     bbox.is_human = true;
   }
-  // 分类为车：x/y轴宽度大，质心靠下（扁平的车形）
+  // 2. 分类为车：
+  // - 尺寸：扁平 (xy > z * ratio)
+  // - 形态(PCA)：XY平面离散度主导 (pca_xy > pca_z * ratio)
+  // - 质心：靠下
   else if (xy_max >= z_width * this->classifyVehicleXYWidthRatio_ &&
+           pca_xy_max > pca_z * this->classifyVehiclePcaRatio_ &&
            centroid_z < z_width * this->classifyVehicleCentroidZRatio_) {
     bbox.is_che = true;
   }
-  // 分类为无人机：体积小，质心靠上（悬浮在空中）
+  // 3. 分类为无人机：
+  // - 尺寸：小物体 (all < threshold)
+  // - 质心：靠上 (悬浮)
   else if (x_width < this->classifyUAVMaxSize_ &&
            y_width < this->classifyUAVMaxSize_ &&
            z_width < this->classifyUAVMaxSize_ &&
            centroid_z > z_width * this->classifyUAVCentroidZRatio_) {
     bbox.is_uav = true;
   }
-  // 其他情况
+  // 4. 其他情况
   else {
     bbox.is_else = true;
   }
+}
 
-  // // 输出分类详细信息（包含物体尺寸和质心高度）
-  // std::string classType = bbox.is_human ? "Human"
-  //                         : bbox.is_che ? "Vehicle"
-  //                         : bbox.is_uav ? "UAV"
-  //                                       : "Other";
-  // ROS_INFO_THROTTLE(2.0,
-  //                   "%s: Classified as %s - Size(%.2f,%.2f,%.2f), "
-  //                   "Centroid_z=%.2f, xy_max/z=%.2f, z/xy_max=%.2f",
-  //                   this->hint_.c_str(), classType.c_str(), x_width, y_width,
-  //                   z_width, centroid_z, xy_max / z_width, z_width / xy_max);
+/*!
+ * @brief 切换卡尔曼滤波模型
+ * @param index 轨迹索引
+ * @param bbox 当前边界框（包含最新的分类信息）
+ */
+void dynamicDetector::switchKalmanModel(int index,
+                                        const onboardDetector::box3D &bbox) {
+  // 获取当前滤波器
+  auto &filter = this->filters_[index];
+  Eigen::VectorXd oldState = filter->getState();
+  int oldDim = oldState.size();
+
+  // 获取历史轨迹的分类标志(boxHist_[index][0]是上一帧的分类)
+  bool oldIsHuman = false;
+  bool oldIsChe = false;
+  bool oldIsUav = false;
+  bool oldIsElse = false;
+
+  if (this->boxHist_[index].size() > 0) {
+    oldIsHuman = this->boxHist_[index][0].is_human;
+    oldIsChe = this->boxHist_[index][0].is_che;
+    oldIsUav = this->boxHist_[index][0].is_uav;
+    oldIsElse = this->boxHist_[index][0].is_else;
+  }
+
+  // 判断分类是否发生变化
+  bool classificationChanged =
+      (bbox.is_human != oldIsHuman) || (bbox.is_che != oldIsChe) ||
+      (bbox.is_uav != oldIsUav) || (bbox.is_else != oldIsElse);
+
+  // 如果分类没变,无需切换
+  if (!classificationChanged) {
+    return;
+  }
+
+  // 准备新滤波器参数
+  std::shared_ptr<KalmanFilterBase> newFilter = nullptr;
+  Eigen::VectorXd newState;
+  bool needSwitch = false;
+
+  // 提取旧状态的基础信息 (x, y, z, vx, vy, vz)
+  double x = 0, y = 0, z = 0, vx = 0, vy = 0, vz = 0;
+
+  if (oldDim == 6) { // 3D CV [x, y, z, vx, vy, vz]
+    x = oldState(0);
+    y = oldState(1);
+    z = oldState(2);
+    vx = oldState(3);
+    vy = oldState(4);
+    vz = oldState(5);
+  } else if (oldDim == 7) {
+    // 7维模型：可能是 Human CA 或 Vehicle CTRA
+    x = oldState(0);
+    y = oldState(1);
+    z = oldState(2);
+
+    if (oldIsChe) {
+      // 旧模型为 CTRA [x, y, z, v, a, yaw, yaw_rate]
+      double v = oldState(3);
+      double yaw = oldState(5);
+      vx = v * cos(yaw);
+      vy = v * sin(yaw);
+      vz = 0;
+    } else {
+      // 旧模型为 Human CA [x, y, z, vx, vy, ax, ay]
+      vx = oldState(3);
+      vy = oldState(4);
+      vz = 0;
+    }
+  } else if (oldDim == 9) { // 3D CA [x, y, z, vx, vy, vz, ax, ay, az]
+    x = oldState(0);
+    y = oldState(1);
+    z = oldState(2);
+    vx = oldState(3);
+    vy = oldState(4);
+    vz = oldState(5);
+  }
+
+  // 根据新的分类结果创建对应的滤波器
+  if (bbox.is_human) {
+    // 切换到 Human CA (2D CA, 7维)
+    newFilter = createKalmanFilter(true, false, false, false, this->kfParams_);
+    newState.resize(7);
+    // Human State: [x, y, z, vx, vy, ax, ay]
+    newState << x, y, z, vx, vy, 0, 0;
+    needSwitch = true;
+  } else if (bbox.is_che) {
+    // 切换到 Vehicle CTRA (7维)
+    newFilter = createKalmanFilter(false, true, false, false, this->kfParams_);
+    newState.resize(7);
+    // CTRA State: [x, y, z, v, a, yaw, yaw_rate]
+    double v = sqrt(vx * vx + vy * vy);
+    double yaw = atan2(vy, vx);
+    newState << x, y, z, v, 0, yaw, 0;
+    needSwitch = true;
+  } else if (bbox.is_uav) {
+    // 切换到 UAV CA (3D CA, 9维)
+    newFilter = createKalmanFilter(false, false, true, false, this->kfParams_);
+    newState.resize(9);
+    // 3D CA State: [x, y, z, vx, vy, vz, ax, ay, az]
+    newState << x, y, z, vx, vy, vz, 0, 0, 0;
+    needSwitch = true;
+  } else if (bbox.is_else) {
+    // 切换到 3D CV (6维)
+    newFilter = createKalmanFilter(false, false, false, true, this->kfParams_);
+    newState.resize(6);
+    // 3D CV State: [x, y, z, vx, vy, vz]
+    newState << x, y, z, vx, vy, vz;
+    needSwitch = true;
+  }
+
+  // 执行切换
+  if (needSwitch && newFilter) {
+    newFilter->setDt(this->dt_);
+    // 用旧模型预测后的状态初始化新模型
+    // 注意：oldState是在boxAssociation中predict()后的状态
+    // 因此这里不需要再predict()，直接initialize即可
+    newFilter->initialize(newState);
+
+    this->filters_[index] = newFilter;
+    ROS_INFO_STREAM(this->hint_
+                    << " Switched model for object " << index << " (Dim "
+                    << oldDim << " -> " << newState.size() << ") to "
+                    << (bbox.is_human
+                            ? "Human"
+                            : (bbox.is_che ? "Vehicle"
+                                           : (bbox.is_uav ? "UAV" : "Else"))));
+  }
 }
 
 /*!
@@ -1347,6 +1554,7 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     this->pcHist_.resize(numCurrObjs);
     this->pcCenterHist_.resize(numCurrObjs);
     this->pcStdHist_.resize(numCurrObjs);
+    this->maxHistorySizes_.resize(numCurrObjs);
     bestMatch.resize(numCurrObjs, -1);
 
     for (int i = 0; i < numCurrObjs; ++i) {
@@ -1354,6 +1562,11 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
       this->pcHist_[i].push_back(this->filteredPcClusters_[i]);
       this->pcCenterHist_[i].push_back(this->filteredPcClusterCenters_[i]);
       this->pcStdHist_[i].push_back(this->filteredPcClusterStds_[i]);
+
+      // 初始化历史最大尺寸
+      this->maxHistorySizes_[i] = Eigen::Vector3d(
+          this->filteredBBoxes_[i].x_width, this->filteredBBoxes_[i].y_width,
+          this->filteredBBoxes_[i].z_width);
 
       // 强制所有目标使用 3D CV 模型
       auto &bbox = this->filteredBBoxes_[i];
@@ -1408,52 +1621,29 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
         const Eigen::VectorXd &filterStates = this->filters_[j]->getState();
 
         // 根据不同的滤波器类型提取预测位置
-        if (histBox.is_human || histBox.is_che) {
-          // 2D CA: [x, y, vx, vy, ax, ay],车 CTRA: [x, y, v, a, yaw, yaw_rate]
-          predBox.x = filterStates(0);
-          predBox.y = filterStates(1);
-        } else if (histBox.is_uav || histBox.is_else) {
-          // 3D CA/CV: [x, y, z, ...]
-          predBox.x = filterStates(0);
-          predBox.y = filterStates(1);
-          predBox.z = filterStates(2); // 3D物体需要z轴预测
-        }
+        // 注意: 所有模型的状态向量中位置都是三维的 [x, y, z, ...]
+        predBox.x = filterStates(0);
+        predBox.y = filterStates(1);
+        predBox.z = filterStates(2);
 
         // 预测状态使用历史尺寸和点云标准差（这些不参与卡尔曼滤波）
         // predBox的尺寸已经在初始化时从histBox复制，无需额外设置
         const Eigen::Vector3d &predStd = histStd; // 点云标准差使用历史值
 
-        // 计算关联代价（根据物体类别使用2D或3D）
-        double cost;
-        double gateThreshold; // 根据维度选择合适的门限
+        // 计算关联代价：所有物体统一使用3D马氏距离
+        // 注意：所有模型的状态向量中位置都是3维的[x,y,z,...]
+        // 马氏距离会自动根据协方差矩阵处理不确定性
+        // (例如，如果z方向不确定性大，z的差异对距离贡献会被自动降权)
+        const Eigen::MatrixXd &P = this->filters_[j]->getCovariance();
 
-        if (histBox.is_uav || histBox.is_else) {
-          // 3D物体：使用3D马氏距离
-          // 获取状态协方差矩阵P，并构建观测空间的协方差矩阵S = H*P*H^T + R
-          // 对于位置观测，H矩阵选择状态向量的前3维（x,y,z）
-          const Eigen::MatrixXd &P = this->filters_[j]->getCovariance();
+        // 提取位置部分的协方差（状态向量的前3x3块）
+        Eigen::Matrix3d P_pos = P.block<3, 3>(0, 0);
 
-          // 提取位置部分的协方差（状态向量的前3x3块）
-          Eigen::Matrix3d P_pos = P.block<3, 3>(0, 0);
+        double cost = this->computeAssociationCost3D(predBox, predStd, currBox,
+                                                     currStd, P_pos);
 
-          cost = this->computeAssociationCost3D(predBox, predStd, currBox,
-                                                currStd, P_pos);
-
-          // 3D门限: 使用配置参数 associationGateThresh_（基于卡方分布）
-          gateThreshold = this->gateThreshold3D_;
-        } else {
-          // 2D物体(人和车):使用2D欧式距离
-          const Eigen::MatrixXd &P = this->filters_[j]->getCovariance();
-
-          // 提取位置部分的协方差(状态向量的前2x2块)
-          Eigen::Matrix2d P_pos = P.block<2, 2>(0, 0);
-
-          cost = this->computeAssociationCost2D(predBox, predStd, currBox,
-                                                currStd, P_pos);
-
-          // 2D门限: 使用配置参数 associationGateThresh_（基于卡方分布）
-          gateThreshold = this->gateThreshold2D_;
-        }
+        // 统一使用3D门限
+        double gateThreshold = this->gateThreshold3D_;
 
         // 应用关联门限(使用动态门限)
         if (cost < gateThreshold) {
@@ -1495,33 +1685,6 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
   }
 
   this->newDetectFlag_ = false;
-}
-
-/*!
- * @brief 计算2D马氏距离
- * @param posDiff 位置差异向量 [dx, dy]
- * @param covariance 协方差矩阵 2x2
- * @return 马氏距离的平方
- *
- * 马氏距离公式: d^2 = (x - μ)^T * Σ^(-1) * (x - μ)
- * 其中 Σ 是协方差矩阵
- */
-double
-dynamicDetector::computeMahalanobisDistance(const Eigen::Vector2d &posDiff,
-                                            const Eigen::Matrix2d &covariance) {
-  // 计算马氏距离，使用协方差矩阵的逆
-  double det = covariance.determinant();
-  if (std::abs(det) < 1e-10) {
-    // 协方差矩阵奇异，退化为欧式距离
-    return posDiff.squaredNorm();
-  }
-  Eigen::Matrix2d covInv = covariance.inverse();
-  double mahalDist = posDiff.transpose() * covInv * posDiff;
-  if (!std::isfinite(mahalDist)) {
-    // 计算异常，退化为欧式距离
-    return posDiff.squaredNorm();
-  }
-  return mahalDist;
 }
 
 /*!
@@ -1603,45 +1766,6 @@ double dynamicDetector::compute3DIoU(const onboardDetector::box3D &box1,
 
   // 确保IoU在[0, 1]范围内
   return std::max(0.0, std::min(1.0, iou));
-}
-
-/*!
- * @brief 计算2D物体（人和车）的数据关联总代价
- * @param predBox 预测的边界框（来自卡尔曼滤波器）
- * @param predStd 预测时刻的点云标准差（未使用）
- * @param measBox 当前测量的边界框
- * @param measStd 当前测量的点云标准差（未使用）
- * @param covariance 预测位置的2D协方差矩阵
- * @return 总关联代价（越小越好）
- *
- * 代价函数组成：
- * 1. 位置代价：2D马氏距离（考虑x, y和不确定性）
- * 2. IoU代价：3D边界框重叠度（1-IoU）
- */
-double dynamicDetector::computeAssociationCost2D(
-    const onboardDetector::box3D &predBox, const Eigen::Vector3d &predStd,
-    const onboardDetector::box3D &measBox, const Eigen::Vector3d &measStd,
-    const Eigen::Matrix2d &covariance) {
-  // 1. 计算位置代价（马氏距离）
-  Eigen::Vector2d posDiff;
-  posDiff << (measBox.x - predBox.x), (measBox.y - predBox.y);
-  double posCost = this->computeMahalanobisDistance(posDiff, covariance);
-
-  // 2. 计算IoU代价（IoU越大，代价越小）
-  double iou = this->compute3DIoU(predBox, measBox);
-  double iouCost = 1.0 - iou; // IoU=1时代价为0，IoU=0时代价为1
-
-  // 加权总代价
-  double totalCost = this->associationPosCostWeight_ * posCost +
-                     this->associationIoUCostWeight_ * iouCost;
-
-  // 调试：输出各项代价的详细信息
-  // ROS_DEBUG_THROTTLE(0.5,
-  //                   "%s: Cost2D - pos:%.2f iou:%.2f(%.3f) size:%.2f std:%.2f
-  //                   total:%.2f", this->hint_.c_str(), posCost, iouCost, iou,
-  //                   sizeCost, stdCost, totalCost);
-
-  return totalCost;
 }
 
 /*!
@@ -1774,6 +1898,7 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   std::vector<std::deque<std::vector<Eigen::Vector3d>>> pcHistTemp;
   std::vector<std::deque<Eigen::Vector3d>> pcCenterHistTemp;
   std::vector<std::deque<Eigen::Vector3d>> pcStdHistTemp;
+  std::vector<Eigen::Vector3d> maxHistorySizesTemp;
   std::vector<std::shared_ptr<KalmanFilterBase>> filtersTemp;
 
   // 为新出现的目标准备的空历史记录模板
@@ -1804,74 +1929,83 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       pcHistTemp.push_back(this->pcHist_[bestMatch[i]]);
       pcCenterHistTemp.push_back(this->pcCenterHist_[bestMatch[i]]);
       pcStdHistTemp.push_back(this->pcStdHist_[bestMatch[i]]);
+      maxHistorySizesTemp.push_back(this->maxHistorySizes_[bestMatch[i]]);
       filtersTemp.push_back(this->filters_[bestMatch[i]]);
 
       // 注意：预测步骤已经在boxAssociation中执行，这里只需要更新
 
-      // 准备测量向量（与状态向量维度相同）
-      Eigen::VectorXd measurement;
-
-      // 计算速度和加速度的观测值（使用历史数据）
-      int k = this->kfAvgFrames_;
-      int historySize = this->boxHist_[bestMatch[i]].size();
-      if (historySize < k) {
-        k = historySize;
-      }
-
-      double vx = 0.0, vy = 0.0, vz = 0.0;
-      double ax = 0.0, ay = 0.0, az = 0.0;
-      (void)ax;
-      (void)ay;
-      (void)az;
-
-      if (k > 0) {
-        onboardDetector::box3D &prevBBox = this->boxHist_[bestMatch[i]][k - 1];
-        double dt_k = this->dt_ * k;
-
-        vx = (currDetectedBBox.x - prevBBox.x) / dt_k;
-        vy = (currDetectedBBox.y - prevBBox.y) / dt_k;
-        vz = (currDetectedBBox.z - prevBBox.z) / dt_k;
-
-        ax = (vx - prevBBox.Vx) / dt_k;
-        ay = (vy - prevBBox.Vy) / dt_k;
-        az = (vz - prevBBox.Vz) / dt_k;
-      }
-
-      // 强制所有对象使用 3D CV 模型测量：[x, y, z] (仅位置，不包含速度)
-      // 注意：CV 模型的观测模型 H 只提取位置部分，测量维度是 3
-      measurement.resize(3);
+      // 构建测量向量：所有模型都测量3D位置 [x, y, z]
+      // 所有运动模型(CA/CV/CTRA)的观测矩阵H都是提取状态的[x, y, z]
+      Eigen::VectorXd measurement(3);
       measurement(0) = currDetectedBBox.x;
       measurement(1) = currDetectedBBox.y;
       measurement(2) = currDetectedBBox.z;
 
-      // 执行更新步骤（数据关联已保证分类一致性，维度必然匹配）
+      // 执行更新步骤
       filtersTemp.back()->update(measurement);
 
-      // 从滤波器中提取更新后的状态（强制使用 3D CV 格式）
+      // 从滤波器中提取更新后的状态，根据模型类型提取
       const Eigen::VectorXd &state = filtersTemp.back()->getState();
 
-      // 3D CV 模型：[x, y, z, vx, vy, vz]
-      newEstimatedBBox.x = state(0);
-      newEstimatedBBox.y = state(1);
-      newEstimatedBBox.z = state(2);
-      newEstimatedBBox.Vx = state(3);
-      newEstimatedBBox.Vy = state(4);
-      newEstimatedBBox.Vz = state(5);
-      newEstimatedBBox.Ax = 0.0; // CV 模型无加速度
-      newEstimatedBBox.Ay = 0.0;
-      newEstimatedBBox.Az = 0.0;
+      if (currDetectedBBox.is_human) {
+        // Human CA: [x, y, z, vx, vy, ax, ay]
+        newEstimatedBBox.x = state(0);
+        newEstimatedBBox.y = state(1);
+        newEstimatedBBox.z = state(2);
+        newEstimatedBBox.Vx = state(3);
+        newEstimatedBBox.Vy = state(4);
+        newEstimatedBBox.Vz = 0.0;
+        newEstimatedBBox.Ax = state(5);
+        newEstimatedBBox.Ay = state(6);
+        newEstimatedBBox.Az = 0.0;
+      } else if (currDetectedBBox.is_che) {
+        // Vehicle CTRA: [x, y, z, v, a, yaw, yaw_rate]
+        newEstimatedBBox.x = state(0);
+        newEstimatedBBox.y = state(1);
+        newEstimatedBBox.z = state(2);
+        double v = state(3);
+        double yaw = state(5);
+        newEstimatedBBox.Vx = v * cos(yaw);
+        newEstimatedBBox.Vy = v * sin(yaw);
+        newEstimatedBBox.Vz = 0.0;
+        newEstimatedBBox.Ax = state(4) * cos(yaw); // a * cos(yaw)
+        newEstimatedBBox.Ay = state(4) * sin(yaw); // a * sin(yaw)
+        newEstimatedBBox.Az = 0.0;
+      } else if (currDetectedBBox.is_uav) {
+        // UAV CA: [x, y, z, vx, vy, vz, ax, ay, az]
+        newEstimatedBBox.x = state(0);
+        newEstimatedBBox.y = state(1);
+        newEstimatedBBox.z = state(2);
+        newEstimatedBBox.Vx = state(3);
+        newEstimatedBBox.Vy = state(4);
+        newEstimatedBBox.Vz = state(5);
+        newEstimatedBBox.Ax = state(6);
+        newEstimatedBBox.Ay = state(7);
+        newEstimatedBBox.Az = state(8);
+      } else { // is_else
+        // Else CV: [x, y, z, vx, vy, vz]
+        newEstimatedBBox.x = state(0);
+        newEstimatedBBox.y = state(1);
+        newEstimatedBBox.z = state(2);
+        newEstimatedBBox.Vx = state(3);
+        newEstimatedBBox.Vy = state(4);
+        newEstimatedBBox.Vz = state(5);
+        newEstimatedBBox.Ax = 0.0;
+        newEstimatedBBox.Ay = 0.0;
+        newEstimatedBBox.Az = 0.0;
+      }
 
       // 边界框的尺寸直接使用当前测量值
       newEstimatedBBox.x_width = currDetectedBBox.x_width;
       newEstimatedBBox.y_width = currDetectedBBox.y_width;
       newEstimatedBBox.z_width = currDetectedBBox.z_width;
 
-      // 强制设置为 CV 模型对应的分类标志
+      // 使用当前检测框中的最新分类结果（在trackingCB中已经更新）
       newEstimatedBBox.is_dynamic = currDetectedBBox.is_dynamic;
-      newEstimatedBBox.is_human = false;
-      newEstimatedBBox.is_che = false;
-      newEstimatedBBox.is_uav = false;
-      newEstimatedBBox.is_else = true; // 强制使用 CV 模型
+      newEstimatedBBox.is_human = currDetectedBBox.is_human;
+      newEstimatedBBox.is_che = currDetectedBBox.is_che;
+      newEstimatedBBox.is_uav = currDetectedBBox.is_uav;
+      newEstimatedBBox.is_else = currDetectedBBox.is_else;
     } else {
       // --- 情况2：目标未匹配 (新目标) ---
       // 为这个新目标创建全新的、空的轨迹历史
@@ -1879,6 +2013,9 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       pcHistTemp.push_back(newSinglePcHist);
       pcCenterHistTemp.push_back(newSinglePcCenterHist);
       pcStdHistTemp.push_back(newSinglePcStdHist);
+      maxHistorySizesTemp.push_back(
+          Eigen::Vector3d(currDetectedBBox.x_width, currDetectedBBox.y_width,
+                          currDetectedBBox.z_width)); // 初始化最大尺寸
 
       // 强制所有新轨迹使用 3D CV 模型
       auto newFilter = createKalmanFilter(false, // is_human
@@ -1938,6 +2075,7 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   this->pcHist_ = pcHistTemp;
   this->pcCenterHist_ = pcCenterHistTemp;
   this->pcStdHist_ = pcStdHistTemp;
+  this->maxHistorySizes_ = maxHistorySizesTemp;
   this->filters_ = filtersTemp;
   this->trackedBBoxes_ = trackedBBoxesTemp;
 }
@@ -2229,8 +2367,8 @@ void dynamicDetector::publishRawDynamicPoints() {
       // std::cout << ": No time step parameter found. Use default: 0.033." <<
       // std::endl; ROS_INFO_STREAM(this->hint_ << " publishRawDynamicPoints:
       // transformed pointcloud published. "
-      //                 << "hasSensorPose=" << (this->hasSensorPose_ ? "true" :
-      //                 "false")
+      //                 << "hasSensorPose=" << (this->hasSensorPose_ ? "true"
+      //                 : "false")
       //                 << ", points=" << globalCloud->points.size());
     } else {
       // 如果没有位姿信息，直接将ROS消息转换为PCL点云（假设其已在全局坐标系）

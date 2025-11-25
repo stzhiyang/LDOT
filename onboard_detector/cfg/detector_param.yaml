@@ -27,21 +27,21 @@ lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数
 lidar_DBSCAN_epsilon: 0.03    # 激光雷达DBSCAN邻域搜索半径 (米)
 lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (true: 启用, false: 使用固定epsilon)
 lidar_DBSCAN_distance_scale: 0.05  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
-
 # 尺寸约束
 max_object_size: [5.0, 5.0, 2.5] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
 
-# 类别约束，[box中z、x/y的宽度比较, 质心z高度  z轴宽度的倍数]
-classify_human_threshold: [1.5, 0.8]   # z >= x/y
-classify_vehicle_threshold: [1, 0.8] # x/y >= z
-classify_uav_threshold: [0.8, 1.2] # z/y/z <
-
+# 分类与模型切换参数，[box中z、x/y的宽度比较, 质心z高度  z轴宽度的倍数]
+classification_start_frame: 50 # 跟踪多少帧后开始进行分类和模型切换
+classify_human_threshold: [2, 0.8]   # z >= x/y，z<0.8*zw
+classify_vehicle_threshold: [1.5, 0.7] # x/y >=z，z<0.7*zw
+classify_uav_threshold: [0.7, 1.2] # z/y/z <0.7 ,z>1.2*zw
+classify_human_pca_ratio: 1.5  # PCA特征: z_std / xy_std 的阈值 (人应当 > 此值)
+classify_vehicle_pca_ratio: 1.2 # PCA特征: xy_std / z_std 的阈值 (车应当 > 此值)
 # 目标跟踪与数据关联
 association_gate_confidence: 0.3  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
 association_pos_cost_weight: 0.6    # 位置代价权重（马氏距离），考虑不确定性
 association_iou_cost_weight: 0.4    # 3D IoU代价权重，反映空间重叠度
 history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
-kalman_filter_averaging_frames: 5 # 卡尔曼滤波器状态平均的帧数
 
 # 动态/静态分类
 frame_skip: 4 # 比较两个点云聚类以判断动态性时跳过的帧数
@@ -58,10 +58,11 @@ kalman_filter:
   # Constant Acceleration Model (Jerk noise)
   ca_model:
     human: # 2D Model [x, y, z, vx, vy, ax, ay]
-      jerk_sigma: 3.0 # 增大过程噪声，允许更剧烈的加加速度变化，减少预测滞后
+      jerk_sigma: 2.0 # 增大过程噪声，允许更剧烈的加加速度变化，减少预测滞后
       init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0]
-      meas_noise: [0.1, 0.1, 0.1]
-      z_process_noise: 0.01
+      meas_noise: [0.1, 0.1, 0.1] #方差，0.3代表标准差为0.55,即容忍误差为0.55米。0.1就是容忍误差为0.32米。0.01就是0.1米
+      #z轴独立噪声 (假设静止或缓慢移动)。人的额外z轴噪声很小，无人机的z轴噪声很大
+      z_process_noise: 0.01 
     uav: # 3D Model [x, y, z, vx, vy, vz, ax, ay, az]
       jerk_sigma: 3.0 # 增大过程噪声，适应无人机的高机动性
       init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0]
@@ -70,8 +71,8 @@ kalman_filter:
   # Constant Velocity Model (Acceleration noise)
   cv_model: # [x, y, z, vx, vy, vz]
     acc_sigma: 3.0 # 增大加速度噪声（假设目标可能有较大加速度），提高对变速运动的响应
-    init_cov: [0.5, 0.5, 0.5, 2.0, 2.0, 2.0]
-    meas_noise: [0.5, 0.5, 0.5]
+    init_cov: [0.1, 0.1, 0.1, 2.0, 2.0, 2.0]
+    meas_noise: [0.1, 0.1, 0.1]
 
   # Constant Turn Rate and Acceleration Model
   ctra_model: # [x, y, z, v, a, yaw, yaw_rate]

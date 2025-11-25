@@ -91,7 +91,7 @@ Eigen::MatrixXd CA_Model::getProcessNoiseQ() {
     setQBlock(0, 3, 5); // x
     setQBlock(1, 4, 6); // y
 
-    // z轴独立噪声 (假设静止或缓慢移动)
+    // z轴独立噪声 (假设静止或缓慢移动)。人的z轴噪声很小，无人机的z轴噪声很大
     Q(2, 2) = params_.z_process_noise;
   }
 
