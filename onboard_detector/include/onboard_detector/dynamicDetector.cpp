@@ -502,6 +502,24 @@ void dynamicDetector::initParam() {
   }
 
   // -----------------------------------------卡尔曼滤波器参数--------------------------------------------------------------
+  if (not this->nh_.getParam(this->ns_ + "/kalman_filter/adaptive_window_size",
+                             this->kfParams_.adaptive_window_size)) {
+    this->kfParams_.adaptive_window_size = 5;
+  }
+  if (not this->nh_.getParam(this->ns_ + "/kalman_filter/adaptive_alpha",
+                             this->kfParams_.adaptive_alpha)) {
+    this->kfParams_.adaptive_alpha = 0.3;
+  }
+  if (not this->nh_.getParam(this->ns_ + "/kalman_filter/adaptive_r_alpha",
+                             this->kfParams_.adaptive_r_alpha)) {
+    this->kfParams_.adaptive_r_alpha = 0.3;
+  }
+  if (not this->nh_.getParam(this->ns_ +
+                                 "/kalman_filter/adaptive_min_noise_ratio",
+                             this->kfParams_.adaptive_min_noise_ratio)) {
+    this->kfParams_.adaptive_min_noise_ratio = 0.5;
+  }
+
   // CA Model (Human)
   if (not this->nh_.getParam(this->ns_ +
                                  "/kalman_filter/ca_model/human/jerk_sigma",
@@ -1424,6 +1442,12 @@ void dynamicDetector::switchKalmanModel(int index,
     return;
   }
 
+  // 检查是否是冗余切换 (例如 Else -> Else, 维度 6 -> 6)
+  // 这种情况通常发生在历史记录刚初始化，oldIsElse可能不准确，但维度已经是6
+  if (oldDim == 6 && bbox.is_else) {
+    return;
+  }
+
   // 准备新滤波器参数
   std::shared_ptr<KalmanFilterBase> newFilter = nullptr;
   Eigen::VectorXd newState;
@@ -1546,18 +1570,34 @@ void dynamicDetector::lidarDetect() {
   std::vector<onboardDetector::box3D> lidarBBoxesFiltered;
 
   // 遍历所有边界框，过滤掉尺寸过大的对象并进行分类
+  // int filteredCount = 0;
   for (int i = 0; i < int(lidarBBoxesRaw.size()); ++i) {
     onboardDetector::box3D lidarBBox = lidarBBoxesRaw[i];
     // 过滤掉尺寸超过阈值的边界框
     if (lidarBBox.x_width > this->maxObjectSize_(0) ||
         lidarBBox.y_width > this->maxObjectSize_(1) ||
         lidarBBox.z_width > this->maxObjectSize_(2)) {
+      // ROS_WARN_THROTTLE(
+      //     0.5,
+      //     "%s: Object filtered by size: [%.2f, %.2f, %.2f] > Max: [%.2f,
+      //     %.2f, "
+      //     "%.2f]",
+      //     this->hint_.c_str(), lidarBBox.x_width, lidarBBox.y_width,
+      //     lidarBBox.z_width, this->maxObjectSize_(0),
+      //     this->maxObjectSize_(1), this->maxObjectSize_(2));
+      // filteredCount++;
       continue;
     }
 
     lidarBBoxesFiltered.push_back(lidarBBox);
     lidarClustersFiltered.push_back(lidarClustersRaw[i]);
   }
+
+  // if (filteredCount > 0) {
+  //   ROS_WARN_THROTTLE(0.5, "%s: Detection filtered: Raw %d -> Filtered %d",
+  //                     this->hint_.c_str(), int(lidarBBoxesRaw.size()),
+  //                     int(lidarBBoxesFiltered.size()));
+  // }
 
   // 保存过滤后的结果
   this->lidarBBoxes_ = lidarBBoxesFiltered;
@@ -1764,12 +1804,18 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
 double dynamicDetector::computeMahalanobisDistance3D(
     const Eigen::Vector3d &posDiff, const Eigen::Matrix3d &covariance) {
   // 计算马氏距离，使用协方差矩阵的逆
+  // 计算马氏距离，使用协方差矩阵的逆
   double det = covariance.determinant();
   if (std::abs(det) < 1e-10) {
     // 协方差矩阵奇异，退化为欧式距离
     return posDiff.squaredNorm();
   }
-  Eigen::Matrix3d covInv = covariance.inverse();
+
+  // 添加正则化项，防止过拟合导致的协方差过小
+  Eigen::Matrix3d covRegularized =
+      covariance + 1e-4 * Eigen::Matrix3d::Identity();
+
+  Eigen::Matrix3d covInv = covRegularized.inverse();
   double mahalDist = posDiff.transpose() * covInv * posDiff;
   if (!std::isfinite(mahalDist)) {
     // 计算异常，退化为欧式距离
