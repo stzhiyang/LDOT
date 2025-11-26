@@ -165,16 +165,6 @@ private:
   // 卡尔曼滤波器参数
   KF_Params kfParams_;
 
-  // 自适应测量噪声R参数
-  bool adaptiveREnabled_;             // 是否启用自适应测量噪声R
-  int adaptiveRWindowSize_;           // 使用最近K帧历史数据
-  double adaptiveRMinRatio_;          // 不低于原始R的最小比例
-  double adaptiveRWeight_;            // 自适应R的融合权重
-  double adaptiveRHumanZScale_;       // 人类模型z轴噪声缩放
-  double adaptiveRUavZScale_;         // 无人机模型z轴噪声缩放
-  double adaptiveRCtraTurnScale_;     // CTRA转弯时xy噪声增加系数
-  double adaptiveRCtraTurnThreshold_; // CTRA判定为转弯的yaw_rate阈值
-
   // 传感器原始数据
   Eigen::Vector3d position_;         // 机器人当前位置
   Eigen::Matrix3d orientation_;      // 机器人当前姿态
@@ -286,10 +276,6 @@ public:
   void removeDuplicateTracks();                          // 移除重复/重叠的轨迹
   void kalmanFilterAndUpdateHist(
       const std::vector<int> &bestMatch); // 卡尔曼滤波与更新历史
-
-  // 自适应测量噪声R计算
-  Eigen::MatrixXd
-  computeAdaptiveMeasNoiseR(int track_id); // 计算自适应测量噪声矩阵R
 
   // 可视化函数
   void getDynamicPc(std::vector<Eigen::Vector3d> &dynamicPc); // 获取动态点云

@@ -83,15 +83,7 @@ kalman_filter:
     process_noise: [0.1, 0.1, 0.01, 2.0, 10.0, 0.5, 1.0]
     meas_noise: [0.1, 0.1, 0.1]
 
-  # 自适应测量噪声R参数
-  adaptive_measurement_noise:
-    enable: true                  # 是否启用自适应测量噪声R (true/false)
-    window_size: 10               # 使用最近K帧历史数据计算标准差
-    min_ratio: 0.3                # 自适应R不能低于原始R的最小比例 (防止过小)
-    adaptive_weight: 0.7          # 自适应R的融合权重 (0-1, 越大越相信自适应值)
+
+
+
     
-    # 模型特定调整参数
-    human_z_scale: 0.5            # 人类模型z轴噪声缩放因子 (< 1.0, 因为人在地面行走z轴变化小)
-    uav_z_scale: 1.5              # 无人机模型z轴噪声缩放因子 (> 1.0, 因为无人机z轴运动剧烈)
-    ctra_turn_scale: 0.5          # CTRA模型转弯时xy噪声增加系数 (当yaw_rate高时)
-    ctra_turn_threshold: 0.1      # CTRA模型判定为转弯的yaw_rate阈值 (rad/s)
