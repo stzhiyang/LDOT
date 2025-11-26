@@ -191,13 +191,13 @@ Visualization Manager:
       Use rainbow: true
       Value: false
     - Class: rviz/MarkerArray
-      Enabled: false
+      Enabled: true
       Marker Topic: /onboard_detector/dynamic_bboxes
       Name: Dynamic Obstacles BBoxes
       Namespaces:
-        {}
+        box3D: true
       Queue Size: 100
-      Value: false
+      Value: true
     - Class: rviz/Image
       Enabled: true
       Image Topic: /camera/color/image_raw
@@ -277,4 +277,4 @@ Window Geometry:
     collapsed: false
   Width: 1386
   X: 534
-  Y: 217
+  Y: 180

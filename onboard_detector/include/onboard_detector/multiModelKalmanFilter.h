@@ -83,6 +83,24 @@ public:
    */
   void setDt(double dt) { model_->setDt(dt); }
 
+  /**
+   * @brief 设置测量噪声协方差矩阵R (用于自适应调整)
+   * @param R_new 新的测量噪声协方差矩阵
+   */
+  void setMeasNoiseR(const Eigen::MatrixXd &R_new) { R_ = R_new; }
+
+  /**
+   * @brief 获取当前测量噪声协方差矩阵R
+   * @return 测量噪声协方差矩阵
+   */
+  const Eigen::MatrixXd &getMeasNoiseR() const { return R_; }
+
+  /**
+   * @brief 获取底层运动模型 (用于访问原始参数)
+   * @return 运动模型的智能指针
+   */
+  std::shared_ptr<MotionModel> getModel() { return model_; }
+
 protected:
   std::shared_ptr<MotionModel> model_; // 运动模型
 

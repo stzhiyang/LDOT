@@ -279,6 +279,41 @@ void dynamicDetector::initParam() {
               << std::endl;
   }
 
+  // max missed frames
+  if (not this->nh_.getParam(this->ns_ + "/max_missed_frames",
+                             this->maxMissedFrames_)) {
+    this->maxMissedFrames_ = 5;
+    std::cout << this->hint_ << ": No max_missed_frames param. Use default: 5."
+              << std::endl;
+  } else {
+    std::cout << this->hint_
+              << ": Max missed frames is set to: " << this->maxMissedFrames_
+              << std::endl;
+  }
+
+  // duplicate track IoU threshold
+  if (not this->nh_.getParam(this->ns_ + "/duplicate_track_iou_threshold",
+                             this->duplicateTrackIoUThreshold_)) {
+    this->duplicateTrackIoUThreshold_ = 0.5;
+    std::cout << this->hint_
+              << ": No duplicate_track_iou_threshold param. Use default: 0.5"
+              << std::endl;
+  } else {
+    std::cout << this->hint_ << ": Duplicate track IoU threshold is set to: "
+              << this->duplicateTrackIoUThreshold_ << std::endl;
+  }
+
+  if (not this->nh_.getParam(this->ns_ + "/classification_interval_sec",
+                             this->classificationIntervalSec_)) {
+    this->classificationIntervalSec_ = 3.0; // 设置默认值，比如1秒
+    ROS_WARN_STREAM(
+        this->hint_
+        << " No classification_interval_sec param. Use default: 1.0");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " classification_interval_sec: "
+                                << this->classificationIntervalSec_);
+  }
+
   //-------------------------------------动态/静态分类参数----------------------------------------------------
   // skip frame for classification
   if (not this->nh_.getParam(this->ns_ + "/frame_skip", this->skipFrame_)) {
@@ -533,6 +568,105 @@ void dynamicDetector::initParam() {
   if (not this->nh_.getParam(this->ns_ + "/kalman_filter/ctra_model/meas_noise",
                              this->kfParams_.ctra.meas_noise)) {
     this->kfParams_.ctra.meas_noise = {0.1, 0.1, 0.1};
+  }
+
+  // -----------------------------------------自适应测量噪声R参数--------------------------------------------------------------
+  if (not this->nh_.getParam(
+          this->ns_ + "/kalman_filter/adaptive_measurement_noise/enable",
+          this->adaptiveREnabled_)) {
+    this->adaptiveREnabled_ = false;
+    ROS_WARN_STREAM(this->hint_
+                    << " No adaptive_measurement_noise/enable param. Use "
+                       "default: false");
+  } else {
+    ROS_INFO_STREAM(this->hint_
+                    << " Adaptive measurement noise R enabled: "
+                    << (this->adaptiveREnabled_ ? "true" : "false"));
+  }
+
+  if (not this->nh_.getParam(
+          this->ns_ + "/kalman_filter/adaptive_measurement_noise/window_size",
+          this->adaptiveRWindowSize_)) {
+    this->adaptiveRWindowSize_ = 10;
+    ROS_WARN_STREAM(this->hint_ << " No adaptive_measurement_noise/window_size "
+                                   "param. Use default: 10");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Adaptive R window size: "
+                                << this->adaptiveRWindowSize_);
+  }
+
+  if (not this->nh_.getParam(
+          this->ns_ + "/kalman_filter/adaptive_measurement_noise/min_ratio",
+          this->adaptiveRMinRatio_)) {
+    this->adaptiveRMinRatio_ = 0.3;
+    ROS_WARN_STREAM(this->hint_ << " No adaptive_measurement_noise/min_ratio "
+                                   "param. Use default: 0.3");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Adaptive R min ratio: "
+                                << this->adaptiveRMinRatio_);
+  }
+
+  if (not this->nh_.getParam(
+          this->ns_ +
+              "/kalman_filter/adaptive_measurement_noise/adaptive_weight",
+          this->adaptiveRWeight_)) {
+    this->adaptiveRWeight_ = 0.7;
+    ROS_WARN_STREAM(this->hint_
+                    << " No adaptive_measurement_noise/adaptive_weight param. "
+                       "Use default: 0.7");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Adaptive R weight: "
+                                << this->adaptiveRWeight_);
+  }
+
+  if (not this->nh_.getParam(
+          this->ns_ + "/kalman_filter/adaptive_measurement_noise/human_z_scale",
+          this->adaptiveRHumanZScale_)) {
+    this->adaptiveRHumanZScale_ = 0.5;
+    ROS_WARN_STREAM(this->hint_
+                    << " No adaptive_measurement_noise/human_z_scale param. "
+                       "Use default: 0.5");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Adaptive R human z scale: "
+                                << this->adaptiveRHumanZScale_);
+  }
+
+  if (not this->nh_.getParam(
+          this->ns_ + "/kalman_filter/adaptive_measurement_noise/uav_z_scale",
+          this->adaptiveRUavZScale_)) {
+    this->adaptiveRUavZScale_ = 1.5;
+    ROS_WARN_STREAM(this->hint_ << " No adaptive_measurement_noise/uav_z_scale "
+                                   "param. Use default: 1.5");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Adaptive R UAV z scale: "
+                                << this->adaptiveRUavZScale_);
+  }
+
+  if (not this->nh_.getParam(
+          this->ns_ +
+              "/kalman_filter/adaptive_measurement_noise/ctra_turn_scale",
+          this->adaptiveRCtraTurnScale_)) {
+    this->adaptiveRCtraTurnScale_ = 0.5;
+    ROS_WARN_STREAM(this->hint_
+                    << " No adaptive_measurement_noise/ctra_turn_scale param. "
+                       "Use default: 0.5");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Adaptive R CTRA turn scale: "
+                                << this->adaptiveRCtraTurnScale_);
+  }
+
+  if (not this->nh_.getParam(
+          this->ns_ +
+              "/kalman_filter/adaptive_measurement_noise/ctra_turn_threshold",
+          this->adaptiveRCtraTurnThreshold_)) {
+    this->adaptiveRCtraTurnThreshold_ = 0.1;
+    ROS_WARN_STREAM(
+        this->hint_
+        << " No adaptive_measurement_noise/ctra_turn_threshold param. Use "
+           "default: 0.1");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Adaptive R CTRA turn threshold: "
+                                << this->adaptiveRCtraTurnThreshold_);
   }
 
   // 初始化激光雷达检测器（避免每次回调时重复初始化）
@@ -980,7 +1114,7 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
 
   std::lock_guard<std::mutex> lock(bboxMutex_); // 加锁保护边界框数据
 
-  // 数据关联线程
+  // 数据关联线程（预测步骤在 boxAssociation 内部执行）
   std::vector<int> bestMatch;      // 存储当前检测与历史障碍物的匹配索引。
   this->boxAssociation(bestMatch); // 执行边界框关联。
 
@@ -1002,24 +1136,28 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
           this->maxHistorySizes_[histIndex].z() = curr_z;
 
         // 1.2 检查是否需要进行分类
-        // 首次分类：达到classification_start_frame且从未分类过(is_else=true表示默认状态)
-        // 重新分类：距离上次分类已经过了一定帧数(classification_start_frame的一半)
+        // 首次分类：达到 classificationStartFrame_ 且从未分类过 (is_else 为
+        // true) 后续分类：使用 ROS 时间间隔 classificationIntervalSec_ 判断
         bool needClassify = false;
+
+        // 确保 lastClassifyTime_ 与历史大小匹配
+        if (lastClassifyTime_.size() < this->boxHist_.size()) {
+          lastClassifyTime_.resize(this->boxHist_.size(), ros::Time(0));
+        }
 
         if (int(this->boxHist_[histIndex].size()) ==
             this->classificationStartFrame_) {
-          // 刚达到分类阈值,进行首次分类
+          // 首次达到分类阈值，进行分类
           needClassify = true;
+          lastClassifyTime_[histIndex] = ros::Time::now();
         } else if (int(this->boxHist_[histIndex].size()) >
                    this->classificationStartFrame_) {
-          // 已经分类过,每隔一定帧数重新分类一次
-          int framesSinceClassification = this->boxHist_[histIndex].size() -
-                                          this->classificationStartFrame_;
-          int reclassifyInterval =
-              std::max(20, this->classificationStartFrame_ / 2); // 重新分类间隔
-
-          if (framesSinceClassification % reclassifyInterval == 0) {
+          // 已经分类过，检查时间间隔
+          ros::Duration timeSince =
+              ros::Time::now() - lastClassifyTime_[histIndex];
+          if (timeSince.toSec() >= this->classificationIntervalSec_) {
             needClassify = true;
+            lastClassifyTime_[histIndex] = ros::Time::now();
           }
         }
 
@@ -1052,7 +1190,10 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
   // --- 2. 卡尔曼滤波跟踪(此时filteredBBoxes_已包含最新的分类信息) ---
   if (bestMatch.size()) {
     this->kalmanFilterAndUpdateHist(bestMatch); // 更新卡尔曼滤波器和历史记录
-  } else {                                      // 如果当前帧没有任何检测结果
+
+    // --- 3. 移除重复轨迹（解决幽灵轨迹问题）---
+    this->removeDuplicateTracks();
+  } else { // 如果当前帧没有任何检测结果
     // 清空历史记录。
     this->boxHist_.clear();
     this->pcHist_.clear();
@@ -1088,7 +1229,7 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
   // 创建一个临时向量来存储当前帧检测到的动态边界框
   std::vector<onboardDetector::box3D> dynamicBBoxesTemp;
 
-  // 遍历所有被跟踪目标的点云/边界框历史
+  // 遍历所有被跟踪目标的点云/边界框历史，只判断xy平面的动态性
   // 注意：在某些情况下，我们不需要执行动态障碍物识别
   for (size_t i = 0; i < this->pcHist_.size(); ++i) {
     // ===================================================================================
@@ -1122,7 +1263,7 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
     }
     // ===================================================================================
 
-    // 获取当前帧和历史帧的点云
+    // 获取当前帧和历史计算帧的点云
     std::vector<Eigen::Vector3d> currPc = this->pcHist_[i][0];
     std::vector<Eigen::Vector3d> prevPc = this->pcHist_[i][curFrameGap];
 
@@ -1142,9 +1283,36 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
     Vbox(2) = (this->boxHist_[i][0].z - this->boxHist_[i][curFrameGap].z) /
               (this->dt_ * curFrameGap);
 
-    // 获取卡尔曼滤波器估计的速度
-    Vkf(0) = this->boxHist_[i][0].Vx;
-    Vkf(1) = this->boxHist_[i][0].Vy;
+    // 获取卡尔曼滤波器估计的速度，根据不同模型维度进行计算
+    Eigen::VectorXd state = this->filters_[i]->getState();
+    int dim = state.size();
+    if (dim == 6) {
+      // 3D CV: [x, y, z, vx, vy, vz]
+      Vkf(0) = state(3);
+      Vkf(1) = state(4);
+    } else if (dim == 7) {
+      // 7维可能是 Human CA 或 Vehicle CTRA，依据历史分类决定
+      bool isVehicle = this->boxHist_[i][0].is_che; // Vehicle CTRA
+      if (isVehicle) {
+        // CTRA: [x, y, z, v, a, yaw, yaw_rate]
+        double v = state(3);
+        double yaw = state(5);
+        Vkf(0) = v * cos(yaw);
+        Vkf(1) = v * sin(yaw);
+      } else {
+        // Human CA: [x, y, z, vx, vy, ax, ay]
+        Vkf(0) = state(3);
+        Vkf(1) = state(4);
+      }
+    } else if (dim == 9) {
+      // 3D CA: [x, y, z, vx, vy, vz, ax, ay, az]
+      Vkf(0) = state(3);
+      Vkf(1) = state(4);
+    } else {
+      // fallback to historical speed
+      Vkf(0) = this->boxHist_[i][0].Vx;
+      Vkf(1) = this->boxHist_[i][0].Vy;
+    }
 
     // 遍历当前点云中的每一个点，通过与历史点云比较来“投票”
     for (size_t j = 0; j < currPc.size(); ++j) {
@@ -1195,7 +1363,6 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
         for (int j = 0; j < this->dynamicConsistThresh_; ++j) {
           // 如果是动态候选、已经是动态，则计数
           if (this->boxHist_[i][j].is_dynamic_candidate or
-              this->boxHist_[i][j].is_human or
               this->boxHist_[i][j].is_dynamic) {
             ++dynaConsistCount;
           }
@@ -1900,6 +2067,12 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   std::vector<std::deque<Eigen::Vector3d>> pcStdHistTemp;
   std::vector<Eigen::Vector3d> maxHistorySizesTemp;
   std::vector<std::shared_ptr<KalmanFilterBase>> filtersTemp;
+  std::vector<int> trackMissedFramesTemp;
+
+  // 确保 trackMissedFrames_ 大小与 boxHist_ 一致
+  if (this->trackMissedFrames_.size() != this->boxHist_.size()) {
+    this->trackMissedFrames_.resize(this->boxHist_.size(), 0);
+  }
 
   // 为新出现的目标准备的空历史记录模板
   std::deque<onboardDetector::box3D> newSingleBoxHist;
@@ -1914,37 +2087,47 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   newSinglePcHist.resize(0);
   newSinglePcCenterHist.resize(0);
   newSinglePcStdHist.resize(0);
-  int numObjs = this->filteredBBoxes_.size(); // 当前帧检测到的目标数量
+  int numCurrObjs = this->filteredBBoxes_.size(); // 当前帧检测到的目标数量
+  int numHistObjs = this->boxHist_.size();
+  std::vector<bool> isHistMatched(numHistObjs, false);
 
-  // --- 遍历当前帧检测到的每一个目标 ---
-  for (int i = 0; i < numObjs; i++) {
+  // --- 1. 处理当前检测到的目标 (匹配的旧目标 + 新目标) ---
+  for (int i = 0; i < numCurrObjs; i++) {
     onboardDetector::box3D currDetectedBBox = this->filteredBBoxes_[i];
     onboardDetector::box3D newEstimatedBBox; // 用于存储卡尔曼滤波后的状态
 
     // bestMatch[i] 存储的是当前第 i 个检测框所匹配到的历史轨迹的索引
     if (bestMatch[i] >= 0) {
       // --- 情况1：目标匹配成功 (老目标) ---
-      // 继承该目标之前的历史记录和滤波器
-      boxHistTemp.push_back(this->boxHist_[bestMatch[i]]);
-      pcHistTemp.push_back(this->pcHist_[bestMatch[i]]);
-      pcCenterHistTemp.push_back(this->pcCenterHist_[bestMatch[i]]);
-      pcStdHistTemp.push_back(this->pcStdHist_[bestMatch[i]]);
-      maxHistorySizesTemp.push_back(this->maxHistorySizes_[bestMatch[i]]);
-      filtersTemp.push_back(this->filters_[bestMatch[i]]);
+      int h_idx = bestMatch[i];
+      isHistMatched[h_idx] = true;
+      trackMissedFramesTemp.push_back(0); // 重置丢失计数
 
-      // 注意：预测步骤已经在boxAssociation中执行，这里只需要更新
+      // 继承该目标之前的历史记录和滤波器
+      boxHistTemp.push_back(this->boxHist_[h_idx]);
+      pcHistTemp.push_back(this->pcHist_[h_idx]);
+      pcCenterHistTemp.push_back(this->pcCenterHist_[h_idx]);
+      pcStdHistTemp.push_back(this->pcStdHist_[h_idx]);
+      maxHistorySizesTemp.push_back(this->maxHistorySizes_[h_idx]);
+      filtersTemp.push_back(this->filters_[h_idx]);
 
       // 构建测量向量：所有模型都测量3D位置 [x, y, z]
-      // 所有运动模型(CA/CV/CTRA)的观测矩阵H都是提取状态的[x, y, z]
       Eigen::VectorXd measurement(3);
       measurement(0) = currDetectedBBox.x;
       measurement(1) = currDetectedBBox.y;
       measurement(2) = currDetectedBBox.z;
 
-      // 执行更新步骤
+      // 如果启用自适应测量噪声R，则计算并设置
+      if (this->adaptiveREnabled_) {
+        Eigen::MatrixXd R_adaptive = this->computeAdaptiveMeasNoiseR(
+            filtersTemp.size() - 1); // 当前滤波器在临时容器中的索引
+        filtersTemp.back()->setMeasNoiseR(R_adaptive);
+      }
+
+      // 执行更新步骤 (预测已在 trackingCB 中完成)
       filtersTemp.back()->update(measurement);
 
-      // 从滤波器中提取更新后的状态，根据模型类型提取
+      // 从滤波器中提取更新后的状态
       const Eigen::VectorXd &state = filtersTemp.back()->getState();
 
       if (currDetectedBBox.is_human) {
@@ -2000,7 +2183,7 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       newEstimatedBBox.y_width = currDetectedBBox.y_width;
       newEstimatedBBox.z_width = currDetectedBBox.z_width;
 
-      // 使用当前检测框中的最新分类结果（在trackingCB中已经更新）
+      // 使用当前检测框中的最新分类结果
       newEstimatedBBox.is_dynamic = currDetectedBBox.is_dynamic;
       newEstimatedBBox.is_human = currDetectedBBox.is_human;
       newEstimatedBBox.is_che = currDetectedBBox.is_che;
@@ -2008,7 +2191,8 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       newEstimatedBBox.is_else = currDetectedBBox.is_else;
     } else {
       // --- 情况2：目标未匹配 (新目标) ---
-      // 为这个新目标创建全新的、空的轨迹历史
+      trackMissedFramesTemp.push_back(0);
+
       boxHistTemp.push_back(newSingleBoxHist);
       pcHistTemp.push_back(newSinglePcHist);
       pcCenterHistTemp.push_back(newSinglePcCenterHist);
@@ -2050,25 +2234,115 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
     }
 
     // --- 更新历史记录队列 ---
-    if (int(boxHistTemp[i].size()) == this->histSize_) {
-      // 从队列尾部移除最老的数据
-      boxHistTemp[i].pop_back();
-      pcHistTemp[i].pop_back();
-      pcCenterHistTemp[i].pop_back();
-      pcStdHistTemp[i].pop_back();
+    if (int(boxHistTemp.back().size()) == this->histSize_) {
+      boxHistTemp.back().pop_back();
+      pcHistTemp.back().pop_back();
+      pcCenterHistTemp.back().pop_back();
+      pcStdHistTemp.back().pop_back();
     }
 
     // 将当前帧的最新估计状态和信息从队列头部推入
-    boxHistTemp[i].push_front(newEstimatedBBox);
-    pcHistTemp[i].push_front(this->filteredPcClusters_[i]);
-    pcCenterHistTemp[i].push_front(this->filteredPcClusterCenters_[i]);
-    pcStdHistTemp[i].push_front(this->filteredPcClusterStds_[i]);
+    boxHistTemp.back().push_front(newEstimatedBBox);
+    pcHistTemp.back().push_front(this->filteredPcClusters_[i]);
+    pcCenterHistTemp.back().push_front(this->filteredPcClusterCenters_[i]);
+    pcStdHistTemp.back().push_front(this->filteredPcClusterStds_[i]);
 
     // 将当前帧的最终跟踪结果存入 trackedBBoxesTemp
     trackedBBoxesTemp.push_back(newEstimatedBBox);
   }
 
-  // 固定尺寸功能已移除，尺寸直接使用当前测量值
+  // --- 2. 处理未匹配的历史目标 (Coasting) ---
+  for (int j = 0; j < numHistObjs; ++j) {
+    if (!isHistMatched[j]) {
+      int missed = this->trackMissedFrames_[j] + 1;
+      if (missed < this->maxMissedFrames_) {
+        // 保留该轨迹 (Coasting)
+        trackMissedFramesTemp.push_back(missed);
+
+        boxHistTemp.push_back(this->boxHist_[j]);
+        pcHistTemp.push_back(this->pcHist_[j]);
+        pcCenterHistTemp.push_back(this->pcCenterHist_[j]);
+        pcStdHistTemp.push_back(this->pcStdHist_[j]);
+        maxHistorySizesTemp.push_back(this->maxHistorySizes_[j]);
+        filtersTemp.push_back(this->filters_[j]);
+
+        // 获取预测状态 (已在 trackingCB 中 predict)
+        const Eigen::VectorXd &state = filtersTemp.back()->getState();
+
+        // 构建预测的 BBox
+        onboardDetector::box3D predBBox;
+        // 使用上一帧的属性作为基础
+        if (boxHistTemp.back().size() > 0) {
+          predBBox = boxHistTemp.back().front();
+        }
+
+        // 根据模型类型提取预测状态
+        // 注意：这里我们使用历史轨迹的分类信息
+        if (predBBox.is_human) {
+          predBBox.x = state(0);
+          predBBox.y = state(1);
+          predBBox.z = state(2);
+          predBBox.Vx = state(3);
+          predBBox.Vy = state(4);
+          predBBox.Vz = 0.0;
+          predBBox.Ax = state(5);
+          predBBox.Ay = state(6);
+          predBBox.Az = 0.0;
+        } else if (predBBox.is_che) {
+          predBBox.x = state(0);
+          predBBox.y = state(1);
+          predBBox.z = state(2);
+          double v = state(3);
+          double yaw = state(5);
+          predBBox.Vx = v * cos(yaw);
+          predBBox.Vy = v * sin(yaw);
+          predBBox.Vz = 0.0;
+          predBBox.Ax = state(4) * cos(yaw);
+          predBBox.Ay = state(4) * sin(yaw);
+          predBBox.Az = 0.0;
+        } else if (predBBox.is_uav) {
+          predBBox.x = state(0);
+          predBBox.y = state(1);
+          predBBox.z = state(2);
+          predBBox.Vx = state(3);
+          predBBox.Vy = state(4);
+          predBBox.Vz = state(5);
+          predBBox.Ax = state(6);
+          predBBox.Ay = state(7);
+          predBBox.Az = state(8);
+        } else {
+          predBBox.x = state(0);
+          predBBox.y = state(1);
+          predBBox.z = state(2);
+          predBBox.Vx = state(3);
+          predBBox.Vy = state(4);
+          predBBox.Vz = state(5);
+          predBBox.Ax = 0.0;
+          predBBox.Ay = 0.0;
+          predBBox.Az = 0.0;
+        }
+
+        // 尺寸保持不变 (predBBox 已经复制了上一帧的尺寸)
+
+        // 更新历史队列
+        if (int(boxHistTemp.back().size()) == this->histSize_) {
+          boxHistTemp.back().pop_back();
+          pcHistTemp.back().pop_back();
+          pcCenterHistTemp.back().pop_back();
+          pcStdHistTemp.back().pop_back();
+        }
+
+        boxHistTemp.back().push_front(predBBox);
+        // 点云数据推入空值
+        pcHistTemp.back().push_front(std::vector<Eigen::Vector3d>());
+        pcCenterHistTemp.back().push_front(Eigen::Vector3d::Zero());
+        pcStdHistTemp.back().push_front(Eigen::Vector3d::Zero());
+
+        trackedBBoxesTemp.push_back(predBBox);
+      }
+      // else: 丢弃 (missed >= maxMissedFrames_)
+    }
+  }
 
   // --- 更新类的成员变量 ---
   this->boxHist_ = boxHistTemp;
@@ -2078,6 +2352,253 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   this->maxHistorySizes_ = maxHistorySizesTemp;
   this->filters_ = filtersTemp;
   this->trackedBBoxes_ = trackedBBoxesTemp;
+  this->trackMissedFrames_ = trackMissedFramesTemp;
+}
+
+/*!
+ * @brief 计算自适应测量噪声矩阵R
+ * @param track_id 轨迹索引
+ * @return 自适应调整后的测量噪声协方差矩阵R (3x3)
+ *
+ * 算法原理:
+ * 1. 从历史数据中提取最近K帧的位置测量值
+ * 2. 计算相邻帧的位置差分
+ * 3. 计算差分的方差，除以2得到测量噪声方差（因为diff包含两次测量的噪声）
+ * 4. 根据模型类型进行特定调整（人/车/无人机）
+ * 5. 与原始R进行加权融合，并设置下限保护
+ */
+Eigen::MatrixXd dynamicDetector::computeAdaptiveMeasNoiseR(int track_id) {
+  // -------------------------------------------------------------------------
+  // 第1步: 参数检查和初始化
+  // -------------------------------------------------------------------------
+
+  // 检查track_id有效性
+  if (track_id < 0 || track_id >= static_cast<int>(this->boxHist_.size())) {
+    ROS_WARN_STREAM(this->hint_ << " Invalid track_id " << track_id
+                                << " in computeAdaptiveMeasNoiseR");
+    return this->filters_[track_id]->getMeasNoiseR();
+  }
+
+  int hist_len = this->boxHist_[track_id].size();
+
+  // 如果历史不足2帧，无法计算差分，返回原始R
+  if (hist_len < 2) {
+    return this->filters_[track_id]->getMeasNoiseR();
+  }
+
+  // 实际使用的帧数 (不能超过历史长度-1，因为要计算差分)
+  int actual_K = std::min(this->adaptiveRWindowSize_, hist_len - 1);
+
+  // -------------------------------------------------------------------------
+  // 第2步: 提取历史位置测量值
+  // -------------------------------------------------------------------------
+
+  std::vector<Eigen::Vector3d> measurements;
+  measurements.reserve(actual_K + 1);
+
+  for (int k = 0; k < actual_K + 1; k++) {
+    Eigen::Vector3d pos(this->boxHist_[track_id][k].x,
+                        this->boxHist_[track_id][k].y,
+                        this->boxHist_[track_id][k].z);
+    measurements.push_back(pos);
+  }
+
+  // -------------------------------------------------------------------------
+  // 第3步: 计算相邻帧差分
+  // -------------------------------------------------------------------------
+
+  std::vector<Eigen::Vector3d> diffs;
+  diffs.reserve(actual_K);
+
+  for (int k = 0; k < actual_K; k++) {
+    Eigen::Vector3d diff = measurements[k] - measurements[k + 1];
+    diffs.push_back(diff);
+  }
+
+  // -------------------------------------------------------------------------
+  // 第4步: 计算差分的方差
+  // -------------------------------------------------------------------------
+
+  // 4.1 计算均值
+  Eigen::Vector3d mean_diff = Eigen::Vector3d::Zero();
+  for (const auto &diff : diffs) {
+    mean_diff += diff;
+  }
+  mean_diff /= static_cast<double>(actual_K);
+
+  // 4.2 计算方差
+  Eigen::Vector3d variance = Eigen::Vector3d::Zero();
+  for (const auto &diff : diffs) {
+    Eigen::Vector3d deviation = diff - mean_diff;
+    variance += deviation.cwiseProduct(deviation); // 逐元素平方
+  }
+  variance /= static_cast<double>(actual_K);
+
+  // 4.3 理论修正
+  // 因为 diff = meas[k] - meas[k+1]，包含两次独立测量的噪声
+  // Var(diff) = Var(n_k) + Var(n_{k+1}) = 2 * Var(n)
+  // 所以: Var(n) = Var(diff) / 2
+  variance /= 2.0;
+
+  // -------------------------------------------------------------------------
+  // 第5步: 构建自适应R矩阵
+  // -------------------------------------------------------------------------
+
+  Eigen::MatrixXd R_adaptive = Eigen::MatrixXd::Zero(3, 3);
+  for (int i = 0; i < 3; i++) {
+    R_adaptive(i, i) = std::max(variance(i), 1e-6); // 避免过小（数值稳定性）
+  }
+
+  // -------------------------------------------------------------------------
+  // 第6步: 模型特定调整
+  // -------------------------------------------------------------------------
+
+  // 6.1 判断当前模型类型
+  bool is_human = this->boxHist_[track_id][0].is_human;
+  bool is_che = this->boxHist_[track_id][0].is_che;
+  bool is_uav = this->boxHist_[track_id][0].is_uav;
+
+  // 6.2 根据模型调整
+  if (is_human) {
+    // 人的z轴几乎不变，差分包含的噪声可能有地面起伏影响
+    // 因此对z轴降权
+    R_adaptive(2, 2) *= this->adaptiveRHumanZScale_;
+
+    ROS_DEBUG_STREAM_THROTTLE(5.0, this->hint_
+                                       << " Track " << track_id
+                                       << " (Human): z-axis R scaled by "
+                                       << this->adaptiveRHumanZScale_);
+  } else if (is_uav) {
+    // 无人机z轴运动剧烈，差分包含真实运动
+    // 增加z轴容忍度
+    R_adaptive(2, 2) *= this->adaptiveRUavZScale_;
+
+    ROS_DEBUG_STREAM_THROTTLE(5.0, this->hint_ << " Track " << track_id
+                                               << " (UAV): z-axis R scaled by "
+                                               << this->adaptiveRUavZScale_);
+  } else if (is_che) {
+    // 车辆: 检查是否在转弯
+    const Eigen::VectorXd &state = this->filters_[track_id]->getState();
+    double yaw_rate = state(6); // yaw_rate是状态向量的第7个元素
+
+    if (std::abs(yaw_rate) > this->adaptiveRCtraTurnThreshold_) {
+      // 转弯时DBSCAN聚类中心会抖动，增加xy方向噪声
+      double turn_factor =
+          1.0 + this->adaptiveRCtraTurnScale_ * std::abs(yaw_rate);
+      R_adaptive(0, 0) *= turn_factor; // x方向
+      R_adaptive(1, 1) *= turn_factor; // y方向
+
+      ROS_DEBUG_STREAM_THROTTLE(
+          5.0, this->hint_ << " Track " << track_id
+                           << " (Vehicle turning, yaw_rate=" << yaw_rate
+                           << "): xy R scaled by " << turn_factor);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 第7步: 与原始R融合
+  // -------------------------------------------------------------------------
+
+  // 7.1 获取原始R（从yaml配置）
+  Eigen::MatrixXd R_original = this->filters_[track_id]->getMeasNoiseR();
+
+  // 7.2 计算融合权重（历史越长，越相信自适应）
+  double confidence =
+      std::min(1.0, static_cast<double>(actual_K) /
+                        static_cast<double>(this->adaptiveRWindowSize_));
+  double final_weight = this->adaptiveRWeight_ * confidence;
+
+  // 7.3 加权融合
+  Eigen::MatrixXd R_final =
+      final_weight * R_adaptive + (1.0 - final_weight) * R_original;
+
+  // 7.4 下限保护（不能太小）
+  for (int i = 0; i < 3; i++) {
+    double min_value = R_original(i, i) * this->adaptiveRMinRatio_;
+    R_final(i, i) = std::max(R_final(i, i), min_value);
+  }
+
+  // -------------------------------------------------------------------------
+  // 第8步: 调试输出
+  // -------------------------------------------------------------------------
+
+  ROS_DEBUG_STREAM_THROTTLE(
+      5.0, this->hint_ << " Track " << track_id << " adaptive R: ["
+                       << R_final(0, 0) << ", " << R_final(1, 1) << ", "
+                       << R_final(2, 2) << "], original R: ["
+                       << R_original(0, 0) << ", " << R_original(1, 1) << ", "
+                       << R_original(2, 2) << "], hist_len=" << hist_len
+                       << ", actual_K=" << actual_K);
+
+  return R_final;
+}
+
+/*!
+ * @brief 移除重复/重叠的轨迹（用于解决幽灵轨迹问题）
+ *
+ * 检测逻辑：
+ * - 如果两条轨迹的 IoU > 阈值（如 0.5）
+ * - 保留丢失帧数较少的（更可靠）
+ * - 删除丢失帧数较多的（coasting 轨迹）
+ */
+void dynamicDetector::removeDuplicateTracks() {
+  if (this->boxHist_.size() <= 1) {
+    return; // 只有一条或零条轨迹，无需去重
+  }
+
+  // 使用配置的 IoU 阈值
+  std::vector<bool> toRemove(this->boxHist_.size(), false);
+
+  // 检查所有轨迹对
+  for (size_t i = 0; i < this->boxHist_.size(); ++i) {
+    if (toRemove[i] || this->boxHist_[i].empty())
+      continue;
+
+    for (size_t j = i + 1; j < this->boxHist_.size(); ++j) {
+      if (toRemove[j] || this->boxHist_[j].empty())
+        continue;
+
+      // 计算两条轨迹最新状态的 IoU
+      const auto &bbox_i = this->boxHist_[i][0];
+      const auto &bbox_j = this->boxHist_[j][0];
+      double iou = this->compute3DIoU(bbox_i, bbox_j);
+
+      // 如果重叠度高，删除丢失帧数多的那条
+      if (iou > this->duplicateTrackIoUThreshold_) {
+        int missed_i = this->trackMissedFrames_[i];
+        int missed_j = this->trackMissedFrames_[j];
+
+        if (missed_i > missed_j) {
+          toRemove[i] = true;
+          ROS_WARN_THROTTLE(1.0,
+                            "%s: Removing duplicate track %zu (missed=%d, "
+                            "IoU=%.2f with track %zu)",
+                            this->hint_.c_str(), i, missed_i, iou, j);
+          break; // i 已被标记删除，无需继续比较
+        } else {
+          toRemove[j] = true;
+          ROS_WARN_THROTTLE(1.0,
+                            "%s: Removing duplicate track %zu (missed=%d, "
+                            "IoU=%.2f with track %zu)",
+                            this->hint_.c_str(), j, missed_j, iou, i);
+        }
+      }
+    }
+  }
+
+  // 执行删除（倒序删除避免索引偏移）
+  for (int i = this->boxHist_.size() - 1; i >= 0; --i) {
+    if (toRemove[i]) {
+      this->boxHist_.erase(this->boxHist_.begin() + i);
+      this->pcHist_.erase(this->pcHist_.begin() + i);
+      this->pcCenterHist_.erase(this->pcCenterHist_.begin() + i);
+      this->pcStdHist_.erase(this->pcStdHist_.begin() + i);
+      this->maxHistorySizes_.erase(this->maxHistorySizes_.begin() + i);
+      this->filters_.erase(this->filters_.begin() + i);
+      this->trackedBBoxes_.erase(this->trackedBBoxes_.begin() + i);
+      this->trackMissedFrames_.erase(this->trackMissedFrames_.begin() + i);
+    }
+  }
 }
 
 // 获取动态点云

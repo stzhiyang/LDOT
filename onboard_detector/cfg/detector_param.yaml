@@ -32,26 +32,29 @@ max_object_size: [5.0, 5.0, 2.5] # 过滤掉过大物体的尺寸阈值 [长, �
 
 # 分类与模型切换参数，[box中z、x/y的宽度比较, 质心z高度  z轴宽度的倍数]
 classification_start_frame: 50 # 跟踪多少帧后开始进行分类和模型切换
-classify_human_threshold: [2, 0.8]   # z >= x/y，z<0.8*zw
-classify_vehicle_threshold: [1.5, 0.7] # x/y >=z，z<0.7*zw
-classify_uav_threshold: [0.7, 1.2] # z/y/z <0.7 ,z>1.2*zw
-classify_human_pca_ratio: 1.5  # PCA特征: z_std / xy_std 的阈值 (人应当 > 此值)
+classification_interval_sec: 3 # 分类检查时间间隔 s
+classify_human_threshold: [1.8, 0.8]   # z >= x/y，z<0.8*zw
+classify_vehicle_threshold: [1.2, 0.7] # x/y >=z，z<0.7*zw
+classify_uav_threshold: [0.8, 1.2] # z/y/z <0.7 ,z>1.2*zw
+classify_human_pca_ratio: 1.6  # PCA特征: z_std / xy_std 的阈值 (人应当 > 此值)
 classify_vehicle_pca_ratio: 1.2 # PCA特征: xy_std / z_std 的阈值 (车应当 > 此值)
 # 目标跟踪与数据关联
-association_gate_confidence: 0.3  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
-association_pos_cost_weight: 0.6    # 位置代价权重（马氏距离），考虑不确定性
-association_iou_cost_weight: 0.4    # 3D IoU代价权重，反映空间重叠度
+association_gate_confidence: 0.99  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
+association_pos_cost_weight: 0.9    # 位置代价权重（马氏距离），考虑不确定性
+association_iou_cost_weight: 0.8    # 3D IoU代价权重，反映空间重叠度，和置信度一样月小月宽松
 history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
+max_missed_frames: 3 # 最大丢失帧数，超过该帧数未匹配则丢弃轨迹（减少幽灵轨迹）
+duplicate_track_iou_threshold: 0.8 # 重复轨迹检测的IoU阈值，超过此值认为两条轨迹重叠
 
 # 动态/静态分类
-frame_skip: 4 # 比较两个点云聚类以判断动态性时跳过的帧数
-# 如果frame_skip设置为5，那么系统会比较当前帧与5帧之前的同一目标的点云数据
+# 动态条件一，最近的check_range帧范围内有K帧被投票为动态候选，才被最终分类为动态
+frames_force_dynamic_check_range: 15 # 强制判断为动态障碍物前，历史轨迹的最小长度
+frames_force_dynamic: 10 # 满足前面的条件下，连续k帧被投票为动态候选的障碍物则强制为动态
+# 动态条件二
+dynamic_consistency_threshold: 5 # 最近连续k帧被投票为动态候选，才被最终分类为动态
+frame_skip: 3 # 动态计算时间间隔
 dynamic_velocity_threshold: 0.1 # 判断为动态障碍物的速度阈值 (米/秒)
 dynamic_voting_threshold: 0.8 # 动态性投票的阈值, 超过该比例则认为可能是动态
-frames_force_dynamic: 10 # 在历史轨迹中搜索动态障碍物的范围 (帧数)
-frames_force_dynamic_check_range: 15 # 强制判断为动态障碍物的检查范围阈值 (帧数)
-# 连续k帧被投票为动态的障碍物才被最终分类为动态, k为此处的阈值
-dynamic_consistency_threshold: 10
 
 # 卡尔曼滤波器参数
 kalman_filter:
@@ -59,13 +62,13 @@ kalman_filter:
   ca_model:
     human: # 2D Model [x, y, z, vx, vy, ax, ay]
       jerk_sigma: 2.0 # 增大过程噪声，允许更剧烈的加加速度变化，减少预测滞后
-      init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0]
+      init_cov: [0.1, 0.1, 0.1, 2.0, 2.0, 10.0, 10.0]
       meas_noise: [0.1, 0.1, 0.1] #方差，0.3代表标准差为0.55,即容忍误差为0.55米。0.1就是容忍误差为0.32米。0.01就是0.1米
       #z轴独立噪声 (假设静止或缓慢移动)。人的额外z轴噪声很小，无人机的z轴噪声很大
       z_process_noise: 0.01 
     uav: # 3D Model [x, y, z, vx, vy, vz, ax, ay, az]
       jerk_sigma: 3.0 # 增大过程噪声，适应无人机的高机动性
-      init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0]
+      init_cov: [0.1, 0.1, 0.1, 2.0, 2.0, 2.0, 10.0, 10.0, 10.0]
       meas_noise: [0.1, 0.1, 0.1]
 
   # Constant Velocity Model (Acceleration noise)
@@ -76,11 +79,19 @@ kalman_filter:
 
   # Constant Turn Rate and Acceleration Model
   ctra_model: # [x, y, z, v, a, yaw, yaw_rate]
-    init_cov: [0.1, 0.1, 0.1, 1.0, 10.0, 0.5, 1.0]
-    process_noise: [0.1, 0.1, 0.01, 1.0, 10.0, 0.1, 1.0]
+    init_cov: [0.1, 0.1, 0.1, 2.0, 10.0, 0.5, 1.0]
+    process_noise: [0.1, 0.1, 0.01, 2.0, 10.0, 0.5, 1.0]
     meas_noise: [0.1, 0.1, 0.1]
 
-
-
-
+  # 自适应测量噪声R参数
+  adaptive_measurement_noise:
+    enable: true                  # 是否启用自适应测量噪声R (true/false)
+    window_size: 10               # 使用最近K帧历史数据计算标准差
+    min_ratio: 0.3                # 自适应R不能低于原始R的最小比例 (防止过小)
+    adaptive_weight: 0.7          # 自适应R的融合权重 (0-1, 越大越相信自适应值)
     
+    # 模型特定调整参数
+    human_z_scale: 0.5            # 人类模型z轴噪声缩放因子 (< 1.0, 因为人在地面行走z轴变化小)
+    uav_z_scale: 1.5              # 无人机模型z轴噪声缩放因子 (> 1.0, 因为无人机z轴运动剧烈)
+    ctra_turn_scale: 0.5          # CTRA模型转弯时xy噪声增加系数 (当yaw_rate高时)
+    ctra_turn_threshold: 0.1      # CTRA模型判定为转弯的yaw_rate阈值 (rad/s)

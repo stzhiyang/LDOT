@@ -126,12 +126,15 @@ private:
   double lidarDBDistanceScale_; // 自适应DBSCAN的距离缩放因子
 
   // 目标跟踪与数据关联参数
-  double associationGateConfidence_; // 数据关联的置信度 (0~1)
-  double gateThreshold3D_;           // 3D门限: 根据置信度计算三维卡方阈值
-  double associationPosCostWeight_;  // 位置代价的权重
-  double associationIoUCostWeight_;  // 3D IoU代价的权重
-  int histSize_;                     // 跟踪历史的长度
-  int kfAvgFrames_;                  // 用于计算观测速度的帧数
+  double associationGateConfidence_;   // 数据关联的置信度 (0~1)
+  double gateThreshold3D_;             // 3D门限: 根据置信度计算三维卡方阈值
+  double associationPosCostWeight_;    // 位置代价的权重
+  double associationIoUCostWeight_;    // 3D IoU代价的权重
+  int histSize_;                       // 跟踪历史的长度
+  int kfAvgFrames_;                    // 用于计算观测速度的帧数
+  int maxMissedFrames_;                // 最大丢失帧数
+  std::vector<int> trackMissedFrames_; // 每个轨迹连续丢失的帧数
+  double duplicateTrackIoUThreshold_;  // 重复轨迹检测的IoU阈值
 
   // 动态/静态分类参数
   int skipFrame_;            // 点云比较时跳过的帧数
@@ -153,12 +156,24 @@ private:
   double classifyUAVCentroidZRatio_;     // 无人机：质心z高度 > z轴宽度的倍数
 
   // 分类与模型切换参数
-  int classificationStartFrame_;   // 跟踪多少帧后开始进行分类和模型切换
-  double classifyHumanPcaRatio_;   // PCA特征: z_std / xy_std 的阈值
-  double classifyVehiclePcaRatio_; // PCA特征: xy_std / z_std 的阈值
+  int classificationStartFrame_;     // 跟踪多少帧后开始进行分类和模型切换
+  double classifyHumanPcaRatio_;     // PCA特征: z_std / xy_std 的阈值
+  double classifyVehiclePcaRatio_;   // PCA特征: xy_std / z_std 的阈值
+  double classificationIntervalSec_; // 首次分类后，基于时间的重新分类间隔（秒）
+  std::vector<ros::Time> lastClassifyTime_; // 每个轨迹上一次分类的时间戳
 
   // 卡尔曼滤波器参数
   KF_Params kfParams_;
+
+  // 自适应测量噪声R参数
+  bool adaptiveREnabled_;             // 是否启用自适应测量噪声R
+  int adaptiveRWindowSize_;           // 使用最近K帧历史数据
+  double adaptiveRMinRatio_;          // 不低于原始R的最小比例
+  double adaptiveRWeight_;            // 自适应R的融合权重
+  double adaptiveRHumanZScale_;       // 人类模型z轴噪声缩放
+  double adaptiveRUavZScale_;         // 无人机模型z轴噪声缩放
+  double adaptiveRCtraTurnScale_;     // CTRA转弯时xy噪声增加系数
+  double adaptiveRCtraTurnThreshold_; // CTRA判定为转弯的yaw_rate阈值
 
   // 传感器原始数据
   Eigen::Vector3d position_;         // 机器人当前位置
@@ -268,8 +283,13 @@ public:
       const Eigen::Matrix3d &covariance); // 计算3D物体的关联代价
   void hungarianAlgorithm(const std::vector<std::vector<double>> &costMatrix,
                           std::vector<int> &assignment); // 匈牙利算法
+  void removeDuplicateTracks();                          // 移除重复/重叠的轨迹
   void kalmanFilterAndUpdateHist(
       const std::vector<int> &bestMatch); // 卡尔曼滤波与更新历史
+
+  // 自适应测量噪声R计算
+  Eigen::MatrixXd
+  computeAdaptiveMeasNoiseR(int track_id); // 计算自适应测量噪声矩阵R
 
   // 可视化函数
   void getDynamicPc(std::vector<Eigen::Vector3d> &dynamicPc); // 获取动态点云
