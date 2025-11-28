@@ -223,6 +223,44 @@ void dynamicDetector::initParam() {
          << this->lidarDBDistanceScale_ << endl;
   }
 
+  // -------------------------------------------点云数量控制参数 - Voxel
+  // Grid自适应下采样--------------------------------------------------
+  // 是否启用Voxel Grid下采样
+  if (not this->nh_.getParam(this->ns_ + "/enable_voxel_downsampling",
+                             this->enableVoxelDownsampling_)) {
+    this->enableVoxelDownsampling_ = false;
+    cout << this->hint_
+         << ": No enable_voxel_downsampling parameter. Use default: false."
+         << endl;
+  } else {
+    cout << this->hint_ << ": Voxel downsampling is set to: "
+         << (this->enableVoxelDownsampling_ ? "enabled" : "disabled") << endl;
+  }
+
+  // 基础体素大小
+  if (not this->nh_.getParam(this->ns_ + "/voxel_base_leaf_size",
+                             this->voxelBaseLeafSize_)) {
+    this->voxelBaseLeafSize_ = 0.05f;
+    cout << this->hint_
+         << ": No voxel_base_leaf_size parameter. Use default: 0.05m." << endl;
+  } else {
+    cout << this->hint_
+         << ": Voxel base leaf size is set to: " << this->voxelBaseLeafSize_
+         << "m." << endl;
+  }
+
+  // 目标点云数量
+  if (not this->nh_.getParam(this->ns_ + "/voxel_target_point_count",
+                             this->voxelTargetPointCount_)) {
+    this->voxelTargetPointCount_ = 30000;
+    cout << this->hint_
+         << ": No voxel_target_point_count parameter. Use default: 30000."
+         << endl;
+  } else {
+    cout << this->hint_ << ": Voxel target point count is set to: "
+         << this->voxelTargetPointCount_ << endl;
+  }
+
   // -------------------------------------------目标跟踪与数据关联参数--------------------------------------------------
   // 读取关联置信度（默认 0.99）
   if (not this->nh_.getParam(this->ns_ + "/association_gate_confidence",
@@ -499,6 +537,12 @@ void dynamicDetector::initParam() {
     this->classifyVehiclePcaRatio_ = 1.5;
     ROS_WARN_STREAM(this->hint_ << " No classify_vehicle_pca_ratio param. Use "
                                    "default: 1.5");
+  }
+  if (not this->nh_.getParam(this->ns_ + "/classify_close_range_threshold",
+                             this->classifyCloseRangeThreshold_)) {
+    this->classifyCloseRangeThreshold_ = 3.0;
+    ROS_WARN_STREAM(this->hint_ << " No classify_close_range_threshold param. "
+                                   "Use default: 3.0");
   }
 
   // -----------------------------------------卡尔曼滤波器参数--------------------------------------------------------------
@@ -797,7 +841,7 @@ void dynamicDetector::lidarPoseCB(
     const sensor_msgs::PointCloud2ConstPtr &cloudMsg,
     const geometry_msgs::PoseStampedConstPtr &pose) {
   // [Performance Timing] 测量回调函数耗时
-  // auto start_time = std::chrono::high_resolution_clock::now();
+  auto start_time = std::chrono::high_resolution_clock::now();
 
   std::lock_guard<std::mutex> lock(cloudMutex_); // 加锁保护共享数据
 
@@ -865,8 +909,64 @@ void dynamicDetector::lidarPoseCB(
     }
   }
 
+  // --- 自适应Voxel Grid下采样（两阶段精细控制） ---
+  pcl::PointCloud<pcl::PointXYZ>::Ptr finalCloud;
+
+  if (this->enableVoxelDownsampling_ &&
+      static_cast<int>(groundRoofFilterCloud->size()) >
+          this->voxelTargetPointCount_) {
+    // 初始化
+    pcl::PointCloud<pcl::PointXYZ>::Ptr voxelFilteredCloud(
+        new pcl::PointCloud<pcl::PointXYZ>());
+    float adaptiveLeafSize = this->voxelBaseLeafSize_;
+    int iteration = 0;
+    const int maxIterations = 10;      // 防止无限循环
+    const float toleranceRatio = 1.2f; // 允许20%的容差范围
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr currentCloud = groundRoofFilterCloud;
+
+    // 迭代调整体素大小，直到点数接近目标值
+    while (
+        static_cast<int>(currentCloud->size()) >
+            static_cast<int>(this->voxelTargetPointCount_ * toleranceRatio) &&
+        iteration < maxIterations) {
+
+      pcl::VoxelGrid<pcl::PointXYZ> voxelFilter;
+      voxelFilter.setInputCloud(currentCloud);
+      voxelFilter.setLeafSize(adaptiveLeafSize, adaptiveLeafSize,
+                              adaptiveLeafSize);
+      voxelFilter.filter(*voxelFilteredCloud);
+
+      // 检查是否达到目标
+      if (static_cast<int>(voxelFilteredCloud->size()) <=
+          this->voxelTargetPointCount_) {
+        break; // 达到目标，退出循环
+      }
+
+      // 更新参数准备下一次迭代
+      currentCloud = voxelFilteredCloud;
+      adaptiveLeafSize *= 1.2f; // 增大体素20%
+      ++iteration;
+
+      // 准备下一次迭代的输出云
+      voxelFilteredCloud.reset(new pcl::PointCloud<pcl::PointXYZ>());
+    }
+
+    finalCloud = currentCloud;
+
+    // 输出下采样信息（用于调试和性能监控）
+    ROS_INFO_THROTTLE(
+        2.0,
+        "%s: Voxel downsampling: %lu -> %lu points (iters=%d, leafSize=%.3fm)",
+        this->hint_.c_str(), groundRoofFilterCloud->size(), finalCloud->size(),
+        iteration, adaptiveLeafSize);
+  } else {
+    // 不启用下采样或点数未超过阈值
+    finalCloud = groundRoofFilterCloud;
+  }
+
   // 存储处理后的激光雷达点云
-  this->lidarCloud_ = groundRoofFilterCloud;
+  this->lidarCloud_ = finalCloud;
   hasNewCloud_ = true; // 标记有新数据可用
 
   // 将处理后的点云发布出去，用于可视化
@@ -877,14 +977,13 @@ void dynamicDetector::lidarPoseCB(
   this->downSamplePointsPub_.publish(outputCloud);
 
   // [Performance Timing] 输出耗时
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration =
-  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-  // start_time); ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points:
-  // %lu -> %lu",
-  //                  this->hint_.c_str(), duration.count() / 1000.0,
-  //                  tempCloud->size(), this->lidarCloud_->size());
-  // ROS_INFO_THROTTLE(1.0, "new pointCloud%s", this->hasNewCloud_);
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+      end_time - start_time);
+  ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points: %lu -> %lu",
+                    this->hint_.c_str(), duration.count() / 1000.0,
+                    tempCloud->size(), this->lidarCloud_->size());
+  // ROS_INFO_THROTTLE(1.0, "new pointCloud: %d", this->hasNewCloud_.load());
 }
 
 // 里程计回调函数，处理点云和里程计数据
@@ -960,8 +1059,64 @@ void dynamicDetector::lidarOdomCB(
     }
   }
 
+  // --- 自适应Voxel Grid下采样（两阶段精细控制） ---
+  pcl::PointCloud<pcl::PointXYZ>::Ptr finalCloud;
+
+  if (this->enableVoxelDownsampling_ &&
+      static_cast<int>(groundRoofFilterCloud->size()) >
+          this->voxelTargetPointCount_) {
+    // 初始化
+    pcl::PointCloud<pcl::PointXYZ>::Ptr voxelFilteredCloud(
+        new pcl::PointCloud<pcl::PointXYZ>());
+    float adaptiveLeafSize = this->voxelBaseLeafSize_;
+    int iteration = 0;
+    const int maxIterations = 10;      // 防止无限循环
+    const float toleranceRatio = 1.2f; // 允许20%的容差范围
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr currentCloud = groundRoofFilterCloud;
+
+    // 迭代调整体素大小，直到点数接近目标值
+    while (
+        static_cast<int>(currentCloud->size()) >
+            static_cast<int>(this->voxelTargetPointCount_ * toleranceRatio) &&
+        iteration < maxIterations) {
+
+      pcl::VoxelGrid<pcl::PointXYZ> voxelFilter;
+      voxelFilter.setInputCloud(currentCloud);
+      voxelFilter.setLeafSize(adaptiveLeafSize, adaptiveLeafSize,
+                              adaptiveLeafSize);
+      voxelFilter.filter(*voxelFilteredCloud);
+
+      // 检查是否达到目标
+      if (static_cast<int>(voxelFilteredCloud->size()) <=
+          this->voxelTargetPointCount_) {
+        break; // 达到目标，退出循环
+      }
+
+      // 更新参数准备下一次迭代
+      currentCloud = voxelFilteredCloud;
+      adaptiveLeafSize *= 1.2f; // 增大体素20%
+      ++iteration;
+
+      // 准备下一次迭代的输出云
+      voxelFilteredCloud.reset(new pcl::PointCloud<pcl::PointXYZ>());
+    }
+
+    finalCloud = currentCloud;
+
+    // 输出下采样信息（用于调试和性能监控）
+    ROS_INFO_THROTTLE(
+        2.0,
+        "%s: Voxel downsampling: %lu -> %lu points (iters=%d, leafSize=%.3fm)",
+        this->hint_.c_str(), groundRoofFilterCloud->size(), finalCloud->size(),
+        iteration, adaptiveLeafSize);
+  } else {
+    // 不启用下采样或点数未超过阈值
+    finalCloud = groundRoofFilterCloud;
+  }
+
   // 存储处理后的点云
-  this->lidarCloud_ = groundRoofFilterCloud;
+  this->lidarCloud_ = finalCloud;
   hasNewCloud_ = true; // 标记有新数据可用
 
   // 发布降采样后的点云
@@ -985,7 +1140,7 @@ void dynamicDetector::lidarOdomCB(
 // 激光雷达检测定时器回调函数
 void dynamicDetector::lidarDetectionCB(const ros::TimerEvent &event) {
   // [Performance Timing] 测量回调函数耗时
-  // auto start_time = std::chrono::high_resolution_clock::now();
+  auto start_time = std::chrono::high_resolution_clock::now();
 
   // 检查是否有新点云数据
   if (!hasNewCloud_) {
@@ -1012,17 +1167,17 @@ void dynamicDetector::lidarDetectionCB(const ros::TimerEvent &event) {
   hasNewDetection_ = true;     // 标记有新检测结果
 
   // [Performance Timing] 输出耗时
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration =
-  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-  // start_time); ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms",
-  // this->hint_.c_str(), duration.count() / 1000.0);
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+      end_time - start_time);
+  ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms",
+                    this->hint_.c_str(), duration.count() / 1000.0);
 }
 
 // 跟踪定时器回调函数,有个问题，匹配时，多出的轨迹直接丢掉
 void dynamicDetector::trackingCB(const ros::TimerEvent &) {
   // [Performance Timing] 测量回调函数耗时
-  // auto start_time = std::chrono::high_resolution_clock::now();
+  auto start_time = std::chrono::high_resolution_clock::now();
 
   // 检查是否有新检测结果
   if (!hasNewDetection_) {
@@ -1126,17 +1281,17 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
   hasNewTracking_ = true;   // 标记有新跟踪结果
 
   // [Performance Timing] 输出耗时
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration =
-  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-  // start_time); ROS_INFO_THROTTLE(1.0, "%s: trackingCB took %.3f ms",
-  // this->hint_.c_str(), duration.count() / 1000.0);
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+      end_time - start_time);
+  ROS_INFO_THROTTLE(1.0, "%s: trackingCB took %.3f ms", this->hint_.c_str(),
+                    duration.count() / 1000.0);
 }
 
 // 动静态分类定时器回调函数
 void dynamicDetector::classificationCB(const ros::TimerEvent &) {
   // // [Performance Timing] 测量回调函数耗时
-  // auto start_time = std::chrono::high_resolution_clock::now();
+  auto start_time = std::chrono::high_resolution_clock::now();
 
   // 检查是否有新跟踪结果
   if (!hasNewTracking_) {
@@ -1301,12 +1456,12 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
 
   hasNewTracking_ = false; // 标记跟踪结果已处理
 
-  // // [Performance Timing] 输出耗时
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration =
-  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-  // start_time); ROS_INFO_THROTTLE(1.0, "%s: classificationCB took %.3f ms",
-  // this->hint_.c_str(), duration.count() / 1000.0);
+  // [Performance Timing] 输出耗时
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+      end_time - start_time);
+  ROS_INFO_THROTTLE(1.0, "%s: classificationCB took %.3f ms",
+                    this->hint_.c_str(), duration.count() / 1000.0);
 }
 
 // 可视化定时器回调函数
@@ -1368,6 +1523,12 @@ void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
   double pca_z = clusterStd(2);
   double pca_xy_max = std::max(clusterStd(0), clusterStd(1));
 
+  // 计算距离雷达的距离 (2D平面距离)
+  // 注意：centroid是全局坐标，positionLidar_也是全局坐标
+  double dist =
+      (centroid.head(2).cast<double>() - this->positionLidar_.head(2)).norm();
+  bool isClose = dist < this->classifyCloseRangeThreshold_;
+
   // 重置分类标志
   bbox.is_human = false;
   bbox.is_che = false;
@@ -1376,19 +1537,19 @@ void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
 
   // 1. 分类为人：
   // - 尺寸：高瘦 (z > xy * ratio)
-  // - 形态(PCA)：Z轴离散度主导 (pca_z > pca_xy * ratio)
+  // - 形态(PCA)：Z轴离散度主导 (pca_z > pca_xy * ratio) [近距离时不强制]
   // - 质心：靠下
   if (z_width >= xy_max * this->classifyHumanZWidthRatio_ &&
-      pca_z > pca_xy_max * this->classifyHumanPcaRatio_ &&
+      (isClose || pca_z > pca_xy_max * this->classifyHumanPcaRatio_) &&
       centroid_z < z_width * this->classifyHumanCentroidZRatio_) {
     bbox.is_human = true;
   }
   // 2. 分类为车：
   // - 尺寸：扁平 (xy > z * ratio)
-  // - 形态(PCA)：XY平面离散度主导 (pca_xy > pca_z * ratio)
+  // - 形态(PCA)：XY平面离散度主导 (pca_xy > pca_z * ratio) [近距离时不强制]
   // - 质心：靠下
   else if (xy_max >= z_width * this->classifyVehicleXYWidthRatio_ &&
-           pca_xy_max > pca_z * this->classifyVehiclePcaRatio_ &&
+           (isClose || pca_xy_max > pca_z * this->classifyVehiclePcaRatio_) &&
            centroid_z < z_width * this->classifyVehicleCentroidZRatio_) {
     bbox.is_che = true;
   }
@@ -1531,15 +1692,16 @@ void dynamicDetector::switchKalmanModel(int index,
     // 注意：oldState是在boxAssociation中predict()后的状态
     // 因此这里不需要再predict()，直接initialize即可
     newFilter->initialize(newState);
-
     this->filters_[index] = newFilter;
-    ROS_INFO_STREAM(this->hint_
-                    << " Switched model for object " << index << " (Dim "
-                    << oldDim << " -> " << newState.size() << ") to "
-                    << (bbox.is_human
-                            ? "Human"
-                            : (bbox.is_che ? "Vehicle"
-                                           : (bbox.is_uav ? "UAV" : "Else"))));
+
+    // ROS_INFO_STREAM(this->hint_
+    //                 << " Switched model for object " << index << " (Dim "
+    //                 << oldDim << " -> " << newState.size() << ") to "
+    //                 << (bbox.is_human
+    //                         ? "Human"
+    //                         : (bbox.is_che ? "Vehicle"
+    //                                        : (bbox.is_uav ? "UAV" :
+    //                                        "Else"))));
   }
 }
 
@@ -1762,10 +1924,10 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
           //     gate=%.2f", this->hint_.c_str(), i, j, cost, gateThreshold);
         } else {
           // 调试:输出被门限拒绝的匹配
-          ROS_WARN_THROTTLE(
-              1.0,
-              "%s: Match [curr:%d->hist:%d] REJECT: cost=%.2f >= gate=%.2f",
-              this->hint_.c_str(), i, j, cost, gateThreshold);
+          // ROS_WARN_THROTTLE(
+          //     1.0,
+          //     "%s: Match [curr:%d->hist:%d] REJECT: cost=%.2f >= gate=%.2f",
+          //     this->hint_.c_str(), i, j, cost, gateThreshold);
         }
       }
     }
@@ -1774,22 +1936,22 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     this->hungarianAlgorithm(costMatrix, bestMatch);
 
     // 统计并输出关联结果
-    int numMatched = 0;
-    int numNewTargets = 0;
-    for (int i = 0; i < numCurrObjs; ++i) {
-      if (bestMatch[i] >= 0) {
-        numMatched++;
-      } else {
-        numNewTargets++;
-      }
-    }
-    int numLostTargets = numHistObjs - numMatched;
+    // int numMatched = 0;
+    // int numNewTargets = 0;
+    // for (int i = 0; i < numCurrObjs; ++i) {
+    //   if (bestMatch[i] >= 0) {
+    //     numMatched++;
+    //   } else {
+    //     numNewTargets++;
+    //   }
+    // }
+    // int numLostTargets = numHistObjs - numMatched;
 
-    // 简洁的日志输出
-    ROS_INFO_THROTTLE(
-        0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
-        this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
-        numNewTargets, numLostTargets);
+    // // 简洁的日志输出
+    // ROS_INFO_THROTTLE(
+    //     0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
+    //     this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
+    //     numNewTargets, numLostTargets);
   }
 
   this->newDetectFlag_ = false;
@@ -2331,17 +2493,17 @@ void dynamicDetector::removeDuplicateTracks() {
 
         if (missed_i > missed_j) {
           toRemove[i] = true;
-          ROS_WARN_THROTTLE(1.0,
-                            "%s: Removing duplicate track %zu (missed=%d, "
-                            "IoU=%.2f with track %zu)",
-                            this->hint_.c_str(), i, missed_i, iou, j);
+          // ROS_WARN_THROTTLE(1.0,
+          //                   "%s: Removing duplicate track %zu (missed=%d, "
+          //                   "IoU=%.2f with track %zu)",
+          //                   this->hint_.c_str(), i, missed_i, iou, j);
           break; // i 已被标记删除，无需继续比较
         } else {
           toRemove[j] = true;
-          ROS_WARN_THROTTLE(1.0,
-                            "%s: Removing duplicate track %zu (missed=%d, "
-                            "IoU=%.2f with track %zu)",
-                            this->hint_.c_str(), j, missed_j, iou, i);
+          // ROS_WARN_THROTTLE(1.0,
+          //                   "%s: Removing duplicate track %zu (missed=%d, "
+          //                   "IoU=%.2f with track %zu)",
+          //                   this->hint_.c_str(), j, missed_j, iou, i);
         }
       }
     }

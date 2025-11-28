@@ -125,6 +125,11 @@ private:
   bool lidarDBUseAdaptive_;     // 是否启用基于距离的自适应DBSCAN
   double lidarDBDistanceScale_; // 自适应DBSCAN的距离缩放因子
 
+  // 点云数量控制参数 - Voxel Grid自适应下采样
+  bool enableVoxelDownsampling_; // 是否启用Voxel Grid自适应下采样
+  float voxelBaseLeafSize_;      // 基础体素大小（米）
+  int voxelTargetPointCount_;    // 目标点云数量
+
   // 目标跟踪与数据关联参数
   double associationGateConfidence_;   // 数据关联的置信度 (0~1)
   double gateThreshold3D_;             // 3D门限: 根据置信度计算三维卡方阈值
@@ -156,9 +161,10 @@ private:
   double classifyUAVCentroidZRatio_;     // 无人机：质心z高度 > z轴宽度的倍数
 
   // 分类与模型切换参数
-  int classificationStartFrame_;     // 跟踪多少帧后开始进行分类和模型切换
-  double classifyHumanPcaRatio_;     // PCA特征: z_std / xy_std 的阈值
-  double classifyVehiclePcaRatio_;   // PCA特征: xy_std / z_std 的阈值
+  int classificationStartFrame_;       // 跟踪多少帧后开始进行分类和模型切换
+  double classifyHumanPcaRatio_;       // PCA特征: z_std / xy_std 的阈值
+  double classifyVehiclePcaRatio_;     // PCA特征: xy_std / z_std 的阈值
+  double classifyCloseRangeThreshold_; // 近距离分类阈值
   double classificationIntervalSec_; // 首次分类后，基于时间的重新分类间隔（秒）
   std::vector<ros::Time> lastClassifyTime_; // 每个轨迹上一次分类的时间戳
 
