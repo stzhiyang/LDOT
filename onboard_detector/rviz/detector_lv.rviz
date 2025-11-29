@@ -97,7 +97,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.019999999552965164
       Style: Flat Squares
-      Topic: /onboard_detector/raw_lidar_point_cloud
+      Topic: /onboard_detector/downsampled_point_cloud
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -155,18 +155,18 @@ Visualization Manager:
       Queue Size: 100
       Value: false
     - Class: rviz/MarkerArray
-      Enabled: false
+      Enabled: true
       Marker Topic: /onboard_detector/history_trajectories
       Name: Historic Trajectory
       Namespaces:
-        {}
+        dynamic_detector: true
       Queue Size: 100
-      Value: false
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 1.133849024772644
-        Min Value: 0.1042240634560585
+        Max Value: 1.2686712741851807
+        Min Value: 0.11409828811883926
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -238,7 +238,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 22.40121841430664
+      Distance: 28.100088119506836
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1

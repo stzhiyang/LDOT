@@ -5,6 +5,7 @@ project(onboard_detector)
 # add_compile_options(-std=c++11)
 # 设置了C++编译标志，使用C++14标准，并启用了优化(-O3)和所有常见警告(-Wall)。
 set(CMAKE_CXX_FLAGS "-std=c++14 ${CMAKE_CXX_FLAGS} -O3 -Wall")
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 
 ## Find catkin macros and libraries

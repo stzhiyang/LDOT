@@ -15,7 +15,7 @@ body_to_lidar:  [1.0,  0.0,  0.0, -0.005,
                 0.0,  0.0,  0.0,  1.0]
 
 # 系统参数
-time_step: 0.033 # 系统运行的时间步长 (秒), 约等于 30Hz，点云频率
+time_step: 0.1 # 系统运行的时间步长 (秒), 约等于 30Hz，点云频率
 
 # 点云过滤参数
 ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
@@ -61,6 +61,7 @@ dynamic_consistency_threshold: 5 # 最近连续k帧被投票为动态候选，�
 frame_skip: 5 # 动态计算时间间隔
 dynamic_velocity_threshold: 0.1 # 判断为动态障碍物的速度阈值 (米/秒)
 dynamic_voting_threshold: 0.8 # 动态性投票的阈值, 超过该比例则认为可能是动态
+box_size_change_threshold: 0.2 # 尺寸变化阈值，超过该比例认为尺寸不稳定，不进行动态判断
 
 # 卡尔曼滤波器参数
 kalman_filter:

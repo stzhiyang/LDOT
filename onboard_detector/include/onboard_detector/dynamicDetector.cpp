@@ -544,6 +544,12 @@ void dynamicDetector::initParam() {
     ROS_WARN_STREAM(this->hint_ << " No classify_close_range_threshold param. "
                                    "Use default: 3.0");
   }
+  if (not this->nh_.getParam(this->ns_ + "/box_size_change_threshold",
+                             this->boxSizeChangeThresh_)) {
+    this->boxSizeChangeThresh_ = 0.2;
+    ROS_WARN_STREAM(this->hint_ << " No box_size_change_threshold param. "
+                                   "Use default: 0.2");
+  }
 
   // -----------------------------------------卡尔曼滤波器参数--------------------------------------------------------------
   if (not this->nh_.getParam(this->ns_ + "/kalman_filter/adaptive_window_size",
@@ -1388,6 +1394,37 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
       Vkf(1) = this->boxHist_[i][0].Vy;
     }
 
+    // 检查尺寸稳定性（解决遮挡导致的误判问题）
+    // 如果物体之前是静态的，且尺寸发生剧烈变化，则认为Vbox（质心速度）不可靠，不应使用velSim过滤点
+    bool isSizeStable = true;
+    if (this->boxHist_[i].size() > 1) {
+      // 检查上一帧是否为静态
+      bool wasStatic = !this->boxHist_[i][1].is_dynamic;
+      if (wasStatic) {
+        double curr_x = this->boxHist_[i][0].x_width;
+        double curr_y = this->boxHist_[i][0].y_width;
+        double curr_z = this->boxHist_[i][0].z_width;
+
+        double prev_x = this->boxHist_[i][curFrameGap].x_width;
+        double prev_y = this->boxHist_[i][curFrameGap].y_width;
+        double prev_z = this->boxHist_[i][curFrameGap].z_width;
+
+        double size_diff_x =
+            std::abs(curr_x - prev_x) / std::max({curr_x, prev_x, 1e-3});
+        double size_diff_y =
+            std::abs(curr_y - prev_y) / std::max({curr_y, prev_y, 1e-3});
+        double size_diff_z =
+            std::abs(curr_z - prev_z) / std::max({curr_z, prev_z, 1e-3});
+
+        // 如果任一维度变化超过20%，认为尺寸不稳定
+        if (size_diff_x > this->boxSizeChangeThresh_ ||
+            size_diff_y > this->boxSizeChangeThresh_ ||
+            size_diff_z > this->boxSizeChangeThresh_) {
+          isSizeStable = false;
+        }
+      }
+    }
+
     // 遍历当前点云中的每一个点，通过与历史点云比较来“投票”
     for (size_t j = 0; j < currPc.size(); ++j) {
       double minDist = 2; // 初始化一个较大的最小距离
@@ -1406,8 +1443,9 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
       // 计算点的速度向量与边界框整体速度向量的余弦相似度
       double velSim = Vcur.dot(Vbox) / (Vcur.norm() * Vbox.norm());
 
-      // 如果速度方向相反，则认为该点是噪声或匹配错误，不计入总点数
-      if (velSim < 0) {
+      // 如果速度方向相反，且尺寸稳定，则认为该点是噪声或匹配错误，不计入总点数
+      // 如果尺寸不稳定（可能因遮挡导致质心偏移），则不进行此过滤，保留所有点作为分母
+      if (isSizeStable && velSim < 0) {
         --numPoints;
       } else {
         // 如果点的速度超过动态阈值，则投一票“动态”
@@ -2379,7 +2417,52 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
 
         // 根据模型类型提取预测状态
         // 注意：这里我们使用历史轨迹的分类信息
-        if (predBBox.is_human) {
+        if (!predBBox.is_dynamic) {
+          // 静态物体 Coasting：强制静止
+          // 位置保持上一帧的值 (predBBox.x/y/z 已经从
+          // boxHistTemp.back().front() 复制)
+          predBBox.Vx = 0.0;
+          predBBox.Vy = 0.0;
+          predBBox.Vz = 0.0;
+          predBBox.Ax = 0.0;
+          predBBox.Ay = 0.0;
+          predBBox.Az = 0.0;
+
+          // 重置 KF 状态以防止内部漂移
+          Eigen::VectorXd staticState = state; // 复制一份，保留维度
+          int dim = state.size();
+
+          // 位置重置为上一帧位置
+          staticState(0) = predBBox.x;
+          staticState(1) = predBBox.y;
+          staticState(2) = predBBox.z;
+
+          // 速度和加速度重置为 0
+          if (dim == 6) { // 3D CV [x, y, z, vx, vy, vz]
+            staticState(3) = 0;
+            staticState(4) = 0;
+            staticState(5) = 0;
+          } else if (dim == 7) { // Human CA or Vehicle CTRA
+            if (predBBox.is_che) {
+              // CTRA: [x, y, z, v, a, yaw, yaw_rate]
+              staticState(3) = 0; // v
+              staticState(4) = 0; // a
+              staticState(6) = 0; // yaw_rate
+              // yaw (index 5) 保持不变
+            } else {
+              // Human: [x, y, z, vx, vy, ax, ay]
+              staticState(3) = 0;
+              staticState(4) = 0; // vx, vy
+              staticState(5) = 0;
+              staticState(6) = 0; // ax, ay
+            }
+          } else if (dim == 9) { // 3D CA
+            for (int k = 3; k < 9; ++k)
+              staticState(k) = 0;
+          }
+
+          filtersTemp.back()->initialize(staticState);
+        } else if (predBBox.is_human) {
           predBBox.x = state(0);
           predBBox.y = state(1);
           predBBox.z = state(2);

@@ -148,6 +148,7 @@ private:
   int forceDynaFrames_;      // 在历史中被判定为动态的帧数，超过则强制认为是动态
   int forceDynaCheckRange_;  // 检查强制动态的历史范围
   int dynamicConsistThresh_; // 动态一致性检查的帧数阈值
+  double boxSizeChangeThresh_; // 尺寸变化阈值
 
   // 尺寸约束参数
   Eigen::Vector3d maxObjectSize_; // 物体的最大尺寸阈值
