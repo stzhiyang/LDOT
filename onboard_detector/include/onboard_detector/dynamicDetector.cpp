@@ -261,6 +261,49 @@ void dynamicDetector::initParam() {
          << this->voxelTargetPointCount_ << endl;
   }
 
+  // -------------------------------------------静态点滤波器参数--------------------------------------------------
+  if (not this->nh_.getParam(this->ns_ + "/static_filter_enabled",
+                             this->staticFilterEnabled_)) {
+    this->staticFilterEnabled_ = false;
+  }
+  if (not this->nh_.getParam(this->ns_ + "/static_filter_voxel_size",
+                             this->staticFilterVoxelSize_)) {
+    this->staticFilterVoxelSize_ = 0.1;
+  }
+  if (not this->nh_.getParam(this->ns_ + "/static_filter_hit_threshold",
+                             this->staticFilterHitThreshold_)) {
+    this->staticFilterHitThreshold_ = 5;
+  }
+  if (not this->nh_.getParam(this->ns_ + "/static_filter_time_threshold",
+                             this->staticFilterTimeThreshold_)) {
+    this->staticFilterTimeThreshold_ = 5.0;
+  }
+  if (not this->nh_.getParam(this->ns_ + "/static_cluster_filter_enabled",
+                             this->staticClusterFilterEnabled_)) {
+    this->staticClusterFilterEnabled_ = true;
+  }
+  if (not this->nh_.getParam(this->ns_ + "/static_cluster_filter_ratio",
+                             this->staticClusterFilterRatio_)) {
+    this->staticClusterFilterRatio_ = 0.7;
+  }
+
+  // 初始化静态点滤波器
+  this->staticFilter_.reset(new StaticPointFilter());
+  this->staticFilter_->setParams(
+      this->staticFilterEnabled_, this->staticFilterVoxelSize_,
+      this->staticFilterHitThreshold_, this->staticFilterTimeThreshold_);
+  if (this->staticFilterEnabled_ || this->staticClusterFilterEnabled_) {
+    ROS_INFO_STREAM(this->hint_
+                    << " Static Point Filter initialized (voxel: "
+                    << this->staticFilterVoxelSize_
+                    << "m, hits: " << this->staticFilterHitThreshold_
+                    << ", time: " << this->staticFilterTimeThreshold_ << "s)");
+    if (this->staticClusterFilterEnabled_) {
+      ROS_INFO_STREAM(this->hint_ << " Static Cluster Filter ENABLED (ratio: "
+                                  << this->staticClusterFilterRatio_ << ")");
+    }
+  }
+
   // -------------------------------------------目标跟踪与数据关联参数--------------------------------------------------
   // 读取关联置信度（默认 0.99）
   if (not this->nh_.getParam(this->ns_ + "/association_gate_confidence",
@@ -1492,6 +1535,12 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
   // 直接更新最终的动态障碍物列表（已移除尺寸过滤）
   this->dynamicBBoxes_ = dynamicBBoxesTemp;
 
+  // 【动态反哺机制】清理已确认动态物体历史轨迹区域的体素
+  // 防止动态物体暂停后其区域被标记为静态背景
+  if (this->staticClusterFilterEnabled_ && !dynamicBBoxesTemp.empty()) {
+    this->staticFilter_->clearDynamicRegions(dynamicBBoxesTemp);
+  }
+
   hasNewTracking_ = false; // 标记跟踪结果已处理
 
   // [Performance Timing] 输出耗时
@@ -1756,18 +1805,50 @@ void dynamicDetector::lidarDetect() {
     return;
   }
 
+  // 1. 始终更新静态地图
+  // 使用当前ROS时间
+  double currentTime = ros::Time::now().toSec();
+  this->staticFilter_->updateMap(this->lidarCloud_, currentTime);
+
+  // 2. 执行静态点过滤 (点级，可选)
+  if (this->staticFilterEnabled_) {
+    // 收集上一帧的动态物体边界框作为保护区域
+    std::vector<onboardDetector::box3D> protectedBoxes;
+    {
+      std::lock_guard<std::mutex> lock(this->bboxMutex_);
+      for (const auto &track : this->boxHist_) {
+        if (!track.empty()) {
+          const auto &latestBox = track[0];
+          if (latestBox.is_dynamic) {
+            protectedBoxes.push_back(latestBox);
+          }
+        }
+      }
+    }
+
+    size_t pointsBefore = this->lidarCloud_->size();
+    this->staticFilter_->filterPoints(this->lidarCloud_, protectedBoxes);
+    size_t pointsAfter = this->lidarCloud_->size();
+
+    // 可选：输出过滤统计信息
+    ROS_INFO_THROTTLE(1.0,
+                      "%s: Static Point Filter: %lu -> %lu points removed "
+                      "(Protected: %lu boxes)",
+                      this->hint_.c_str(), pointsBefore,
+                      pointsBefore - pointsAfter, protectedBoxes.size());
+  }
+
   // 执行检测（检测器已在initParam中初始化）
   // 将点云数据传递给检测器并执行DBSCAN聚类
   this->lidarDetector_->getPointcloud(this->lidarCloud_);
   this->lidarDetector_->lidarDBSCAN();
 
-  // 获取聚类结果和对应的边界框
   std::vector<onboardDetector::Cluster> lidarClustersRaw =
       this->lidarDetector_->getClusters();
-  std::vector<onboardDetector::Cluster> lidarClustersFiltered;
   std::vector<onboardDetector::box3D> lidarBBoxesRaw =
       this->lidarDetector_->getBBoxes();
   std::vector<onboardDetector::box3D> lidarBBoxesFiltered;
+  std::vector<onboardDetector::Cluster> lidarClustersFiltered;
 
   // 遍历所有边界框，过滤掉尺寸过大的对象并进行分类
   // int filteredCount = 0;
@@ -1791,6 +1872,21 @@ void dynamicDetector::lidarDetect() {
 
     lidarBBoxesFiltered.push_back(lidarBBox);
     lidarClustersFiltered.push_back(lidarClustersRaw[i]);
+  }
+
+  // 3. 执行静态聚类过滤 (聚类级) - 移至尺寸过滤之后以减少计算量
+  if (this->staticClusterFilterEnabled_) {
+    size_t clustersBefore = lidarClustersFiltered.size();
+    this->staticFilter_->filterClusters(lidarClustersFiltered,
+                                        lidarBBoxesFiltered,
+                                        this->staticClusterFilterRatio_);
+    size_t clustersAfter = lidarClustersFiltered.size();
+
+    if (clustersBefore != clustersAfter) {
+      ROS_INFO_THROTTLE(1.0,
+                        "%s: Static Cluster Filter: %lu -> %lu clusters kept",
+                        this->hint_.c_str(), clustersBefore, clustersAfter);
+    }
   }
 
   // if (filteredCount > 0) {
@@ -1974,22 +2070,22 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     this->hungarianAlgorithm(costMatrix, bestMatch);
 
     // 统计并输出关联结果
-    // int numMatched = 0;
-    // int numNewTargets = 0;
-    // for (int i = 0; i < numCurrObjs; ++i) {
-    //   if (bestMatch[i] >= 0) {
-    //     numMatched++;
-    //   } else {
-    //     numNewTargets++;
-    //   }
-    // }
-    // int numLostTargets = numHistObjs - numMatched;
+    int numMatched = 0;
+    int numNewTargets = 0;
+    for (int i = 0; i < numCurrObjs; ++i) {
+      if (bestMatch[i] >= 0) {
+        numMatched++;
+      } else {
+        numNewTargets++;
+      }
+    }
+    int numLostTargets = numHistObjs - numMatched;
 
-    // // 简洁的日志输出
-    // ROS_INFO_THROTTLE(
-    //     0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
-    //     this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
-    //     numNewTargets, numLostTargets);
+    // 简洁的日志输出
+    ROS_INFO_THROTTLE(
+        0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
+        this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
+        numNewTargets, numLostTargets);
   }
 
   this->newDetectFlag_ = false;
@@ -2752,7 +2848,7 @@ void dynamicDetector::publishHistoryTraj() {
   for (size_t i = 0; i < this->boxHist_.size(); ++i) {
     // std::cout << "this->boxHist_[i].size() = "  << this->boxHist_[i].size()
     // << std::endl;
-    if (this->boxHist_[i].size() > 1) {
+    if (this->boxHist_[i].size() > 5) {
       visualization_msgs::Marker traj;
       traj.header.frame_id = "map";
       traj.header.stamp = ros::Time::now();

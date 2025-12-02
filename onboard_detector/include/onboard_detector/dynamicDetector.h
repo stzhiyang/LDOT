@@ -22,6 +22,7 @@
 #include <onboard_detector/dbscan.h>
 #include <onboard_detector/lidarDetector.h>
 #include <onboard_detector/multiModelKalmanFilter.h>
+#include <onboard_detector/staticPointFilter.h>
 #include <onboard_detector/utils.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/filters/voxel_grid.h>
@@ -100,6 +101,8 @@ private:
   // 检测器实例
   std::shared_ptr<onboardDetector::lidarDetector>
       lidarDetector_; // 激光雷达检测器
+  std::shared_ptr<onboardDetector::StaticPointFilter>
+      staticFilter_; // 静态点滤波器
 
   // 激光雷达参数
   Eigen::Matrix4d body2Lidar_; // 机体坐标系到激光雷达坐标系的变换矩阵
@@ -129,6 +132,16 @@ private:
   bool enableVoxelDownsampling_; // 是否启用Voxel Grid自适应下采样
   float voxelBaseLeafSize_;      // 基础体素大小（米）
   int voxelTargetPointCount_;    // 目标点云数量
+
+  // 静态点滤波器参数
+  bool staticFilterEnabled_;
+  float staticFilterVoxelSize_;
+  int staticFilterHitThreshold_;
+  double staticFilterTimeThreshold_;
+
+  // 静态聚类滤波器参数
+  bool staticClusterFilterEnabled_;
+  float staticClusterFilterRatio_;
 
   // 目标跟踪与数据关联参数
   double associationGateConfidence_;   // 数据关联的置信度 (0~1)

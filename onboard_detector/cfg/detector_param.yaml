@@ -22,16 +22,24 @@ ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.8   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
 
 # 点云数量控制 - 自适应Voxel Grid下采样
-enable_voxel_downsampling: true  # 是否启用Voxel Grid自适应下采样
+enable_voxel_downsampling: false  # 是否启用Voxel Grid自适应下采样
 voxel_base_leaf_size: 0.05       # 基础体素大小 (米), 初始下采样精度
 voxel_target_point_count: 3000  # 目标点云数量, 超过此数量会自适应增大体素尺寸
+
+# 静态点与静态簇去除滤波器参数
+static_filter_enabled: false      # 是否启用静态点去除
+static_cluster_filter_enabled: true # 是否启用静态聚类去除
+static_filter_voxel_size: 0.2    # 静态滤波器体素大小 (米)
+static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
+static_filter_time_threshold: 5.0 # 静态点在地图中保留的时间阈值 (秒)
+static_cluster_filter_ratio: 0.7    # 判定为静态聚类的静态点比例阈值
 
 # DBSCAN 激光雷达聚类参数
 lidar_detection_range: [10.0, 10.0, 3.0]  # 激光雷达最大检测范围 [x, y, z] (米)
 lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数
-lidar_DBSCAN_epsilon: 0.03    # 激光雷达DBSCAN邻域搜索半径 (米)
+lidar_DBSCAN_epsilon: 0.2    # 激光雷达DBSCAN邻域搜索半径 (米)
 lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (true: 启用, false: 使用固定epsilon)
-lidar_DBSCAN_distance_scale: 0.05  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
+lidar_DBSCAN_distance_scale: 0.02  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
 # 尺寸约束
 max_object_size: [5.0, 5.0, 2.5] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
 
@@ -49,19 +57,19 @@ association_gate_confidence: 0.99  # 关联置信度，用于根据卡方分布�
 association_pos_cost_weight: 0.6    # 位置代价权重（马氏距离），考虑不确定性
 association_iou_cost_weight: 0.8    # 3D IoU代价权重，反映空间重叠度，月小月宽松
 history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
-max_missed_frames: 3 # 最大丢失帧数，超过该帧数未匹配则丢弃轨迹（减少幽灵轨迹）
+max_missed_frames: 1 # 最大丢失帧数，超过该帧数未匹配则丢弃轨迹（减少幽灵轨迹）
 duplicate_track_iou_threshold: 0.7 # 重复轨迹检测的IoU阈值，超过此值认为两条轨迹重叠
 
 # 动态/静态分类
 # 动态条件一，最近的check_range帧范围内有K帧被投票为动态候选，才被最终分类为动态
-frames_force_dynamic_check_range: 15 # 强制判断为动态障碍物前，历史轨迹的最小长度
-frames_force_dynamic: 10 # 满足前面的条件下，连续k帧被投票为动态候选的障碍物则强制为动态
+frames_force_dynamic_check_range: 10 # 强制判断为动态障碍物前，历史轨迹的最小长度
+frames_force_dynamic: 6 # 满足前面的条件下，连续k帧被投票为动态候选的障碍物则强制为动态
 # 动态条件二
-dynamic_consistency_threshold: 5 # 最近连续k帧被投票为动态候选，才被最终分类为动态
-frame_skip: 5 # 动态计算时间间隔
+dynamic_consistency_threshold: 3 # 最近连续k帧被投票为动态候选，才被最终分类为动态
+frame_skip: 3 # 动态计算时间间隔
 dynamic_velocity_threshold: 0.1 # 判断为动态障碍物的速度阈值 (米/秒)
 dynamic_voting_threshold: 0.8 # 动态性投票的阈值, 超过该比例则认为可能是动态
-box_size_change_threshold: 0.2 # 尺寸变化阈值，超过该比例认为尺寸不稳定，不进行动态判断
+box_size_change_threshold: 0.3 # 尺寸变化阈值，超过该比例认为尺寸不稳定，不进行动态判断
 
 # 卡尔曼滤波器参数
 kalman_filter:

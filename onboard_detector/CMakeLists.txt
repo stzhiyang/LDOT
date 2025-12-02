@@ -150,6 +150,7 @@ add_library(${PROJECT_NAME}
    include/${PROJECT_NAME}/dbscan.cpp
    include/${PROJECT_NAME}/motionModel.cpp
    include/${PROJECT_NAME}/lidarDetector.cpp
+   include/${PROJECT_NAME}/staticPointFilter.cpp
 )
 
 ## Add cmake target dependencies of the library
