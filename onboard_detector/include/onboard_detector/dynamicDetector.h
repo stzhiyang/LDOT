@@ -163,7 +163,10 @@ private:
   int forceDynaFrames_;      // 在历史中被判定为动态的帧数，超过则强制认为是动态
   int forceDynaCheckRange_;  // 检查强制动态的历史范围
   int dynamicConsistThresh_; // 动态一致性检查的帧数阈值
-  double boxSizeChangeThresh_; // 尺寸变化阈值
+  double boxSizeChangeThresh_;   // 尺寸变化阈值
+  double sizeMergeThresh_;       // 尺寸合并阈值
+  double pointCountMergeThresh_; // 点数合并阈值
+  int sizeResetFrames_;          // 尺寸重置帧数
 
   // 尺寸约束参数
   Eigen::Vector3d maxObjectSize_; // 物体的最大尺寸阈值
@@ -226,6 +229,10 @@ private:
   std::vector<std::deque<Eigen::Vector3d>>
       pcStdHist_; // 每个被跟踪物体的点云标准差历史
   std::vector<Eigen::Vector3d> maxHistorySizes_; // 每个被跟踪物体的历史最大尺寸
+  std::vector<int>
+      smallSizeCounter_; // 计数器，记录当前尺寸小于历史最大尺寸的连续帧数
+  std::vector<Eigen::Vector3d>
+      maxHistoryPcClusterStds_; // 存储每个轨迹的历史最大PCA标准差
   std::vector<std::shared_ptr<KalmanFilterBase>>
       filters_; // 每个被跟踪物体对应的多模型卡尔曼滤波器
 

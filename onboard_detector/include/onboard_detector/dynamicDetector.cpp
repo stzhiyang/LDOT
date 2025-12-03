@@ -548,9 +548,15 @@ void dynamicDetector::initParam() {
   } else {
     this->classifyHumanZWidthRatio_ = classifyHumanThresh[0];
     this->classifyHumanCentroidZRatio_ = classifyHumanThresh[1];
+    if (classifyHumanThresh.size() > 2) {
+      this->classifyHumanPcaRatio_ = classifyHumanThresh[2];
+    } else {
+      this->classifyHumanPcaRatio_ = 1.6; // Default fallback
+    }
     ROS_INFO_STREAM(this->hint_ << " classify_human_threshold: ["
                                 << this->classifyHumanZWidthRatio_ << ", "
-                                << this->classifyHumanCentroidZRatio_ << "]");
+                                << this->classifyHumanCentroidZRatio_ << ", "
+                                << this->classifyHumanPcaRatio_ << "]");
   }
 
   // 车的分类阈值
@@ -565,9 +571,15 @@ void dynamicDetector::initParam() {
   } else {
     this->classifyVehicleXYWidthRatio_ = classifyVehicleThresh[0];
     this->classifyVehicleCentroidZRatio_ = classifyVehicleThresh[1];
+    if (classifyVehicleThresh.size() > 2) {
+      this->classifyVehiclePcaRatio_ = classifyVehicleThresh[2];
+    } else {
+      this->classifyVehiclePcaRatio_ = 1.2; // Default fallback
+    }
     ROS_INFO_STREAM(this->hint_ << " classify_vehicle_threshold: ["
                                 << this->classifyVehicleXYWidthRatio_ << ", "
-                                << this->classifyVehicleCentroidZRatio_ << "]");
+                                << this->classifyVehicleCentroidZRatio_ << ", "
+                                << this->classifyVehiclePcaRatio_ << "]");
   }
 
   // 无人机的分类阈值
@@ -597,18 +609,6 @@ void dynamicDetector::initParam() {
     ROS_WARN_STREAM(this->hint_
                     << " No classification_start_frame param. Use default: 10");
   }
-  if (not this->nh_.getParam(this->ns_ + "/classify_human_pca_ratio",
-                             this->classifyHumanPcaRatio_)) {
-    this->classifyHumanPcaRatio_ = 1.5;
-    ROS_WARN_STREAM(this->hint_
-                    << " No classify_human_pca_ratio param. Use default: 1.5");
-  }
-  if (not this->nh_.getParam(this->ns_ + "/classify_vehicle_pca_ratio",
-                             this->classifyVehiclePcaRatio_)) {
-    this->classifyVehiclePcaRatio_ = 1.5;
-    ROS_WARN_STREAM(this->hint_ << " No classify_vehicle_pca_ratio param. Use "
-                                   "default: 1.5");
-  }
   if (not this->nh_.getParam(this->ns_ + "/classify_close_range_threshold",
                              this->classifyCloseRangeThreshold_)) {
     this->classifyCloseRangeThreshold_ = 3.0;
@@ -620,6 +620,21 @@ void dynamicDetector::initParam() {
     this->boxSizeChangeThresh_ = 0.2;
     ROS_WARN_STREAM(this->hint_ << " No box_size_change_threshold param. "
                                    "Use default: 0.2");
+  }
+
+  // Classification Stability Parameters
+  if (not this->nh_.getParam(this->ns_ + "/classification_size_merge_threshold",
+                             this->sizeMergeThresh_)) {
+    this->sizeMergeThresh_ = 1.5;
+  }
+  if (not this->nh_.getParam(this->ns_ +
+                                 "/classification_point_count_merge_threshold",
+                             this->pointCountMergeThresh_)) {
+    this->pointCountMergeThresh_ = 1.5;
+  }
+  if (not this->nh_.getParam(this->ns_ + "/classification_size_reset_frames",
+                             this->sizeResetFrames_)) {
+    this->sizeResetFrames_ = 30;
   }
 
   // -----------------------------------------卡尔曼滤波器参数--------------------------------------------------------------
@@ -976,15 +991,21 @@ void dynamicDetector::lidarCustomPoseCB(
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
       end_time - start_time);
-  ROS_INFO_THROTTLE(1.0, "%s: lidarCustomPoseCB took %.3f ms",
-                    this->hint_.c_str(), duration.count() / 1000.0);
+
+  size_t input_points = cloudMsg.width * cloudMsg.height;
+  size_t output_points = (this->lidarCloud_) ? this->lidarCloud_->size() : 0;
+
+  ROS_INFO_THROTTLE(1.0,
+                    "%s: lidarCustomPoseCB took %.3f ms, points: %lu -> %lu",
+                    this->hint_.c_str(), duration.count() / 1000.0,
+                    input_points, output_points);
 }
 
 // Livox CustomMsg + Odometry 回调函数
 void dynamicDetector::lidarCustomOdomCB(
     const livox_ros_driver2::CustomMsgConstPtr &customMsg,
     const nav_msgs::OdometryConstPtr &odom) {
-  // // [Performance Timing] 测量回调函数耗时
+  // [Performance Timing] 测量回调函数耗时
   // auto start_time = std::chrono::high_resolution_clock::now();
 
   // 将CustomMsg转换为PointCloud2
@@ -996,12 +1017,18 @@ void dynamicDetector::lidarCustomOdomCB(
       boost::make_shared<sensor_msgs::PointCloud2>(cloudMsg);
   this->lidarOdomCB(cloudMsgPtr, odom);
 
-  // // [Performance Timing] 输出耗时
+  // [Performance Timing] 输出耗时
   // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration =
-  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-  // start_time); ROS_INFO_THROTTLE(1.0, "%s: lidarCustomOdomCB took %.3f ms",
-  // this->hint_.c_str(), duration.count() / 1000.0);
+  // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+  //     end_time - start_time);
+
+  // size_t input_points = cloudMsg.width * cloudMsg.height;
+  // size_t output_points = (this->lidarCloud_) ? this->lidarCloud_->size() : 0;
+
+  // ROS_INFO_THROTTLE(1.0,
+  //                   "%s: lidarCustomOdomCB took %.3f ms, points: %lu -> %lu",
+  //                   this->hint_.c_str(), duration.count() / 1000.0,
+  //                   input_points, output_points);
 }
 
 // 转换点云格式，滤波一定范围内的点
@@ -1272,11 +1299,11 @@ void dynamicDetector::lidarOdomCB(
     finalCloud = currentCloud;
 
     // 输出下采样信息（用于调试和性能监控）
-    ROS_INFO_THROTTLE(
-        2.0,
-        "%s: Voxel downsampling: %lu -> %lu points (iters=%d, leafSize=%.3fm)",
-        this->hint_.c_str(), groundRoofFilterCloud->size(), finalCloud->size(),
-        iteration, adaptiveLeafSize);
+    // ROS_INFO_THROTTLE(
+    //     2.0,
+    //     "%s: Voxel downsampling: %lu -> %lu points (iters=%d,
+    //     leafSize=%.3fm)", this->hint_.c_str(), groundRoofFilterCloud->size(),
+    //     finalCloud->size(), iteration, adaptiveLeafSize);
   } else {
     // 不启用下采样或点数未超过阈值
     finalCloud = groundRoofFilterCloud;
@@ -1365,16 +1392,85 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
       if (bestMatch[i] >= 0) { // 匹配成功的旧轨迹
         int histIndex = bestMatch[i];
 
-        // 1.1 更新历史最大尺寸
+        // 1.1 稳健的历史尺寸和PCA特征更新
         double curr_x = this->filteredBBoxes_[i].x_width;
         double curr_y = this->filteredBBoxes_[i].y_width;
         double curr_z = this->filteredBBoxes_[i].z_width;
-        if (curr_x > this->maxHistorySizes_[histIndex].x())
-          this->maxHistorySizes_[histIndex].x() = curr_x;
-        if (curr_y > this->maxHistorySizes_[histIndex].y())
-          this->maxHistorySizes_[histIndex].y() = curr_y;
-        if (curr_z > this->maxHistorySizes_[histIndex].z())
-          this->maxHistorySizes_[histIndex].z() = curr_z;
+        Eigen::Vector3d currStd = this->filteredPcClusterStds_[i];
+
+        double max_x = this->maxHistorySizes_[histIndex].x();
+        double max_y = this->maxHistorySizes_[histIndex].y();
+        double max_z = this->maxHistorySizes_[histIndex].z();
+        Eigen::Vector3d maxStd = this->maxHistoryPcClusterStds_[histIndex];
+
+        // 检查合并 (尺寸突增且点数突增)
+        bool isMerge = false;
+        // 仅在有历史记录时检查
+        if (this->boxHist_[histIndex].size() > 1) {
+          double sizeRatioX = curr_x / std::max(max_x, 0.1);
+          double sizeRatioY = curr_y / std::max(max_y, 0.1);
+          double sizeRatioZ = curr_z / std::max(max_z, 0.1);
+          double maxRatio = std::max({sizeRatioX, sizeRatioY, sizeRatioZ});
+
+          // 检查点数增加
+          int currPoints = this->filteredPcClusters_[i].size();
+          int prevPoints = this->pcHist_[histIndex][0].size(); // 上一帧
+          double pointRatio =
+              (double)currPoints / std::max((double)prevPoints, 1.0);
+
+          if (maxRatio > this->sizeMergeThresh_ &&
+              pointRatio > this->pointCountMergeThresh_) {
+            isMerge = true;
+            // ROS_WARN_STREAM(this->hint_ << " Merge detected for object " <<
+            // histIndex
+            //                 << ". Size ratio: " << maxRatio << ", Point
+            //                 ratio: " << pointRatio
+            //                 << ". Skipping max size update.");
+          }
+        }
+
+        // 检查分离/重置 (尺寸持续小于最大值)
+        bool isReset = false;
+        // 检查当前尺寸是否显著小于最大值 (例如 < 80%)
+        if (curr_x < max_x * 0.8 && curr_y < max_y * 0.8 &&
+            curr_z < max_z * 0.8) {
+          this->smallSizeCounter_[histIndex]++;
+        } else {
+          this->smallSizeCounter_[histIndex] =
+              0; // 如果尺寸接近最大值，重置计数器
+        }
+
+        if (this->smallSizeCounter_[histIndex] > this->sizeResetFrames_) {
+          isReset = true;
+          // 将最大尺寸重置为当前尺寸
+          this->maxHistorySizes_[histIndex] =
+              Eigen::Vector3d(curr_x, curr_y, curr_z);
+          // 同步重置历史最大PCA特征
+          this->maxHistoryPcClusterStds_[histIndex] = currStd;
+          this->smallSizeCounter_[histIndex] = 0;
+          // ROS_INFO_STREAM(this->hint_ << " Size reset for object " <<
+          // histIndex
+          //                 << " after " << this->sizeResetFrames_ << " frames
+          //                 of small size.");
+        }
+
+        // 如果未合并且未重置，更新历史最大尺寸和最大PCA特征
+        if (!isMerge && !isReset) {
+          if (curr_x > this->maxHistorySizes_[histIndex].x())
+            this->maxHistorySizes_[histIndex].x() = curr_x;
+          if (curr_y > this->maxHistorySizes_[histIndex].y())
+            this->maxHistorySizes_[histIndex].y() = curr_y;
+          if (curr_z > this->maxHistorySizes_[histIndex].z())
+            this->maxHistorySizes_[histIndex].z() = curr_z;
+
+          // 更新历史最大PCA特征 (逐维度取最大值)
+          if (currStd.x() > this->maxHistoryPcClusterStds_[histIndex].x())
+            this->maxHistoryPcClusterStds_[histIndex].x() = currStd.x();
+          if (currStd.y() > this->maxHistoryPcClusterStds_[histIndex].y())
+            this->maxHistoryPcClusterStds_[histIndex].y() = currStd.y();
+          if (currStd.z() > this->maxHistoryPcClusterStds_[histIndex].z())
+            this->maxHistoryPcClusterStds_[histIndex].z() = currStd.z();
+        }
 
         // 1.2 检查是否需要进行分类
         // 首次分类：达到 classificationStartFrame_ 且从未分类过 (is_else 为
@@ -1409,8 +1505,9 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
               this->filteredPcClusterCenters_[i](2), 1.0;
 
           // 对当前检测框进行分类,结果写入filteredBBoxes_[i]
+          // 使用历史最大PCA特征
           this->classifyBox(this->filteredBBoxes_[i], centroid,
-                            this->filteredPcClusterStds_[i],
+                            this->maxHistoryPcClusterStds_[histIndex],
                             this->maxHistorySizes_[histIndex]);
 
           // 立即切换卡尔曼滤波模型(在更新之前)
@@ -1441,6 +1538,8 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
     this->pcCenterHist_.clear();
     this->pcStdHist_.clear();
     this->maxHistorySizes_.clear();
+    this->smallSizeCounter_.clear();
+    this->maxHistoryPcClusterStds_.clear();
     // this->filters_.clear(); // 同时清空滤波器
   }
 
@@ -1976,16 +2075,16 @@ void dynamicDetector::lidarDetect() {
       }
     }
 
-    size_t pointsBefore = this->lidarCloud_->size();
+    // size_t pointsBefore = this->lidarCloud_->size();
     this->staticFilter_->filterPoints(this->lidarCloud_, protectedBoxes);
-    size_t pointsAfter = this->lidarCloud_->size();
+    // size_t pointsAfter = this->lidarCloud_->size();
 
     // 可选：输出过滤统计信息
-    ROS_INFO_THROTTLE(1.0,
-                      "%s: Static Point Filter: %lu -> %lu points removed "
-                      "(Protected: %lu boxes)",
-                      this->hint_.c_str(), pointsBefore,
-                      pointsBefore - pointsAfter, protectedBoxes.size());
+    // ROS_INFO_THROTTLE(1.0,
+    //                   "%s: Static Point Filter: %lu -> %lu points removed "
+    //                   "(Protected: %lu boxes)",
+    //                   this->hint_.c_str(), pointsBefore,
+    //                   pointsBefore - pointsAfter, protectedBoxes.size());
   }
 
   // 执行检测（检测器已在initParam中初始化）
@@ -2040,20 +2139,21 @@ void dynamicDetector::lidarDetect() {
       }
     }
 
-    size_t clustersBefore = lidarClustersFiltered.size();
+    // size_t clustersBefore = lidarClustersFiltered.size();
     this->staticFilter_->filterClusters(lidarClustersFiltered,
                                         lidarBBoxesFiltered,
                                         this->staticClusterFilterRatio_,
                                         protectedBoxes); // 传入保护区域
-    size_t clustersAfter = lidarClustersFiltered.size();
+    // size_t clustersAfter = lidarClustersFiltered.size();
 
-    if (clustersBefore != clustersAfter) {
-      ROS_INFO_THROTTLE(1.0,
-                        "%s: Static Cluster Filter: %lu -> %lu clusters kept "
-                        "(Protected: %lu)",
-                        this->hint_.c_str(), clustersBefore, clustersAfter,
-                        protectedBoxes.size());
-    }
+    // if (clustersBefore != clustersAfter) {
+    //   ROS_INFO_THROTTLE(1.0,
+    //                     "%s: Static Cluster Filter: %lu -> %lu clusters kept
+    //                     "
+    //                     "(Protected: %lu)",
+    //                     this->hint_.c_str(), clustersBefore, clustersAfter,
+    //                     protectedBoxes.size());
+    // }
   }
 
   // if (filteredCount > 0) {
@@ -2126,18 +2226,26 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     this->pcCenterHist_.resize(numCurrObjs);
     this->pcStdHist_.resize(numCurrObjs);
     this->maxHistorySizes_.resize(numCurrObjs);
+    this->smallSizeCounter_.resize(numCurrObjs, 0);
+    this->maxHistoryPcClusterStds_.resize(numCurrObjs);
     bestMatch.resize(numCurrObjs, -1);
 
     for (int i = 0; i < numCurrObjs; ++i) {
       this->boxHist_[i].push_back(this->filteredBBoxes_[i]);
       this->pcHist_[i].push_back(this->filteredPcClusters_[i]);
       this->pcCenterHist_[i].push_back(this->filteredPcClusterCenters_[i]);
-      this->pcStdHist_[i].push_back(this->filteredPcClusterStds_[i]);
+      this->pcStdHist_.push_back(std::deque<Eigen::Vector3d>());
+      this->pcStdHist_.back().push_back(this->filteredPcClusterStds_[i]);
 
       // 初始化历史最大尺寸
-      this->maxHistorySizes_[i] = Eigen::Vector3d(
+      this->maxHistorySizes_.push_back(Eigen::Vector3d(
           this->filteredBBoxes_[i].x_width, this->filteredBBoxes_[i].y_width,
-          this->filteredBBoxes_[i].z_width);
+          this->filteredBBoxes_[i].z_width));
+
+      // 初始化历史最大PCA特征
+      // 同步新增向量
+      this->maxHistoryPcClusterStds_.push_back(this->filteredPcClusterStds_[i]);
+      this->smallSizeCounter_.push_back(0);
 
       // 强制所有目标使用 3D CV 模型
       auto &bbox = this->filteredBBoxes_[i];
@@ -2236,23 +2344,23 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     // 使用匈牙利算法求解最优匹配
     this->hungarianAlgorithm(costMatrix, bestMatch);
 
-    // 统计并输出关联结果
-    int numMatched = 0;
-    int numNewTargets = 0;
-    for (int i = 0; i < numCurrObjs; ++i) {
-      if (bestMatch[i] >= 0) {
-        numMatched++;
-      } else {
-        numNewTargets++;
-      }
-    }
-    int numLostTargets = numHistObjs - numMatched;
+    // // 统计并输出关联结果
+    // int numMatched = 0;
+    // int numNewTargets = 0;
+    // for (int i = 0; i < numCurrObjs; ++i) {
+    //   if (bestMatch[i] >= 0) {
+    //     numMatched++;
+    //   } else {
+    //     numNewTargets++;
+    //   }
+    // }
+    // int numLostTargets = numHistObjs - numMatched;
 
-    // 简洁的日志输出
-    ROS_INFO_THROTTLE(
-        0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
-        this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
-        numNewTargets, numLostTargets);
+    // // 简洁的日志输出
+    // ROS_INFO_THROTTLE(
+    //     0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
+    //     this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
+    //     numNewTargets, numLostTargets);
   }
 
   this->newDetectFlag_ = false;
@@ -2875,6 +2983,11 @@ void dynamicDetector::removeDuplicateTracks() {
       this->pcCenterHist_.erase(this->pcCenterHist_.begin() + i);
       this->pcStdHist_.erase(this->pcStdHist_.begin() + i);
       this->maxHistorySizes_.erase(this->maxHistorySizes_.begin() + i);
+      // 同步删除向量
+      this->maxHistoryPcClusterStds_.erase(
+          this->maxHistoryPcClusterStds_.begin() + i);
+      this->smallSizeCounter_.erase(this->smallSizeCounter_.begin() + i);
+
       this->filters_.erase(this->filters_.begin() + i);
       this->trackedBBoxes_.erase(this->trackedBBoxes_.begin() + i);
       this->trackMissedFrames_.erase(this->trackMissedFrames_.begin() + i);
