@@ -37,8 +37,6 @@ long long StaticPointFilter::getVoxelKey(const pcl::PointXYZ &point) {
   // 这个就是哈希函数，给每一个小方块一个独一无二的 ID，方便快速查找
   return (long long)(x_idx * p1) ^ (long long)(y_idx * p2) ^
          (long long)(z_idx * p3);
-
-  
 }
 
 bool StaticPointFilter::isPointInBox(const pcl::PointXYZ &pt,
@@ -71,7 +69,7 @@ bool StaticPointFilter::isPointInBox(const pcl::PointXYZ &pt,
   return false;
 }
 
-//判断体素格子的命中次数，如果大于阈值为静态，返回true
+// 判断体素格子的命中次数，如果大于阈值为静态，返回true
 bool StaticPointFilter::isPointStatic(const pcl::PointXYZ &pt) {
   long long key = getVoxelKey(pt);
   if (voxel_map_.find(key) != voxel_map_.end()) {
@@ -90,7 +88,7 @@ void StaticPointFilter::updateMap(
     long long key = getVoxelKey(point);
 
     // 更新体素状态
-    VoxelStatus &status = voxel_map_[key]; //讲哈希值存入一维哈希表
+    VoxelStatus &status = voxel_map_[key]; // 讲哈希值存入一维哈希表
     status.last_seen_time = current_time;
 
     // 【关键优化】近距离体素累积抑制，防止动态物体被快速标记为静态
@@ -162,7 +160,8 @@ void StaticPointFilter::filterPoints(
 
 void StaticPointFilter::filterClusters(
     std::vector<onboardDetector::Cluster> &clusters,
-    std::vector<onboardDetector::box3D> &bboxes, float static_ratio_threshold) {
+    std::vector<onboardDetector::box3D> &bboxes, float static_ratio_threshold,
+    const std::vector<onboardDetector::box3D> &protected_boxes) {
   if (clusters.empty()) {
     return;
   }
@@ -186,6 +185,26 @@ void StaticPointFilter::filterClusters(
     }
 
     float ratio = (float)static_points / total_points;
+
+    // 【保护区域检查】如果簇在保护区域内，强制保留
+    bool is_protected = false;
+    for (const auto &protected_box : protected_boxes) {
+      // 检查簇中心是否在保护框内
+      if (isPointInBox(pcl::PointXYZ(bbox.x, bbox.y, bbox.z), protected_box)) {
+        is_protected = true;
+        break;
+      }
+    }
+
+    // 如果在保护区域内，直接保留，跳过后续的静态阈值判断
+    if (is_protected) {
+      if (write_idx != i) {
+        clusters[write_idx] = clusters[i];
+        bboxes[write_idx] = bboxes[i];
+      }
+      write_idx++;
+      continue;
+    }
 
     // 自适应阈值选择：根据簇的特征动态调整过滤阈值
     float adaptive_threshold = static_ratio_threshold;
@@ -211,14 +230,6 @@ void StaticPointFilter::filterClusters(
     if (max_dim > 2.0 && dist_to_sensor > 3.0) {
       // 只对远距离的大物体降低阈值
       adaptive_threshold = std::max(0.3f, adaptive_threshold - 0.15f);
-    }
-
-    // 策略3：如果bbox有速度信息且速度很小，且距离较远时才使用宽松阈值
-    // 近距离的低速物体（如人站立）不应被误判为静态
-    double velocity = std::sqrt(bbox.Vx * bbox.Vx + bbox.Vy * bbox.Vy);
-    if (velocity < 0.1 && dist_to_sensor > 3.0) {
-      // 只对远距离的低速物体降低阈值
-      adaptive_threshold = std::max(0.3f, adaptive_threshold - 0.1f);
     }
 
     // 如果静态点比例低于（自适应）阈值，则保留该聚类

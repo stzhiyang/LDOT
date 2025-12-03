@@ -42,9 +42,12 @@ public:
                         std::vector<onboardDetector::box3D>());
 
   // 聚类级过滤
-  void filterClusters(std::vector<onboardDetector::Cluster> &clusters,
-                      std::vector<onboardDetector::box3D> &bboxes,
-                      float static_ratio_threshold);
+  void
+  filterClusters(std::vector<onboardDetector::Cluster> &clusters,
+                 std::vector<onboardDetector::box3D> &bboxes,
+                 float static_ratio_threshold,
+                 const std::vector<onboardDetector::box3D> &protected_boxes =
+                     std::vector<onboardDetector::box3D>());
 
   // 清理动态物体历史轨迹区域的体素（动态反哺机制）
   void

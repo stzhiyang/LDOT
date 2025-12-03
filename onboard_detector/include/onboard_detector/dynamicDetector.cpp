@@ -384,6 +384,18 @@ void dynamicDetector::initParam() {
               << this->duplicateTrackIoUThreshold_ << std::endl;
   }
 
+  // box size smoothing alpha
+  if (not this->nh_.getParam(this->ns_ + "/box_size_smoothing_alpha",
+                             this->boxSizeSmoothingAlpha_)) {
+    this->boxSizeSmoothingAlpha_ = 0.3;
+    std::cout << this->hint_
+              << ": No box_size_smoothing_alpha param. Use default: 0.3"
+              << std::endl;
+  } else {
+    std::cout << this->hint_ << ": Box size smoothing alpha is set to: "
+              << this->boxSizeSmoothingAlpha_ << std::endl;
+  }
+
   if (not this->nh_.getParam(this->ns_ + "/classification_interval_sec",
                              this->classificationIntervalSec_)) {
     this->classificationIntervalSec_ = 3.0; // 设置默认值，比如1秒
@@ -421,6 +433,22 @@ void dynamicDetector::initParam() {
     std::cout << this->hint_
               << ": Velocity threshold for dynamic classification is set to: "
               << this->dynaVelThresh_ << std::endl;
+  }
+
+  // angular velocity threshold for dynamic classification (in-place rotation
+  // detection)
+  if (not this->nh_.getParam(this->ns_ + "/dynamic_angular_velocity_threshold",
+                             this->dynaAngularVelThresh_)) {
+    this->dynaAngularVelThresh_ = 0.3; // 默认0.3 rad/s (约17度/秒)
+    std::cout << this->hint_
+              << ": No dynamic angular velocity threshold parameter found. Use "
+                 "default: 0.3 rad/s."
+              << std::endl;
+  } else {
+    std::cout
+        << this->hint_
+        << ": Angular velocity threshold for dynamic classification is set to: "
+        << this->dynaAngularVelThresh_ << " rad/s" << std::endl;
   }
 
   // voting threshold for dynamic classification
@@ -1594,10 +1622,42 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
     // 获取卡尔曼滤波器估计的速度大小
     double velNorm = Vkf.norm();
 
-    // 综合两个条件进行判断:
-    // 1. 点云投票率是否足够高
-    // 2. 卡尔曼滤波器估计的速度是否足够快
-    if (voteRatio >= this->dynaVoteThresh_ && velNorm >= this->dynaVelThresh_) {
+    // 计算角速度（原地转弯检测）
+    double angular_velocity = 0.0;
+    if (this->boxHist_[i].size() > curFrameGap * 2) {
+      // 需要至少两个历史间隔来计算朝向变化
+      double x_curr = this->boxHist_[i][0].x;
+      double y_curr = this->boxHist_[i][0].y;
+      double x_prev = this->boxHist_[i][curFrameGap].x;
+      double y_prev = this->boxHist_[i][curFrameGap].y;
+      double x_prev2 = this->boxHist_[i][curFrameGap * 2].x;
+      double y_prev2 = this->boxHist_[i][curFrameGap * 2].y;
+
+      // 计算两个时刻的朝向（基于质心位移方向）
+      double yaw_curr = atan2(y_curr - y_prev, x_curr - x_prev);
+      double yaw_prev = atan2(y_prev - y_prev2, x_prev - x_prev2);
+
+      // 计算角速度，处理角度跳变
+      double yaw_diff = yaw_curr - yaw_prev;
+      // 归一化到 [-π, π]
+      while (yaw_diff > M_PI)
+        yaw_diff -= 2 * M_PI;
+      while (yaw_diff < -M_PI)
+        yaw_diff += 2 * M_PI;
+
+      angular_velocity = std::abs(yaw_diff) / (this->dt_ * curFrameGap);
+    }
+
+    // 综合三个条件进行判断:
+    // 1. 线速度判断：点云投票率是否足够高 && 卡尔曼滤波器估计的线速度是否足够快
+    // 2. 角速度判断：点云投票率是否足够高 && 角速度是否足够大（原地转弯）
+    //    注意：旋转物体的点云也会有速度变化，应该能获得足够的动态投票
+    bool is_linear_dynamic =
+        (voteRatio >= this->dynaVoteThresh_ && velNorm >= this->dynaVelThresh_);
+    bool is_angular_dynamic = (voteRatio >= this->dynaVoteThresh_ &&
+                               angular_velocity >= this->dynaAngularVelThresh_);
+
+    if (is_linear_dynamic || is_angular_dynamic) {
       // 如果满足条件，首先标记为“动态候选”
       this->boxHist_[i][0].is_dynamic_candidate = true;
 
@@ -1966,16 +2026,33 @@ void dynamicDetector::lidarDetect() {
 
   // 3. 执行静态聚类过滤 (聚类级) - 移至尺寸过滤之后以减少计算量
   if (this->staticClusterFilterEnabled_) {
+    // 收集上一帧的动态物体边界框作为保护区域
+    std::vector<onboardDetector::box3D> protectedBoxes;
+    {
+      std::lock_guard<std::mutex> lock(this->bboxMutex_);
+      for (const auto &track : this->boxHist_) {
+        if (!track.empty()) {
+          const auto &latestBox = track[0];
+          if (latestBox.is_dynamic) {
+            protectedBoxes.push_back(latestBox);
+          }
+        }
+      }
+    }
+
     size_t clustersBefore = lidarClustersFiltered.size();
     this->staticFilter_->filterClusters(lidarClustersFiltered,
                                         lidarBBoxesFiltered,
-                                        this->staticClusterFilterRatio_);
+                                        this->staticClusterFilterRatio_,
+                                        protectedBoxes); // 传入保护区域
     size_t clustersAfter = lidarClustersFiltered.size();
 
     if (clustersBefore != clustersAfter) {
       ROS_INFO_THROTTLE(1.0,
-                        "%s: Static Cluster Filter: %lu -> %lu clusters kept",
-                        this->hint_.c_str(), clustersBefore, clustersAfter);
+                        "%s: Static Cluster Filter: %lu -> %lu clusters kept "
+                        "(Protected: %lu)",
+                        this->hint_.c_str(), clustersBefore, clustersAfter,
+                        protectedBoxes.size());
     }
   }
 
@@ -2503,10 +2580,22 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
         newEstimatedBBox.Az = 0.0;
       }
 
-      // 边界框的尺寸直接使用当前测量值
-      newEstimatedBBox.x_width = currDetectedBBox.x_width;
-      newEstimatedBBox.y_width = currDetectedBBox.y_width;
-      newEstimatedBBox.z_width = currDetectedBBox.z_width;
+      // 边界框的尺寸平滑更新
+      // 使用指数平滑公式：smoothed = alpha * curr + (1 - alpha) * prev
+      // 注意：h_idx 是历史轨迹的索引，this->boxHist_[h_idx][0] 是上一帧的边界框
+      double prev_x_width = this->boxHist_[h_idx][0].x_width;
+      double prev_y_width = this->boxHist_[h_idx][0].y_width;
+      double prev_z_width = this->boxHist_[h_idx][0].z_width;
+
+      newEstimatedBBox.x_width =
+          this->boxSizeSmoothingAlpha_ * currDetectedBBox.x_width +
+          (1.0 - this->boxSizeSmoothingAlpha_) * prev_x_width;
+      newEstimatedBBox.y_width =
+          this->boxSizeSmoothingAlpha_ * currDetectedBBox.y_width +
+          (1.0 - this->boxSizeSmoothingAlpha_) * prev_y_width;
+      newEstimatedBBox.z_width =
+          this->boxSizeSmoothingAlpha_ * currDetectedBBox.z_width +
+          (1.0 - this->boxSizeSmoothingAlpha_) * prev_z_width;
 
       // 使用当前检测框中的最新分类结果
       newEstimatedBBox.is_dynamic = currDetectedBBox.is_dynamic;

@@ -153,11 +153,13 @@ private:
   int maxMissedFrames_;                // 最大丢失帧数
   std::vector<int> trackMissedFrames_; // 每个轨迹连续丢失的帧数
   double duplicateTrackIoUThreshold_;  // 重复轨迹检测的IoU阈值
+  double boxSizeSmoothingAlpha_;       // 包围框尺寸平滑系数
 
   // 动态/静态分类参数
-  int skipFrame_;            // 点云比较时跳过的帧数
-  double dynaVelThresh_;     // 判定为动态的速度阈值
-  double dynaVoteThresh_;    // 判定为动态的投票比例阈值
+  int skipFrame_;               // 点云比较时跳过的帧数
+  double dynaVelThresh_;        // 判定为动态的线速度阈值
+  double dynaAngularVelThresh_; // 判定为动态的角速度阈值（原地转弯检测）
+  double dynaVoteThresh_;       // 判定为动态的投票比例阈值
   int forceDynaFrames_;      // 在历史中被判定为动态的帧数，超过则强制认为是动态
   int forceDynaCheckRange_;  // 检查强制动态的历史范围
   int dynamicConsistThresh_; // 动态一致性检查的帧数阈值
