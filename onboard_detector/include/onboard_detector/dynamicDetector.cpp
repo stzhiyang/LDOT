@@ -885,12 +885,103 @@ bool dynamicDetector::getDynamicObstacles(
   return true; // 表示服务成功完成
 }
 
+// 将Livox CustomMsg格式转换为PointCloud2格式
+void dynamicDetector::convertCustomMsgToPointCloud2(
+    const livox_ros_driver2::CustomMsgConstPtr &customMsg,
+    sensor_msgs::PointCloud2 &cloud) {
+  // auto start_time = std::chrono::high_resolution_clock::now();
+
+  // 设置PointCloud2的基本信息
+  cloud.header = customMsg->header;
+  cloud.height = 1;
+  cloud.width = customMsg->point_num;
+  cloud.is_bigendian = false;
+  cloud.is_dense = false;
+
+  // 定义PointCloud2的字段
+  sensor_msgs::PointCloud2Modifier modifier(cloud);
+  modifier.setPointCloud2FieldsByString(1, "xyz");
+  modifier.resize(customMsg->point_num);
+
+  // 创建迭代器访问xyz字段
+  sensor_msgs::PointCloud2Iterator<float> iter_x(cloud, "x");
+  sensor_msgs::PointCloud2Iterator<float> iter_y(cloud, "y");
+  sensor_msgs::PointCloud2Iterator<float> iter_z(cloud, "z");
+
+  // 将CustomMsg中的点转换到PointCloud2
+  for (size_t i = 0; i < customMsg->points.size(); ++i) {
+    const auto &point = customMsg->points[i];
+    *iter_x = point.x;
+    *iter_y = point.y;
+    *iter_z = point.z;
+    ++iter_x;
+    ++iter_y;
+    ++iter_z;
+  }
+
+  // auto end_time = std::chrono::high_resolution_clock::now();
+  // auto duration =
+  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
+  // start_time); ROS_INFO_THROTTLE(1.0, "%s: CustomMsg to PointCloud2
+  // conversion took %.3f ms for %u points",
+  //                   this->hint_.c_str(), duration.count() / 1000.0,
+  //                   customMsg->point_num);
+}
+
+// Livox CustomMsg + Pose 回调函数
+void dynamicDetector::lidarCustomPoseCB(
+    const livox_ros_driver2::CustomMsgConstPtr &customMsg,
+    const geometry_msgs::PoseStampedConstPtr &pose) {
+  // [Performance Timing] 测量回调函数耗时
+  auto start_time = std::chrono::high_resolution_clock::now();
+
+  // 将CustomMsg转换为PointCloud2
+  sensor_msgs::PointCloud2 cloudMsg;
+  this->convertCustomMsgToPointCloud2(customMsg, cloudMsg);
+
+  // 转换为ConstPtr并调用原有的处理函数
+  sensor_msgs::PointCloud2ConstPtr cloudMsgPtr =
+      boost::make_shared<sensor_msgs::PointCloud2>(cloudMsg);
+  this->lidarPoseCB(cloudMsgPtr, pose);
+
+  // [Performance Timing] 输出耗时
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+      end_time - start_time);
+  ROS_INFO_THROTTLE(1.0, "%s: lidarCustomPoseCB took %.3f ms",
+                    this->hint_.c_str(), duration.count() / 1000.0);
+}
+
+// Livox CustomMsg + Odometry 回调函数
+void dynamicDetector::lidarCustomOdomCB(
+    const livox_ros_driver2::CustomMsgConstPtr &customMsg,
+    const nav_msgs::OdometryConstPtr &odom) {
+  // // [Performance Timing] 测量回调函数耗时
+  // auto start_time = std::chrono::high_resolution_clock::now();
+
+  // 将CustomMsg转换为PointCloud2
+  sensor_msgs::PointCloud2 cloudMsg;
+  this->convertCustomMsgToPointCloud2(customMsg, cloudMsg);
+
+  // 转换为ConstPtr并调用原有的处理函数
+  sensor_msgs::PointCloud2ConstPtr cloudMsgPtr =
+      boost::make_shared<sensor_msgs::PointCloud2>(cloudMsg);
+  this->lidarOdomCB(cloudMsgPtr, odom);
+
+  // // [Performance Timing] 输出耗时
+  // auto end_time = std::chrono::high_resolution_clock::now();
+  // auto duration =
+  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
+  // start_time); ROS_INFO_THROTTLE(1.0, "%s: lidarCustomOdomCB took %.3f ms",
+  // this->hint_.c_str(), duration.count() / 1000.0);
+}
+
 // 转换点云格式，滤波一定范围内的点
 void dynamicDetector::lidarPoseCB(
     const sensor_msgs::PointCloud2ConstPtr &cloudMsg,
     const geometry_msgs::PoseStampedConstPtr &pose) {
-  // [Performance Timing] 测量回调函数耗时
-  auto start_time = std::chrono::high_resolution_clock::now();
+  // // [Performance Timing] 测量回调函数耗时
+  // auto start_time = std::chrono::high_resolution_clock::now();
 
   std::lock_guard<std::mutex> lock(cloudMutex_); // 加锁保护共享数据
 
@@ -1004,11 +1095,11 @@ void dynamicDetector::lidarPoseCB(
     finalCloud = currentCloud;
 
     // 输出下采样信息（用于调试和性能监控）
-    ROS_INFO_THROTTLE(
-        2.0,
-        "%s: Voxel downsampling: %lu -> %lu points (iters=%d, leafSize=%.3fm)",
-        this->hint_.c_str(), groundRoofFilterCloud->size(), finalCloud->size(),
-        iteration, adaptiveLeafSize);
+    // ROS_INFO_THROTTLE(
+    //     1.0,
+    //     "%s: Voxel downsampling: %lu -> %lu points (iters=%d,
+    //     leafSize=%.3fm)", this->hint_.c_str(), groundRoofFilterCloud->size(),
+    //     finalCloud->size(), iteration, adaptiveLeafSize);
   } else {
     // 不启用下采样或点数未超过阈值
     finalCloud = groundRoofFilterCloud;
@@ -1026,13 +1117,12 @@ void dynamicDetector::lidarPoseCB(
   this->downSamplePointsPub_.publish(outputCloud);
 
   // [Performance Timing] 输出耗时
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-      end_time - start_time);
-  ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points: %lu -> %lu",
-                    this->hint_.c_str(), duration.count() / 1000.0,
-                    tempCloud->size(), this->lidarCloud_->size());
-  // ROS_INFO_THROTTLE(1.0, "new pointCloud: %d", this->hasNewCloud_.load());
+  // auto end_time = std::chrono::high_resolution_clock::now();
+  // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+  //     end_time - start_time);
+  // ROS_INFO_THROTTLE(1.0, "%s: lidarPoseCB took %.3f ms, points: %lu -> %lu",
+  //                   this->hint_.c_str(), duration.count() / 1000.0,
+  //                   tempCloud->size(), this->lidarCloud_->size());
 }
 
 // 里程计回调函数，处理点云和里程计数据
@@ -3097,96 +3187,5 @@ void dynamicDetector::getDynamicObstaclesHist(
       }
     }
   }
-}
-
-// 将Livox CustomMsg格式转换为PointCloud2格式
-void dynamicDetector::convertCustomMsgToPointCloud2(
-    const livox_ros_driver2::CustomMsgConstPtr &customMsg,
-    sensor_msgs::PointCloud2 &cloud) {
-  // auto start_time = std::chrono::high_resolution_clock::now();
-
-  // 设置PointCloud2的基本信息
-  cloud.header = customMsg->header;
-  cloud.height = 1;
-  cloud.width = customMsg->point_num;
-  cloud.is_bigendian = false;
-  cloud.is_dense = false;
-
-  // 定义PointCloud2的字段
-  sensor_msgs::PointCloud2Modifier modifier(cloud);
-  modifier.setPointCloud2FieldsByString(1, "xyz");
-  modifier.resize(customMsg->point_num);
-
-  // 创建迭代器访问xyz字段
-  sensor_msgs::PointCloud2Iterator<float> iter_x(cloud, "x");
-  sensor_msgs::PointCloud2Iterator<float> iter_y(cloud, "y");
-  sensor_msgs::PointCloud2Iterator<float> iter_z(cloud, "z");
-
-  // 将CustomMsg中的点转换到PointCloud2
-  for (size_t i = 0; i < customMsg->points.size(); ++i) {
-    const auto &point = customMsg->points[i];
-    *iter_x = point.x;
-    *iter_y = point.y;
-    *iter_z = point.z;
-    ++iter_x;
-    ++iter_y;
-    ++iter_z;
-  }
-
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration =
-  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-  // start_time); ROS_INFO_THROTTLE(1.0, "%s: CustomMsg to PointCloud2
-  // conversion took %.3f ms for %u points",
-  //                   this->hint_.c_str(), duration.count() / 1000.0,
-  //                   customMsg->point_num);
-}
-
-// Livox CustomMsg + Pose 回调函数
-void dynamicDetector::lidarCustomPoseCB(
-    const livox_ros_driver2::CustomMsgConstPtr &customMsg,
-    const geometry_msgs::PoseStampedConstPtr &pose) {
-  // // [Performance Timing] 测量回调函数耗时
-  // auto start_time = std::chrono::high_resolution_clock::now();
-
-  // 将CustomMsg转换为PointCloud2
-  sensor_msgs::PointCloud2 cloudMsg;
-  this->convertCustomMsgToPointCloud2(customMsg, cloudMsg);
-
-  // 转换为ConstPtr并调用原有的处理函数
-  sensor_msgs::PointCloud2ConstPtr cloudMsgPtr =
-      boost::make_shared<sensor_msgs::PointCloud2>(cloudMsg);
-  this->lidarPoseCB(cloudMsgPtr, pose);
-
-  // // [Performance Timing] 输出耗时
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration =
-  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-  // start_time); ROS_INFO_THROTTLE(1.0, "%s: lidarCustomPoseCB took %.3f ms",
-  // this->hint_.c_str(), duration.count() / 1000.0);
-}
-
-// Livox CustomMsg + Odometry 回调函数
-void dynamicDetector::lidarCustomOdomCB(
-    const livox_ros_driver2::CustomMsgConstPtr &customMsg,
-    const nav_msgs::OdometryConstPtr &odom) {
-  // // [Performance Timing] 测量回调函数耗时
-  // auto start_time = std::chrono::high_resolution_clock::now();
-
-  // 将CustomMsg转换为PointCloud2
-  sensor_msgs::PointCloud2 cloudMsg;
-  this->convertCustomMsgToPointCloud2(customMsg, cloudMsg);
-
-  // 转换为ConstPtr并调用原有的处理函数
-  sensor_msgs::PointCloud2ConstPtr cloudMsgPtr =
-      boost::make_shared<sensor_msgs::PointCloud2>(cloudMsg);
-  this->lidarOdomCB(cloudMsgPtr, odom);
-
-  // // [Performance Timing] 输出耗时
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration =
-  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-  // start_time); ROS_INFO_THROTTLE(1.0, "%s: lidarCustomOdomCB took %.3f ms",
-  // this->hint_.c_str(), duration.count() / 1000.0);
 }
 } // namespace onboardDetector
