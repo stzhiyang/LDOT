@@ -171,6 +171,10 @@ private:
   // 尺寸约束参数
   Eigen::Vector3d maxObjectSize_; // 物体的最大尺寸阈值
 
+  // 帧内去重(NMS)参数
+  bool enableDetectionNMS_;        // 是否启用检测NMS
+  double detectionNMSIoUThreshold_; // NMS的IoU阈值
+
   // 分类阈值参数
   double classifyHumanZWidthRatio_;      // 人：z轴宽度 >= x/y轴的倍数
   double classifyHumanCentroidZRatio_;   // 人：质心z高度 < z轴宽度的倍数
@@ -279,6 +283,11 @@ public:
 
   // 检测模块函数
   void lidarDetect(); // 执行激光雷达检测
+  void applyDetectionNMS(
+      std::vector<onboardDetector::box3D> &bboxes,
+      std::vector<std::vector<Eigen::Vector3d>> &pcClusters,
+      std::vector<Eigen::Vector3d> &pcClusterCenters,
+      std::vector<Eigen::Vector3d> &pcClusterStds); // 帧内检测去重(NMS)
   void
   classifyBox(onboardDetector::box3D &bbox, const Eigen::Vector4f &centroid,
               const Eigen::Vector3d &clusterStd,

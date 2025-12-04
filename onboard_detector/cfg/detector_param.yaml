@@ -40,6 +40,10 @@ lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (t
 lidar_DBSCAN_distance_scale: 0.02  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
 max_object_size: [5.0, 5.0, 2.5] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
 
+# 帧内去重(NMS)参数 - 解决同一物体产生多个检测框的问题
+enable_detection_nms: true        # 是否启用检测去重（强烈建议开启）
+detection_nms_iou_threshold: 0.2  # NMS的IoU阈值，IoU > 该值的检测框会被合并 (0.2-0.5)
+
 # 目标跟踪与数据关联
 association_gate_confidence: 0.7  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
 association_pos_cost_weight: 0.8    # 位置代价权重（马氏距离），考虑不确定性
@@ -57,16 +61,16 @@ classify_uav_threshold: [0.8, 1.2] # z/y/z <0.7 ,z>1.2*zw
 classify_close_range_threshold: 2.0 # 近距离分类阈值 (米), 小于该距离时放宽PCA特征限制
 # 跟踪、防幽灵轨迹
 history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
-max_missed_frames: 3 # 最大丢失帧数，超过该帧数未匹配则丢弃轨迹（减少幽灵轨迹）
+max_missed_frames: 5 # 最大丢失帧数，超过该帧数未匹配则丢弃轨迹（减少幽灵轨迹）
 duplicate_track_iou_threshold: 0.6 # 重复轨迹检测的IoU阈值
 box_size_smoothing_alpha: 0.5 # 包围框尺寸平滑系数 (0.0 - 1.0), 越小越平滑重叠
 
 # 动态/静态分类
 frame_skip: 3 # 动态计算时间间隔
 dynamic_velocity_threshold: 0.1 # 判断为动态障碍物的线速度阈值 (米/秒)
-dynamic_angular_velocity_threshold: 0.3 # 判断为动态障碍物的角速度阈值 (弧度/秒)，约17度/秒，用于识别原地转弯物体
+dynamic_angular_velocity_threshold: 0.3 # 没用了。。。。。判断为动态障碍物的角速度阈值 (弧度/秒)，约17度/秒，用于识别原地转弯物体
 dynamic_voting_threshold: 0.8 # 动态性投票的阈值, 超过该比例则认为可能是动态
-box_size_change_threshold: 0.2 # 尺寸变化阈值，超过该比例认为尺寸不稳定，不进行动态判断
+box_size_change_threshold: 0.2 # 没用了。。。。。尺寸变化阈值，超过该比例认为尺寸不稳定，不进行动态判断
 # 动态条件一，最近的check_range帧范围内有K帧被投票为动态候选，才被最终分类为动态
 frames_force_dynamic_check_range: 7 # 强制判断为动态障碍物前，历史轨迹的最小长度
 frames_force_dynamic: 5 # 满足前面的条件下，连续k帧被投票为动态候选的障碍物则强制为动态

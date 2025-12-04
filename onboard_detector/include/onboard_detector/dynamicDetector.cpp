@@ -3,7 +3,8 @@
     ---------------------------------
     function implementation of dynamic osbtacle detector
 */
-#include <cmath> // for std::isfinite
+#include <cmath>   // for std::isfinite
+#include <numeric> // for std::iota
 #include <onboard_detector/dynamicDetector.h>
 
 namespace onboardDetector {
@@ -533,6 +534,31 @@ void dynamicDetector::initParam() {
       }
     }
     std::cout << "]." << std::endl;
+  }
+
+  //-----------------------------------------帧内去重(NMS)参数--------------------------------------------------------------
+  // 是否启用检测NMS
+  if (not this->nh_.getParam(this->ns_ + "/enable_detection_nms",
+                             this->enableDetectionNMS_)) {
+    this->enableDetectionNMS_ = true; // 默认启用
+    cout << this->hint_
+         << ": No enable_detection_nms parameter. Use default: true." << endl;
+  } else {
+    cout << this->hint_ << ": Detection NMS is set to: "
+         << (this->enableDetectionNMS_ ? "enabled" : "disabled") << endl;
+  }
+
+  // NMS的IoU阈值
+  if (not this->nh_.getParam(this->ns_ + "/detection_nms_iou_threshold",
+                             this->detectionNMSIoUThreshold_)) {
+    this->detectionNMSIoUThreshold_ = 0.3; // 默认阈值
+    cout << this->hint_
+         << ": No detection_nms_iou_threshold parameter. Use default: 0.3."
+         << endl;
+  } else {
+    cout << this->hint_
+         << ": Detection NMS IoU threshold is set to: "
+         << this->detectionNMSIoUThreshold_ << endl;
   }
 
   //-----------------------------------------物体分类参数--------------------------------------------------------------
@@ -1655,35 +1681,8 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
     }
 
     // 检查尺寸稳定性（解决遮挡导致的误判问题）
-    // 如果物体之前是静态的，且尺寸发生剧烈变化，则认为Vbox（质心速度）不可靠，不应使用velSim过滤点
+    // 由于已经把静态簇过滤了，不需要这个尺寸稳定性检测了
     bool isSizeStable = true;
-    if (this->boxHist_[i].size() > 1) {
-      // 检查上一帧是否为静态
-      bool wasStatic = !this->boxHist_[i][1].is_dynamic;
-      if (wasStatic) {
-        double curr_x = this->boxHist_[i][0].x_width;
-        double curr_y = this->boxHist_[i][0].y_width;
-        double curr_z = this->boxHist_[i][0].z_width;
-
-        double prev_x = this->boxHist_[i][curFrameGap].x_width;
-        double prev_y = this->boxHist_[i][curFrameGap].y_width;
-        double prev_z = this->boxHist_[i][curFrameGap].z_width;
-
-        double size_diff_x =
-            std::abs(curr_x - prev_x) / std::max({curr_x, prev_x, 1e-3});
-        double size_diff_y =
-            std::abs(curr_y - prev_y) / std::max({curr_y, prev_y, 1e-3});
-        double size_diff_z =
-            std::abs(curr_z - prev_z) / std::max({curr_z, prev_z, 1e-3});
-
-        // 如果任一维度变化超过20%，认为尺寸不稳定
-        if (size_diff_x > this->boxSizeChangeThresh_ ||
-            size_diff_y > this->boxSizeChangeThresh_ ||
-            size_diff_z > this->boxSizeChangeThresh_) {
-          isSizeStable = false;
-        }
-      }
-    }
 
     // 遍历当前点云中的每一个点，通过与历史点云比较来“投票”
     for (size_t j = 0; j < currPc.size(); ++j) {
@@ -1721,42 +1720,18 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
     // 获取卡尔曼滤波器估计的速度大小
     double velNorm = Vkf.norm();
 
-    // 计算角速度（原地转弯检测）
-    double angular_velocity = 0.0;
-    if (this->boxHist_[i].size() > curFrameGap * 2) {
-      // 需要至少两个历史间隔来计算朝向变化
-      double x_curr = this->boxHist_[i][0].x;
-      double y_curr = this->boxHist_[i][0].y;
-      double x_prev = this->boxHist_[i][curFrameGap].x;
-      double y_prev = this->boxHist_[i][curFrameGap].y;
-      double x_prev2 = this->boxHist_[i][curFrameGap * 2].x;
-      double y_prev2 = this->boxHist_[i][curFrameGap * 2].y;
-
-      // 计算两个时刻的朝向（基于质心位移方向）
-      double yaw_curr = atan2(y_curr - y_prev, x_curr - x_prev);
-      double yaw_prev = atan2(y_prev - y_prev2, x_prev - x_prev2);
-
-      // 计算角速度，处理角度跳变
-      double yaw_diff = yaw_curr - yaw_prev;
-      // 归一化到 [-π, π]
-      while (yaw_diff > M_PI)
-        yaw_diff -= 2 * M_PI;
-      while (yaw_diff < -M_PI)
-        yaw_diff += 2 * M_PI;
-
-      angular_velocity = std::abs(yaw_diff) / (this->dt_ * curFrameGap);
-    }
-
-    // 综合三个条件进行判断:
-    // 1. 线速度判断：点云投票率是否足够高 && 卡尔曼滤波器估计的线速度是否足够快
-    // 2. 角速度判断：点云投票率是否足够高 && 角速度是否足够大（原地转弯）
-    //    注意：旋转物体的点云也会有速度变化，应该能获得足够的动态投票
+    // 综合判断是否为动态：
+    // 1. 线速度判断：点云投票率足够高 && 卡尔曼滤波器估计的线速度足够快
+    // 2. 纯旋转判断：线速度很小 && 点云投票率高（说明点在动但质心不动，即旋转）
     bool is_linear_dynamic =
         (voteRatio >= this->dynaVoteThresh_ && velNorm >= this->dynaVelThresh_);
-    bool is_angular_dynamic = (voteRatio >= this->dynaVoteThresh_ &&
-                               angular_velocity >= this->dynaAngularVelThresh_);
+    
+    // 原地旋转检测：质心几乎不动，但点云有明显速度变化
+    // 这种情况下 velNorm 很小（质心速度），但 voteRatio 会很高（点在动）
+    bool is_rotation_dynamic = 
+        (voteRatio >= this->dynaVoteThresh_ && velNorm < this->dynaVelThresh_);
 
-    if (is_linear_dynamic || is_angular_dynamic) {
+    if (is_linear_dynamic || is_rotation_dynamic) {
       // 如果满足条件，首先标记为“动态候选”
       this->boxHist_[i][0].is_dynamic_candidate = true;
 
@@ -2197,11 +2172,181 @@ void dynamicDetector::lidarDetect() {
     lidarPcClusterStdsTemp.push_back(clusterStd);
   }
 
+  // 4. 在赋值前执行帧内去重(NMS) - 合并同一物体的多个重叠检测框
+  if (this->enableDetectionNMS_ && lidarBBoxesTemp.size() > 1) {
+    size_t beforeNMS = lidarBBoxesTemp.size();
+    this->applyDetectionNMS(lidarBBoxesTemp, lidarPcClustersTemp,
+                            lidarPcClusterCentersTemp, lidarPcClusterStdsTemp);
+    size_t afterNMS = lidarBBoxesTemp.size();
+    if (beforeNMS != afterNMS) {
+      ROS_INFO_THROTTLE(1.0, "%s: Detection NMS: %lu -> %lu boxes",
+                        this->hint_.c_str(), beforeNMS, afterNMS);
+    }
+  }
+
   // 更新最终的过滤结果
   this->filteredBBoxes_ = lidarBBoxesTemp;
   this->filteredPcClusters_ = lidarPcClustersTemp;
   this->filteredPcClusterCenters_ = lidarPcClusterCentersTemp;
   this->filteredPcClusterStds_ = lidarPcClusterStdsTemp;
+}
+
+/*!
+ * @brief 帧内检测去重(NMS) - 合并同一物体的多个重叠检测框
+ * @param bboxes 检测框列表（会被修改）
+ * @param pcClusters 点云聚类列表（会被修改）
+ * @param pcClusterCenters 点云中心列表（会被修改）
+ * @param pcClusterStds 点云标准差列表（会被修改）
+ *
+ * 算法逻辑：
+ * 1. 按边界框体积从大到小排序（保留较大检测，抑制较小重复检测）
+ * 2. 遍历每个检测框，判断是否应该合并（IoU高 或 中心距离近）
+ * 3. 如果满足合并条件，则合并两个检测（合并点云、重新计算边界框）
+ */
+void dynamicDetector::applyDetectionNMS(
+    std::vector<onboardDetector::box3D> &bboxes,
+    std::vector<std::vector<Eigen::Vector3d>> &pcClusters,
+    std::vector<Eigen::Vector3d> &pcClusterCenters,
+    std::vector<Eigen::Vector3d> &pcClusterStds) {
+
+  if (bboxes.size() <= 1) {
+    return; // 只有一个或零个检测，无需NMS
+  }
+
+  int n = bboxes.size();
+
+  // 计算每个边界框的体积（用作排序依据：保留较大的检测）
+  std::vector<double> volumes(n);
+  for (int i = 0; i < n; ++i) {
+    volumes[i] = bboxes[i].x_width * bboxes[i].y_width * bboxes[i].z_width;
+  }
+
+  // 按体积从大到小排序的索引
+  std::vector<int> sortedIdx(n);
+  std::iota(sortedIdx.begin(), sortedIdx.end(), 0);
+  std::sort(sortedIdx.begin(), sortedIdx.end(),
+            [&volumes](int a, int b) { return volumes[a] > volumes[b]; });
+
+  // 标记被抑制的检测
+  std::vector<bool> suppressed(n, false);
+
+  // 存储合并后的结果
+  std::vector<onboardDetector::box3D> mergedBBoxes;
+  std::vector<std::vector<Eigen::Vector3d>> mergedPcClusters;
+  std::vector<Eigen::Vector3d> mergedPcClusterCenters;
+  std::vector<Eigen::Vector3d> mergedPcClusterStds;
+
+  for (int _i = 0; _i < n; ++_i) {
+    int i = sortedIdx[_i];
+    if (suppressed[i])
+      continue;
+
+    // 收集所有应该合并的检测框（包括自己）
+    std::vector<int> toMerge;
+    toMerge.push_back(i);
+
+    // 查找所有与当前框应该合并的检测框
+    for (int _j = _i + 1; _j < n; ++_j) {
+      int j = sortedIdx[_j];
+      if (suppressed[j])
+        continue;
+
+      // 计算IoU
+      double iou = this->compute3DIoU(bboxes[i], bboxes[j]);
+
+      // 计算中心点距离
+      double dx = bboxes[i].x - bboxes[j].x;
+      double dy = bboxes[i].y - bboxes[j].y;
+      double dz = bboxes[i].z - bboxes[j].z;
+      double centerDist = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+      // 计算两个框的平均尺寸（用于自适应距离阈值）
+      double avgSize_i = (bboxes[i].x_width + bboxes[i].y_width + bboxes[i].z_width) / 3.0;
+      double avgSize_j = (bboxes[j].x_width + bboxes[j].y_width + bboxes[j].z_width) / 3.0;
+      double avgSize = (avgSize_i + avgSize_j) / 2.0;
+
+      // 自适应距离阈值：如果中心点距离小于平均尺寸，认为可能是同一物体
+      double distThreshold = avgSize * 2; // 1.5倍平均尺寸
+
+      // 合并条件：IoU高 或 中心距离近
+      bool shouldMerge = (iou > this->detectionNMSIoUThreshold_) ||
+                         (centerDist < distThreshold);
+
+      if (shouldMerge) {
+        // 标记为抑制
+        suppressed[j] = true;
+        toMerge.push_back(j);
+      }
+    }
+
+    // 合并所有收集到的检测框
+    // 1. 合并点云
+    std::vector<Eigen::Vector3d> mergedPc;
+    for (int idx : toMerge) {
+      mergedPc.insert(mergedPc.end(), pcClusters[idx].begin(),
+                      pcClusters[idx].end());
+    }
+
+    // 2. 从合并后的点云重新计算边界框（更准确）
+    if (mergedPc.empty()) {
+      continue;
+    }
+
+    // 计算点云的包围盒
+    double minX = std::numeric_limits<double>::max();
+    double maxX = std::numeric_limits<double>::lowest();
+    double minY = std::numeric_limits<double>::max();
+    double maxY = std::numeric_limits<double>::lowest();
+    double minZ = std::numeric_limits<double>::max();
+    double maxZ = std::numeric_limits<double>::lowest();
+
+    Eigen::Vector3d sumPos(0, 0, 0);
+    for (const auto &pt : mergedPc) {
+      minX = std::min(minX, pt.x());
+      maxX = std::max(maxX, pt.x());
+      minY = std::min(minY, pt.y());
+      maxY = std::max(maxY, pt.y());
+      minZ = std::min(minZ, pt.z());
+      maxZ = std::max(maxZ, pt.z());
+      sumPos += pt;
+    }
+
+    // 计算新的边界框（位置使用点云质心）
+    onboardDetector::box3D mergedBox;
+    // 计算点云质心
+    Eigen::Vector3d mergedCenter = sumPos / static_cast<double>(mergedPc.size());
+    // box位置使用点云质心
+    mergedBox.x = mergedCenter.x();
+    mergedBox.y = mergedCenter.y();
+    mergedBox.z = mergedCenter.z();
+    // 尺寸使用包围盒
+    mergedBox.x_width = maxX - minX;
+    mergedBox.y_width = maxY - minY;
+    mergedBox.z_width = maxZ - minZ;
+
+    // 计算点云标准差（PCA特征）
+    Eigen::Vector3d mergedStd(0, 0, 0);
+    for (const auto &pt : mergedPc) {
+      Eigen::Vector3d diff = pt - mergedCenter;
+      mergedStd.x() += diff.x() * diff.x();
+      mergedStd.y() += diff.y() * diff.y();
+      mergedStd.z() += diff.z() * diff.z();
+    }
+    mergedStd /= static_cast<double>(mergedPc.size());
+    mergedStd = mergedStd.cwiseSqrt();
+
+    // 保存合并后的结果
+    mergedBBoxes.push_back(mergedBox);
+    mergedPcClusters.push_back(mergedPc);
+    mergedPcClusterCenters.push_back(mergedCenter);
+    mergedPcClusterStds.push_back(mergedStd);
+  }
+
+  // 更新输出
+  bboxes = mergedBBoxes;
+  pcClusters = mergedPcClusters;
+  pcClusterCenters = mergedPcClusterCenters;
+  pcClusterStds = mergedPcClusterStds;
 }
 
 /*!
