@@ -174,6 +174,7 @@ private:
   // 帧内去重(NMS)参数
   bool enableDetectionNMS_;        // 是否启用检测NMS
   double detectionNMSIoUThreshold_; // NMS的IoU阈值
+    double detectionNMSDistScale_;   // NMS 合并时距离阈值的缩放参数（乘以平均尺寸）
 
   // 分类阈值参数
   double classifyHumanZWidthRatio_;      // 人：z轴宽度 >= x/y轴的倍数

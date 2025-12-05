@@ -561,6 +561,18 @@ void dynamicDetector::initParam() {
          << this->detectionNMSIoUThreshold_ << endl;
   }
 
+  // NMS 的距离缩放参数（相对于平均框尺寸的倍数，用于判断中心距离较近）
+  if (not this->nh_.getParam(this->ns_ + "/detection_nms_dist_scale",
+                             this->detectionNMSDistScale_)) {
+    this->detectionNMSDistScale_ = 2.0; // 默认2.0
+    cout << this->hint_
+         << ": No detection_nms_dist_scale parameter. Use default: 2.0." << endl;
+  } else {
+    cout << this->hint_
+         << ": Detection NMS distance scale is set to: "
+         << this->detectionNMSDistScale_ << endl;
+  }
+
   //-----------------------------------------物体分类参数--------------------------------------------------------------
   // 人的分类阈值
   std::vector<double> classifyHumanThresh;
@@ -2075,22 +2087,11 @@ void dynamicDetector::lidarDetect() {
   std::vector<onboardDetector::Cluster> lidarClustersFiltered;
 
   // 遍历所有边界框，过滤掉尺寸过大的对象并进行分类
-  // int filteredCount = 0;
   for (int i = 0; i < int(lidarBBoxesRaw.size()); ++i) {
     onboardDetector::box3D lidarBBox = lidarBBoxesRaw[i];
-    // 过滤掉尺寸超过阈值的边界框
     if (lidarBBox.x_width > this->maxObjectSize_(0) ||
-        lidarBBox.y_width > this->maxObjectSize_(1) ||
-        lidarBBox.z_width > this->maxObjectSize_(2)) {
-      // ROS_WARN_THROTTLE(
-      //     0.5,
-      //     "%s: Object filtered by size: [%.2f, %.2f, %.2f] > Max: [%.2f,
-      //     %.2f, "
-      //     "%.2f]",
-      //     this->hint_.c_str(), lidarBBox.x_width, lidarBBox.y_width,
-      //     lidarBBox.z_width, this->maxObjectSize_(0),
-      //     this->maxObjectSize_(1), this->maxObjectSize_(2));
-      // filteredCount++;
+       lidarBBox.y_width > this->maxObjectSize_(1) ||
+       lidarBBox.z_width > this->maxObjectSize_(2)) {
       continue;
     }
 
@@ -2131,57 +2132,76 @@ void dynamicDetector::lidarDetect() {
     // }
   }
 
-  // if (filteredCount > 0) {
-  //   ROS_WARN_THROTTLE(0.5, "%s: Detection filtered: Raw %d -> Filtered %d",
-  //                     this->hint_.c_str(), int(lidarBBoxesRaw.size()),
-  //                     int(lidarBBoxesFiltered.size()));
-  // }
-
   // 保存过滤后的结果
   this->lidarBBoxes_ = lidarBBoxesFiltered;
   this->lidarClusters_ = lidarClustersFiltered;
 
-  // 临时存储来自激光雷达的边界框及其点云特征
+  // 临时存储来自激光雷达的边界框及其点云特征（先缓存点云簇用于NMS）
   std::vector<onboardDetector::box3D> lidarBBoxesTemp;
   std::vector<std::vector<Eigen::Vector3d>> lidarPcClustersTemp;
   std::vector<Eigen::Vector3d> lidarPcClusterCentersTemp;
   std::vector<Eigen::Vector3d> lidarPcClusterStdsTemp; // 存储激光雷达输出
 
-  // 获取激光雷达边界框及其对应的点云簇和特征
-  for (size_t i = 0; i < this->lidarBBoxes_.size(); ++i) {
-    onboardDetector::box3D lidarBBox = this->lidarBBoxes_[i];
-    onboardDetector::Cluster cluster = this->lidarClusters_[i];
-
+  // 将簇点云转成Eigen格式以便NMS处理；延迟计算质心与标准差直到NMS之后
+  std::vector<std::vector<Eigen::Vector3d>> tmpPcClusters;
+  tmpPcClusters.reserve(lidarClustersFiltered.size());
+  for (size_t i = 0; i < lidarClustersFiltered.size(); ++i) {
+    onboardDetector::Cluster cluster = lidarClustersFiltered[i];
     std::vector<Eigen::Vector3d> pcCluster;
+    pcCluster.reserve(cluster.points->size());
     for (const pcl::PointXYZ &point : cluster.points->points) {
       pcCluster.emplace_back(point.x, point.y, point.z);
     }
+    tmpPcClusters.push_back(std::move(pcCluster));
+  }
+
+  // 在生成特征之前进行帧内去重(NMS)以减少不必要计算
+  if (this->enableDetectionNMS_ && tmpPcClusters.size() > 1) {
+    size_t beforeNMS = lidarBBoxesFiltered.size();
+    this->applyDetectionNMS(lidarBBoxesFiltered, tmpPcClusters,
+                            lidarPcClusterCentersTemp,
+                            lidarPcClusterStdsTemp);
+    size_t afterNMS = lidarBBoxesFiltered.size();
+    if (beforeNMS != afterNMS) {
+      ROS_INFO_THROTTLE(1.0, "%s: Detection NMS (pre-feature): %lu -> %lu boxes",
+                        this->hint_.c_str(), beforeNMS, afterNMS);
+    }
+  }
+
+  // 将（已NMS或未NMS）结果转回用于后续处理的临时容器
+  for (size_t i = 0; i < lidarBBoxesFiltered.size(); ++i) {
+    onboardDetector::box3D lidarBBox = lidarBBoxesFiltered[i];
+    std::vector<Eigen::Vector3d> &pcCluster = tmpPcClusters[i];
 
     // 提取点云簇的质心
-    Eigen::Vector3d clusterCenter(cluster.centroid[0], cluster.centroid[1],
-                                  cluster.centroid[2]);
+    Eigen::Vector3d clusterCenter(0, 0, 0);
+    for (const auto &pt : pcCluster) {
+      clusterCenter += pt;
+    }
+    if (!pcCluster.empty()) clusterCenter /= static_cast<double>(pcCluster.size());
 
-    // 计算点云簇的标准差
-    Eigen::Vector3d clusterStd =
-        cluster.eigen_values.cwiseSqrt().cast<double>();
+    // 计算点云簇的标准差（如果applyDetectionNMS已经计算过，保留其值）
+    Eigen::Vector3d clusterStd(0, 0, 0);
+    if (lidarPcClusterStdsTemp.size() == lidarBBoxesFiltered.size()) {
+      clusterStd = lidarPcClusterStdsTemp[i];
+    } else {
+      for (const auto &pt : pcCluster) {
+        Eigen::Vector3d diff = pt - clusterCenter;
+        clusterStd.x() += diff.x() * diff.x();
+        clusterStd.y() += diff.y() * diff.y();
+        clusterStd.z() += diff.z() * diff.z();
+      }
+      if (!pcCluster.empty()) {
+        clusterStd /= static_cast<double>(pcCluster.size());
+        clusterStd = clusterStd.cwiseSqrt();
+      }
+    }
 
     // 存入临时变量
     lidarBBoxesTemp.push_back(lidarBBox);
     lidarPcClustersTemp.push_back(pcCluster);
     lidarPcClusterCentersTemp.push_back(clusterCenter);
     lidarPcClusterStdsTemp.push_back(clusterStd);
-  }
-
-  // 4. 在赋值前执行帧内去重(NMS) - 合并同一物体的多个重叠检测框
-  if (this->enableDetectionNMS_ && lidarBBoxesTemp.size() > 1) {
-    size_t beforeNMS = lidarBBoxesTemp.size();
-    this->applyDetectionNMS(lidarBBoxesTemp, lidarPcClustersTemp,
-                            lidarPcClusterCentersTemp, lidarPcClusterStdsTemp);
-    size_t afterNMS = lidarBBoxesTemp.size();
-    if (beforeNMS != afterNMS) {
-      ROS_INFO_THROTTLE(1.0, "%s: Detection NMS: %lu -> %lu boxes",
-                        this->hint_.c_str(), beforeNMS, afterNMS);
-    }
   }
 
   // 更新最终的过滤结果
@@ -2217,8 +2237,16 @@ void dynamicDetector::applyDetectionNMS(
 
   // 计算每个边界框的体积（用作排序依据：保留较大的检测）
   std::vector<double> volumes(n);
+  // 同时缓存一些常用信息以减少重复计算
+  std::vector<Eigen::Vector3d> centers(n);
+  std::vector<double> avgSizes(n);
+  std::vector<double> distThresholds(n);
   for (int i = 0; i < n; ++i) {
     volumes[i] = bboxes[i].x_width * bboxes[i].y_width * bboxes[i].z_width;
+    centers[i] = Eigen::Vector3d(bboxes[i].x, bboxes[i].y, bboxes[i].z);
+    double avgSize = (bboxes[i].x_width + bboxes[i].y_width + bboxes[i].z_width) / 3.0;
+    avgSizes[i] = avgSize;
+    distThresholds[i] = avgSize * this->detectionNMSDistScale_; // scaled by parameter
   }
 
   // 按体积从大到小排序的索引
@@ -2254,23 +2282,21 @@ void dynamicDetector::applyDetectionNMS(
       // 计算IoU
       double iou = this->compute3DIoU(bboxes[i], bboxes[j]);
 
-      // 计算中心点距离
-      double dx = bboxes[i].x - bboxes[j].x;
-      double dy = bboxes[i].y - bboxes[j].y;
-      double dz = bboxes[i].z - bboxes[j].z;
-      double centerDist = std::sqrt(dx * dx + dy * dy + dz * dz);
+      // 计算中心点距离（使用平方距离避免不必要的开方）
+      double dx = centers[i].x() - centers[j].x();
+      double dy = centers[i].y() - centers[j].y();
+      double dz = centers[i].z() - centers[j].z();
+      double centerDistSqr = dx * dx + dy * dy + dz * dz;
 
       // 计算两个框的平均尺寸（用于自适应距离阈值）
-      double avgSize_i = (bboxes[i].x_width + bboxes[i].y_width + bboxes[i].z_width) / 3.0;
-      double avgSize_j = (bboxes[j].x_width + bboxes[j].y_width + bboxes[j].z_width) / 3.0;
-      double avgSize = (avgSize_i + avgSize_j) / 2.0;
-
-      // 自适应距离阈值：如果中心点距离小于平均尺寸，认为可能是同一物体
-      double distThreshold = avgSize * 2; // 1.5倍平均尺寸
+      // 使用之前缓存好的平均尺寸和距离阈值
+      // avgSizes is cached and used to compute distThresholds (above)
+      double distThreshold = (distThresholds[i] + distThresholds[j]) / 2.0;
+      double distThresholdSqr = distThreshold * distThreshold;
 
       // 合并条件：IoU高 或 中心距离近
       bool shouldMerge = (iou > this->detectionNMSIoUThreshold_) ||
-                         (centerDist < distThreshold);
+             (centerDistSqr < distThresholdSqr);
 
       if (shouldMerge) {
         // 标记为抑制
@@ -2280,35 +2306,55 @@ void dynamicDetector::applyDetectionNMS(
     }
 
     // 合并所有收集到的检测框
-    // 1. 合并点云
+    // 1. 合并点云（使用移动语义，并预分配内存以避免反复分配）
     std::vector<Eigen::Vector3d> mergedPc;
+    size_t totalPts = 0;
+    for (int idx : toMerge) totalPts += pcClusters[idx].size();
+    mergedPc.reserve(totalPts);
+
+    // 为合并后的统计量做准备（避免再次遍历点云）
+    Eigen::Vector3d sumPos(0, 0, 0);
+    Eigen::Vector3d sumSq(0, 0, 0); // sum of squares for variance
+    size_t mergedPtCount = 0;
+
     for (int idx : toMerge) {
-      mergedPc.insert(mergedPc.end(), pcClusters[idx].begin(),
-                      pcClusters[idx].end());
+      // 移动每个点进入mergedPc（避免复制）
+      for (auto &pt : pcClusters[idx]) {
+        mergedPc.push_back(std::move(pt));
+        sumPos += mergedPc.back();
+        sumSq += mergedPc.back().cwiseProduct(mergedPc.back());
+        ++mergedPtCount;
+      }
+      // 清理移动后的小向量容量（optional）
+      std::vector<Eigen::Vector3d>().swap(pcClusters[idx]);
     }
 
-    // 2. 从合并后的点云重新计算边界框（更准确）
-    if (mergedPc.empty()) {
+    // 2. 从合并后的点云重新计算边界框（更准确），使用盒子边界的并集作为最小/最大值
+    if (mergedPtCount == 0) {
       continue;
     }
 
-    // 计算点云的包围盒
     double minX = std::numeric_limits<double>::max();
     double maxX = std::numeric_limits<double>::lowest();
     double minY = std::numeric_limits<double>::max();
     double maxY = std::numeric_limits<double>::lowest();
     double minZ = std::numeric_limits<double>::max();
     double maxZ = std::numeric_limits<double>::lowest();
+    // 使用原有边界框的边界作为合并后的包围盒边界，避免再次遍历所有点
+    for (int idx : toMerge) {
+      double bminX = bboxes[idx].x - bboxes[idx].x_width / 2.0;
+      double bmaxX = bboxes[idx].x + bboxes[idx].x_width / 2.0;
+      double bminY = bboxes[idx].y - bboxes[idx].y_width / 2.0;
+      double bmaxY = bboxes[idx].y + bboxes[idx].y_width / 2.0;
+      double bminZ = bboxes[idx].z - bboxes[idx].z_width / 2.0;
+      double bmaxZ = bboxes[idx].z + bboxes[idx].z_width / 2.0;
 
-    Eigen::Vector3d sumPos(0, 0, 0);
-    for (const auto &pt : mergedPc) {
-      minX = std::min(minX, pt.x());
-      maxX = std::max(maxX, pt.x());
-      minY = std::min(minY, pt.y());
-      maxY = std::max(maxY, pt.y());
-      minZ = std::min(minZ, pt.z());
-      maxZ = std::max(maxZ, pt.z());
-      sumPos += pt;
+      minX = std::min(minX, bminX);
+      maxX = std::max(maxX, bmaxX);
+      minY = std::min(minY, bminY);
+      maxY = std::max(maxY, bmaxY);
+      minZ = std::min(minZ, bminZ);
+      maxZ = std::max(maxZ, bmaxZ);
     }
 
     // 计算新的边界框（位置使用点云质心）
@@ -2324,16 +2370,16 @@ void dynamicDetector::applyDetectionNMS(
     mergedBox.y_width = maxY - minY;
     mergedBox.z_width = maxZ - minZ;
 
-    // 计算点云标准差（PCA特征）
+    // 计算点云标准差（PCA特征），使用在合并点云时就累加的sumSq与sumPos
     Eigen::Vector3d mergedStd(0, 0, 0);
-    for (const auto &pt : mergedPc) {
-      Eigen::Vector3d diff = pt - mergedCenter;
-      mergedStd.x() += diff.x() * diff.x();
-      mergedStd.y() += diff.y() * diff.y();
-      mergedStd.z() += diff.z() * diff.z();
+    Eigen::Vector3d mean = mergedCenter;
+    Eigen::Vector3d var = (sumSq / static_cast<double>(mergedPtCount)) -
+                          mean.cwiseProduct(mean);
+    // 防止数值不稳定导致负数
+    for (int k = 0; k < 3; ++k) {
+      if (var[k] < 0) var[k] = 0;
     }
-    mergedStd /= static_cast<double>(mergedPc.size());
-    mergedStd = mergedStd.cwiseSqrt();
+    mergedStd = var.cwiseSqrt();
 
     // 保存合并后的结果
     mergedBBoxes.push_back(mergedBox);
