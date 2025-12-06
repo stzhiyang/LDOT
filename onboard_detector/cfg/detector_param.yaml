@@ -71,7 +71,7 @@ coasting_track_gate_relax_factor: 1.5 # coasting轨迹的关联门限放松倍�
 # 动态/静态分类相关
 frame_skip: 3 # 动态计算时间间隔
 dynamic_velocity_threshold: 0.1 # 判断为动态障碍物的线速度阈值 (米/秒)
-dynamic_voting_threshold: 0.8 # 动态性投票的阈值, 超过该比例则认为可能是动态
+dynamic_voting_threshold: 0.7 # 动态性投票的阈值, 超过该比例则认为可能是动态
 classification_min_neighbor_distance: 2.0 # 点云匹配距离
 # 动态条件一，最近的check_range帧范围内有K帧被投票为动态候选，才被最终分类为动态
 frames_force_dynamic_check_range: 7 # 强制判断为动态障碍物前，历史轨迹的最小长度

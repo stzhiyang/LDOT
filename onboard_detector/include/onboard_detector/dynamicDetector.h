@@ -93,7 +93,7 @@ private:
   ros::Publisher downSamplePointsPub_;    // 降采样后的点云
   ros::Publisher rawLidarPointsPub_;      // 原始激光雷达点云
   ros::Publisher historyTrajPub_;         // 跟踪物体的历史轨迹
-  ros::Publisher velVisPub_;              // 跟踪物体的速度可视化
+  ros::Publisher dynamicTrajPub_;         // 动态障碍物的专用轨迹可视化
 
   // 服务
   ros::ServiceServer getDynamicObstacleServer_; // 获取动态障碍物的服务
@@ -328,7 +328,7 @@ public:
                     const ros::Publisher &publisher, double r, double g,
                     double b);    // 发布3D边界框
   void publishHistoryTraj();      // 发布历史轨迹
-  void publishVelVis();           // 发布速度可视化信息
+  void publishDynamicBoxTrajectory(); // 发布动态障碍物轨迹可视化
   void publishLidarClusters();    // 发布激光雷达聚类
   void publishFilteredPoints();   // 发布过滤后的点云
   void publishRawDynamicPoints(); // 发布原始动态点云

@@ -830,10 +830,6 @@ void dynamicDetector::registerPub() {
   this->historyTrajPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(
       this->ns_ + "/history_trajectories", 10);
 
-  // 速度可视化发布
-  this->velVisPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(
-      this->ns_ + "/velocity_visualizaton", 10);
-
   //===========================动态检测可视化===============================================
   // 动态点云发布
   this->dynamicPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(
@@ -844,9 +840,14 @@ void dynamicDetector::registerPub() {
       this->nh_.advertise<visualization_msgs::MarkerArray>(
           this->ns_ + "/dynamic_bboxes", 10);
 
-  // 原始动态点云发布
+  // 原始动态点云发布，没过滤的在动态box中的原始点云
   this->rawDynamicPointsPub_ = this->nh_.advertise<sensor_msgs::PointCloud2>(
       this->ns_ + "/raw_dynamic_point_cloud", 10);
+
+  // 动态障碍物专用轨迹发布
+  this->dynamicTrajPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>(
+      this->ns_ + "/dynamic_trajectories", 10);
+
 }
 
 void dynamicDetector::registerCallback() {
@@ -950,7 +951,7 @@ bool dynamicDetector::getDynamicObstacles(
   for (const onboardDetector::box3D &bbox : this->dynamicBBoxes_) {
     Eigen::Vector3d obsPos(bbox.x, bbox.y, bbox.z);
     Eigen::Vector3d diff = currPos - obsPos;
-    diff(2) = 0.; // 忽略Z轴差异，计算2D平面距离
+    // diff(2) = 0.; // 忽略Z轴差异，计算2D平面距离
     double distance = diff.norm();
 
     // 如果障碍物在请求的范围之内，则将其添加到列表中
@@ -1781,7 +1782,7 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
     // 原地旋转检测：质心几乎不动，但点云有明显速度变化
     // 这种情况下 velNorm 很小（质心速度），但 voteRatio 会很高（点在动）
     bool is_rotation_dynamic = 
-        (voteRatio >= this->dynaVoteThresh_ && velNorm < this->dynaVelThresh_);
+        (voteRatio >= (this->dynaVoteThresh_ + 0.15) && velNorm < this->dynaVelThresh_);
 
     if (is_linear_dynamic || is_rotation_dynamic) {
       // 如果满足条件，首先标记为“动态候选”
@@ -1847,12 +1848,12 @@ void dynamicDetector::visCB(const ros::TimerEvent &) {
   this->publish3dBox(this->trackedBBoxes_, this->trackedBBoxesPub_, 1, 1, 0);
   // 发布被跟踪物体的历史轨迹线
   this->publishHistoryTraj();
-  // 将被跟踪物体的速度作为文本发布到Rviz中
-  this->publishVelVis();
 
   //-----------------------------动态障碍物识别阶段--------------------------------------
   // 发布最终被分类为动态的边界框（蓝色）
   this->publish3dBox(this->dynamicBBoxes_, this->dynamicBBoxesPub_, 0, 0, 1);
+  // 发布动态障碍物的专用轨迹可视化（轨迹线、轨迹点、速度箭头等）
+  this->publishDynamicBoxTrajectory();
   // 提取并发布属于动态障碍物的点云
   std::vector<Eigen::Vector3d> dynamicPoints;
   this->getDynamicPc(dynamicPoints);
@@ -3510,40 +3511,210 @@ void dynamicDetector::publishHistoryTraj() {
   this->historyTrajPub_.publish(trajMsg);
 }
 
-// 发布所有被跟踪对象的速度可视化信息
-void dynamicDetector::publishVelVis() {
-  visualization_msgs::MarkerArray velVisMsg;
-  int countMarker = 0;
-  for (size_t i = 0; i < this->trackedBBoxes_.size(); ++i) {
-    visualization_msgs::Marker velMarker;
-    velMarker.header.frame_id = "map";
-    velMarker.header.stamp = ros::Time::now();
-    velMarker.ns = "dynamic_detector";
-    velMarker.id = countMarker;
-    velMarker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-    velMarker.pose.position.x = this->trackedBBoxes_[i].x;
-    velMarker.pose.position.y = this->trackedBBoxes_[i].y;
-    velMarker.pose.position.z =
-        this->trackedBBoxes_[i].z + this->trackedBBoxes_[i].z_width / 2. + 0.3;
-    velMarker.scale.x = 0.15;
-    velMarker.scale.y = 0.15;
-    velMarker.scale.z = 0.15;
-    velMarker.color.a = 1.0;
-    velMarker.color.r = 1.0;
-    velMarker.color.g = 0.0;
-    velMarker.color.b = 0.0;
-    velMarker.lifetime = ros::Duration(0.1);
-    double vx = this->trackedBBoxes_[i].Vx;
-    double vy = this->trackedBBoxes_[i].Vy;
-    double vNorm = sqrt(vx * vx + vy * vy);
-    std::string velText = "Vx=" + std::to_string(vx) +
-                          ", Vy=" + std::to_string(vy) +
-                          ", |V|=" + std::to_string(vNorm);
-    velMarker.text = velText;
-    velVisMsg.markers.push_back(velMarker);
-    ++countMarker;
+/*!
+ * \brief 发布动态障碍物的历史轨迹可视化
+ * 
+ * 该函数专门用于可视化被识别为动态的障碍物的运动轨迹。
+ * 可视化包括三个部分：
+ * 1. 轨迹线：连接历史位置点的彩色线条
+ * 2. 轨迹点：历史位置上的球体标记
+ * 3. 速度箭头：显示当前运动方向和速度的箭头
+ */
+void dynamicDetector::publishDynamicBoxTrajectory() {
+  visualization_msgs::MarkerArray trajMarkers;
+  int markerId = 0;
+
+  // 遍历所有被跟踪的物体
+  for (size_t i = 0; i < this->boxHist_.size(); ++i) {
+    // 检查该物体是否有足够的历史数据
+    if (this->boxHist_[i].empty()) {
+      continue;
+    }
+
+    // 只显示被标记为动态的障碍物
+    bool isDynamic = this->boxHist_[i][0].is_dynamic;
+    if (!isDynamic) {
+      continue;
+    }
+
+    // 轨迹长度至少要有3个点才显示
+    if (this->boxHist_[i].size() < 3) {
+      continue;
+    }
+
+    // --- 1. 创建轨迹线 (LINE_STRIP) ---
+    visualization_msgs::Marker trajLine;
+    trajLine.header.frame_id = "map";
+    trajLine.header.stamp = ros::Time::now();
+    trajLine.ns = "dynamic_trajectory_lines";
+    trajLine.id = markerId++;
+    trajLine.type = visualization_msgs::Marker::LINE_STRIP;
+    trajLine.action = visualization_msgs::Marker::ADD;
+    trajLine.pose.orientation.w = 1.0;
+    
+    // 轨迹线宽度
+    trajLine.scale.x = 0.08;
+    
+    // 根据物体ID设置不同颜色（使用HSV色环）
+    double hue = fmod(i * 137.5, 360.0); // 黄金角分布
+    double r, g, b;
+    // 简化的HSV到RGB转换（S=1, V=1）
+    double c = 1.0;
+    double x = c * (1.0 - fabs(fmod(hue / 60.0, 2.0) - 1.0));
+    if (hue < 60) {
+      r = c; g = x; b = 0;
+    } else if (hue < 120) {
+      r = x; g = c; b = 0;
+    } else if (hue < 180) {
+      r = 0; g = c; b = x;
+    } else if (hue < 240) {
+      r = 0; g = x; b = c;
+    } else if (hue < 300) {
+      r = x; g = 0; b = c;
+    } else {
+      r = c; g = 0; b = x;
+    }
+    
+    trajLine.color.r = r;
+    trajLine.color.g = g;
+    trajLine.color.b = b;
+    trajLine.color.a = 0.8;
+    trajLine.lifetime = ros::Duration(0.2);
+
+    // 添加轨迹点（从旧到新）
+    for (int j = this->boxHist_[i].size() - 1; j >= 0; --j) {
+      geometry_msgs::Point p;
+      p.x = this->boxHist_[i][j].x;
+      p.y = this->boxHist_[i][j].y;
+      p.z = this->boxHist_[i][j].z;
+      trajLine.points.push_back(p);
+    }
+
+    trajMarkers.markers.push_back(trajLine);
+
+    // --- 2. 创建轨迹点标记 (SPHERE_LIST) ---
+    visualization_msgs::Marker trajPoints;
+    trajPoints.header.frame_id = "map";
+    trajPoints.header.stamp = ros::Time::now();
+    trajPoints.ns = "dynamic_trajectory_points";
+    trajPoints.id = markerId++;
+    trajPoints.type = visualization_msgs::Marker::SPHERE_LIST;
+    trajPoints.action = visualization_msgs::Marker::ADD;
+    trajPoints.pose.orientation.w = 1.0;
+    
+    // 点的大小
+    trajPoints.scale.x = 0.12;
+    trajPoints.scale.y = 0.12;
+    trajPoints.scale.z = 0.12;
+    
+    // 点的颜色（与轨迹线相同，但稍暗）
+    trajPoints.color.r = r * 0.7;
+    trajPoints.color.g = g * 0.7;
+    trajPoints.color.b = b * 0.7;
+    trajPoints.color.a = 0.6;
+    trajPoints.lifetime = ros::Duration(0.2);
+
+    // 添加历史位置点（间隔采样以避免过于密集）
+    int stepSize = std::max(1, static_cast<int>(this->boxHist_[i].size()) / 10);
+    for (size_t j = 0; j < this->boxHist_[i].size(); j += stepSize) {
+      geometry_msgs::Point p;
+      p.x = this->boxHist_[i][j].x;
+      p.y = this->boxHist_[i][j].y;
+      p.z = this->boxHist_[i][j].z;
+      trajPoints.points.push_back(p);
+    }
+
+    trajMarkers.markers.push_back(trajPoints);
+
+    // --- 3. 创建速度箭头 (ARROW) ---
+    // 获取最新的速度信息
+    double vx = this->boxHist_[i][0].Vx;
+    double vy = this->boxHist_[i][0].Vy;
+    double vz = this->boxHist_[i][0].Vz;
+    double velNorm = sqrt(vx * vx + vy * vy + vz * vz);
+
+    // 只有当速度大于阈值时才显示箭头
+    if (velNorm > 0.1) {
+      visualization_msgs::Marker velArrow;
+      velArrow.header.frame_id = "map";
+      velArrow.header.stamp = ros::Time::now();
+      velArrow.ns = "dynamic_velocity_arrows";
+      velArrow.id = markerId++;
+      velArrow.type = visualization_msgs::Marker::ARROW;
+      velArrow.action = visualization_msgs::Marker::ADD;
+      
+      // 初始化四元数为恒等值（无旋转）
+      velArrow.pose.orientation.x = 0.0;
+      velArrow.pose.orientation.y = 0.0;
+      velArrow.pose.orientation.z = 0.0;
+      velArrow.pose.orientation.w = 1.0;
+      
+      // 箭头的起点和终点
+      geometry_msgs::Point start, end;
+      start.x = this->boxHist_[i][0].x;
+      start.y = this->boxHist_[i][0].y;
+      start.z = this->boxHist_[i][0].z;
+      
+      // 箭头长度与速度成正比（缩放因子可调整）
+      double arrowScale = 1; // 0.5秒的运动距离
+      end.x = start.x + vx * arrowScale;
+      end.y = start.y + vy * arrowScale;
+      end.z = start.z + vz * arrowScale;
+      
+      velArrow.points.push_back(start);
+      velArrow.points.push_back(end);
+      
+      // 箭头粗细
+      velArrow.scale.x = 0.1;  // 箭杆直径
+      velArrow.scale.y = 0.15; // 箭头直径
+      velArrow.scale.z = 0.2;  // 箭头长度
+      
+      // 箭头颜色（亮黄色，易于区分）
+      velArrow.color.r = 1.0;
+      velArrow.color.g = 1.0;
+      velArrow.color.b = 0.0;
+      velArrow.color.a = 0.9;
+      velArrow.lifetime = ros::Duration(0.2);
+      
+      trajMarkers.markers.push_back(velArrow);
+    }
+
+    // --- 4. 创建文本标签显示轨迹ID和速度信息 ---
+    visualization_msgs::Marker textLabel;
+    textLabel.header.frame_id = "map";
+    textLabel.header.stamp = ros::Time::now();
+    textLabel.ns = "dynamic_trajectory_labels";
+    textLabel.id = markerId++;
+    textLabel.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+    textLabel.action = visualization_msgs::Marker::ADD;
+    
+    // 文本位置（在物体上方）
+    textLabel.pose.position.x = this->boxHist_[i][0].x;
+    textLabel.pose.position.y = this->boxHist_[i][0].y;
+    textLabel.pose.position.z = this->boxHist_[i][0].z + 
+                                 this->boxHist_[i][0].z_width / 2.0 + 0.5;
+    
+    // 文本大小
+    textLabel.scale.z = 0.2;
+    
+    // 文本颜色（白色）
+    textLabel.color.r = 1.0;
+    textLabel.color.g = 1.0;
+    textLabel.color.b = 1.0;
+    textLabel.color.a = 1.0;
+    textLabel.lifetime = ros::Duration(0.2);
+    
+    // 文本内容
+    std::ostringstream textStream;
+    textStream << " V:" << std::fixed << std::setprecision(2) << velNorm << "m/s"
+               << " Len:" << this->boxHist_[i].size();
+    textLabel.text = textStream.str();
+    
+    trajMarkers.markers.push_back(textLabel);
   }
-  this->velVisPub_.publish(velVisMsg);
+
+  // 发布所有标记到专用的动态轨迹话题
+  this->dynamicTrajPub_.publish(trajMarkers);
 }
 
 // 发布过滤后的点
@@ -3670,55 +3841,6 @@ void dynamicDetector::publishRawDynamicPoints() {
   // 捕获所有其他类型的未知异常
   catch (...) {
     ROS_ERROR("Unknown error during dynamic point extraction.");
-  }
-}
-
-// 用户函数：获取动态障碍物
-void dynamicDetector::getDynamicObstacles(
-    std::vector<onboardDetector::box3D> &incomeDynamicBBoxes,
-    const Eigen::Vector3d &robotSize) {
-  incomeDynamicBBoxes.clear();
-  for (int i = 0; i < int(this->dynamicBBoxes_.size()); i++) {
-    onboardDetector::box3D box = this->dynamicBBoxes_[i];
-    box.x_width += robotSize(0);
-    box.y_width += robotSize(1);
-    box.z_width += robotSize(2);
-    incomeDynamicBBoxes.push_back(box);
-  }
-}
-
-// 用户函数：获取动态障碍物历史
-void dynamicDetector::getDynamicObstaclesHist(
-    std::vector<std::vector<Eigen::Vector3d>> &posHist,
-    std::vector<std::vector<Eigen::Vector3d>> &velHist,
-    std::vector<std::vector<Eigen::Vector3d>> &sizeHist,
-    const Eigen::Vector3d &robotSize) {
-  posHist.clear();
-  velHist.clear();
-  sizeHist.clear();
-
-  if (this->boxHist_.size()) {
-    for (size_t i = 0; i < this->boxHist_.size(); ++i) {
-      if (this->boxHist_[i][0].is_dynamic or this->boxHist_[i][0].is_human) {
-        std::vector<Eigen::Vector3d> obPosHist, obVelHist, obSizeHist;
-        for (size_t j = 0; j < this->boxHist_[i].size(); ++j) {
-          Eigen::Vector3d pos(this->boxHist_[i][j].x, this->boxHist_[i][j].y,
-                              this->boxHist_[i][j].z);
-          Eigen::Vector3d vel(this->boxHist_[i][j].Vx, this->boxHist_[i][j].Vy,
-                              0);
-          Eigen::Vector3d size(this->boxHist_[i][j].x_width,
-                               this->boxHist_[i][j].y_width,
-                               this->boxHist_[i][j].z_width);
-          size += robotSize;
-          obPosHist.push_back(pos);
-          obVelHist.push_back(vel);
-          obSizeHist.push_back(size);
-        }
-        posHist.push_back(obPosHist);
-        velHist.push_back(obVelHist);
-        sizeHist.push_back(obSizeHist);
-      }
-    }
   }
 }
 } // namespace onboardDetector
