@@ -25,8 +25,8 @@ struct box3D {
   double x, y, z;
   // 包围框在x, y, z方向的宽度
   double x_width, y_width, z_width;
-  // 包围框ID
-  double id;
+  // 包围框ID（-1 表示未知/未分配）
+  double id = -1.0;
   // 包围框在x, y, z方向的速度
   double Vx = 0, Vy = 0, Vz = 0;
   // 包围框在x, y, z方向的加速度

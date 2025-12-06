@@ -153,6 +153,9 @@ private:
   int maxMissedFrames_;                // 最大丢失帧数
   std::vector<int> trackMissedFrames_; // 每个轨迹连续丢失的帧数
   double duplicateTrackIoUThreshold_;  // 重复轨迹检测的IoU阈值
+  double duplicateTrackDistanceThreshold_;  // 重复轨迹检测的平均尺寸缩放因子
+  double duplicateTrackVelocitySimilarityThreshold_; // 重复轨迹检测的速度相似度阈值
+  double coastingTrackGateRelaxFactor_; // coasting轨迹的门限放松因子
   double boxSizeSmoothingAlpha_;       // 包围框尺寸平滑系数
 
   // 动态/静态分类参数
@@ -183,12 +186,12 @@ private:
   double classifyVehicleCentroidZRatio_; // 车：质心z高度 < z轴宽度的倍数
   double classifyUAVMaxSize_;            // 无人机：x/y/z轴宽度 < 该值(米)
   double classifyUAVCentroidZRatio_;     // 无人机：质心z高度 > z轴宽度的倍数
+  double classifyXYDistanceThreshold_;   // 分类：box与无人机xy轴距离阈值(米)，小于该值则继承分类
 
   // 分类与模型切换参数
   int classificationStartFrame_;       // 跟踪多少帧后开始进行分类和模型切换
   double classifyHumanPcaRatio_;       // PCA特征: z_std / xy_std 的阈值
   double classifyVehiclePcaRatio_;     // PCA特征: xy_std / z_std 的阈值
-  double classifyCloseRangeThreshold_; // 近距离分类阈值
   double classificationIntervalSec_; // 首次分类后，基于时间的重新分类间隔（秒）
   std::vector<ros::Time> lastClassifyTime_; // 每个轨迹上一次分类的时间戳
 
@@ -292,7 +295,8 @@ public:
   void
   classifyBox(onboardDetector::box3D &bbox, const Eigen::Vector4f &centroid,
               const Eigen::Vector3d &clusterStd,
-              const Eigen::Vector3d &maxHistorySize); // 对单个边界框进行分类
+              const Eigen::Vector3d &maxHistorySize,
+              int trackIndex = -1); // 对单个边界框进行分类
   void
   switchKalmanModel(int index,
                     const onboardDetector::box3D &bbox); // 切换卡尔曼滤波模型
@@ -313,6 +317,7 @@ public:
   void hungarianAlgorithm(const std::vector<std::vector<double>> &costMatrix,
                           std::vector<int> &assignment); // 匈牙利算法
   void removeDuplicateTracks();                          // 移除重复/重叠的轨迹
+  bool areDuplicateTracks(int idx1, int idx2); // 判断两条轨迹是否重复
   void kalmanFilterAndUpdateHist(
       const std::vector<int> &bestMatch); // 卡尔曼滤波与更新历史
 

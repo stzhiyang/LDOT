@@ -32,14 +32,12 @@ static_filter_voxel_size: 0.2    # 静态滤波器体素大小 (米)，比第一
 static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
 static_filter_time_threshold: 5.0 # 静态点在地图中保留的时间阈值 (秒)
 static_cluster_filter_ratio: 0.6    # 判定为静态聚类的静态点比例阈值
-
 # DBSCAN 激光雷达聚类参数
 lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数
 lidar_DBSCAN_epsilon: 0.2    # 激光雷达DBSCAN邻域搜索半径 (米)，不能小于最大体素大小
 lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (true: 启用, false: 使用固定epsilon)
 lidar_DBSCAN_distance_scale: 0.02  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
 max_object_size: [5.0, 5.0, 2.5] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
-
 # 帧内去重(NMS)参数 - 解决同一物体产生多个检测框的问题
 enable_detection_nms: true        # 是否启用检测去重（强烈建议开启）
 detection_nms_iou_threshold: 0.2  # NMS的IoU阈值，IoU > 该值的检测框会被合并 (0.2-0.5)
@@ -54,17 +52,20 @@ classification_size_merge_threshold: 1.5        # 尺寸增长比例阈值，用
 classification_point_count_merge_threshold: 1.5 # 点数增长比例阈值，用于确认合并
 classification_size_reset_frames: 20            # 尺寸重置帧数，当物体尺寸持续较小时重置最大尺寸
 # 分类与模型切换参数，[box中z、x/y的宽度比较, 质心z高度  z轴宽度的倍数]
-classification_start_frame: 50 # 跟踪多少帧后开始进行分类和模型切换
+classification_start_frame: 30 # 跟踪多少帧后开始进行分类和模型切换
 classification_interval_sec: 3 # 分类检查时间间隔 s
+classify_xy_distance_threshold: 3.0 # box与无人机xy轴距离阈值(米)，小于该值则继承前一帧的分类
 classify_human_threshold: [1.8, 0.8, 1.6]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
 classify_vehicle_threshold: [1.2, 0.7, 1.2] # [x/y >=z, z<0.7*zw, PCA xy_std/z_std > 1.2]
 classify_uav_threshold: [0.8, 1.2] # z/y/z <0.7 ,z>1.2*zw
-classify_close_range_threshold: 2.0 # 近距离分类阈值 (米), 小于该距离时放宽PCA特征限制
 # 跟踪、防幽灵轨迹
+box_size_smoothing_alpha: 0.4 # 包围框尺寸平滑系数 (0.0 - 1.0), 越小越平滑重叠
 history_size: 100 # 跟踪历史的长度. history[0] 是当前检测结果
-max_missed_frames: 0 # 最大丢失帧数，超过该帧数未匹配则丢弃轨迹（减少幽灵轨迹）
-duplicate_track_iou_threshold: 0.6 # 重复轨迹检测的IoU阈值
-box_size_smoothing_alpha: 0.5 # 包围框尺寸平滑系数 (0.0 - 1.0), 越小越平滑重叠
+max_missed_frames: 3 # 最大丢失帧数，超过该帧数未匹配则丢弃轨迹（减少幽灵轨迹）
+duplicate_track_iou_threshold: 0.6 # 重复轨迹检测的IoU阈值（有交集情况）
+duplicate_track_distance_threshold: 1.2 # 重复轨迹检测的平均尺寸缩放因子
+duplicate_track_velocity_similarity_threshold: 0.7 # 重复轨迹检测的速度方向相似度阈值（余弦相似度，0-1）
+coasting_track_gate_relax_factor: 1.5 # coasting轨迹的关联门限放松倍数（防止轨迹断裂和新轨迹生成）
 
 # 动态/静态分类
 frame_skip: 3 # 动态计算时间间隔

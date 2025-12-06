@@ -385,6 +385,42 @@ void dynamicDetector::initParam() {
               << this->duplicateTrackIoUThreshold_ << std::endl;
   }
 
+  // duplicate track distance threshold (for non-overlapping duplicates)
+  if (not this->nh_.getParam(this->ns_ + "/duplicate_track_distance_threshold",
+                             this->duplicateTrackDistanceThreshold_)) {
+    this->duplicateTrackDistanceThreshold_ = 2.0;  // 2米
+    std::cout << this->hint_
+              << ": No duplicate_track_distance_threshold param. Use default: 2.0m"
+              << std::endl;
+  } else {
+    std::cout << this->hint_ << ": Duplicate track distance threshold is set to: "
+              << this->duplicateTrackDistanceThreshold_ << std::endl;
+  }
+
+  // duplicate track velocity similarity threshold
+  if (not this->nh_.getParam(this->ns_ + "/duplicate_track_velocity_similarity_threshold",
+                             this->duplicateTrackVelocitySimilarityThreshold_)) {
+    this->duplicateTrackVelocitySimilarityThreshold_ = 0.7;  // 余弦相似度阈值
+    std::cout << this->hint_
+              << ": No duplicate_track_velocity_similarity_threshold param. Use default: 0.7"
+              << std::endl;
+  } else {
+    std::cout << this->hint_ << ": Duplicate track velocity similarity threshold is set to: "
+              << this->duplicateTrackVelocitySimilarityThreshold_ << std::endl;
+  }
+
+  // coasting track gate relax factor
+  if (not this->nh_.getParam(this->ns_ + "/coasting_track_gate_relax_factor",
+                             this->coastingTrackGateRelaxFactor_)) {
+    this->coastingTrackGateRelaxFactor_ = 2.0;  // coasting轨迹门限放宽2倍
+    std::cout << this->hint_
+              << ": No coasting_track_gate_relax_factor param. Use default: 2.0"
+              << std::endl;
+  } else {
+    std::cout << this->hint_ << ": Coasting track gate relax factor is set to: "
+              << this->coastingTrackGateRelaxFactor_ << std::endl;
+  }
+
   // box size smoothing alpha
   if (not this->nh_.getParam(this->ns_ + "/box_size_smoothing_alpha",
                              this->boxSizeSmoothingAlpha_)) {
@@ -640,6 +676,17 @@ void dynamicDetector::initParam() {
                                 << this->classifyUAVCentroidZRatio_ << "]");
   }
 
+  // box与无人机xy轴距离阈值
+  if (not this->nh_.getParam(this->ns_ + "/classify_xy_distance_threshold",
+                             this->classifyXYDistanceThreshold_)) {
+    this->classifyXYDistanceThreshold_ = 3.0;
+    ROS_WARN_STREAM(this->hint_
+                    << " No classify_xy_distance_threshold param. Use default: 3.0");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " classify_xy_distance_threshold: "
+                                << this->classifyXYDistanceThreshold_);
+  }
+
   // 分类与模型切换参数
   if (not this->nh_.getParam(this->ns_ + "/classification_start_frame",
                              this->classificationStartFrame_)) {
@@ -647,12 +694,7 @@ void dynamicDetector::initParam() {
     ROS_WARN_STREAM(this->hint_
                     << " No classification_start_frame param. Use default: 10");
   }
-  if (not this->nh_.getParam(this->ns_ + "/classify_close_range_threshold",
-                             this->classifyCloseRangeThreshold_)) {
-    this->classifyCloseRangeThreshold_ = 3.0;
-    ROS_WARN_STREAM(this->hint_ << " No classify_close_range_threshold param. "
-                                   "Use default: 3.0");
-  }
+  
   if (not this->nh_.getParam(this->ns_ + "/box_size_change_threshold",
                              this->boxSizeChangeThresh_)) {
     this->boxSizeChangeThresh_ = 0.2;
@@ -1543,10 +1585,10 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
               this->filteredPcClusterCenters_[i](2), 1.0;
 
           // 对当前检测框进行分类,结果写入filteredBBoxes_[i]
-          // 使用历史最大PCA特征
+          // 使用历史最大PCA特征，传入轨迹索引用于xy距离检查
           this->classifyBox(this->filteredBBoxes_[i], centroid,
                             this->maxHistoryPcClusterStds_[histIndex],
-                            this->maxHistorySizes_[histIndex]);
+                            this->maxHistorySizes_[histIndex], histIndex);
 
           // 立即切换卡尔曼滤波模型(在更新之前)
           this->switchKalmanModel(histIndex, this->filteredBBoxes_[i]);
@@ -1578,7 +1620,7 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
     this->maxHistorySizes_.clear();
     this->smallSizeCounter_.clear();
     this->maxHistoryPcClusterStds_.clear();
-    // this->filters_.clear(); // 同时清空滤波器
+    this->filters_.clear(); // 同时清空滤波器
   }
 
   hasNewDetection_ = false; // 标记检测结果已处理
@@ -1790,7 +1832,11 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
 // 可视化定时器回调函数
 void dynamicDetector::visCB(const ros::TimerEvent &) {
   // // [Performance Timing] 测量回调函数耗时
-  // auto start_time = std::chrono::high_resolution_clock::now();
+  auto start_time = std::chrono::high_resolution_clock::now();
+
+  // 加锁：先锁住点云数据，再锁定bbox数据，避免死锁请遵循顺序
+  std::lock_guard<std::mutex> lock_cloud(cloudMutex_);
+  std::lock_guard<std::mutex> lock_bbox(bboxMutex_);
 
   //----------------------------障碍物检测阶段----------------------------------------
   // 从原始（未降采样）的激光雷达数据中提取并发布动态点云，以获得更密集的视觉效果
@@ -1814,12 +1860,12 @@ void dynamicDetector::visCB(const ros::TimerEvent &) {
   this->getDynamicPc(dynamicPoints);
   this->publishPoints(dynamicPoints, this->dynamicPointsPub_);
 
-  // // [Performance Timing] 输出耗时
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration =
-  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-  // start_time); ROS_INFO_THROTTLE(1.0, "%s: visCB took %.3f ms",
-  // this->hint_.c_str(), duration.count() / 1000.0);
+  // [Performance Timing] 输出耗时
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration =
+  std::chrono::duration_cast<std::chrono::microseconds>(end_time -
+  start_time); ROS_INFO_THROTTLE(1.0, "%s: visCB took %.3f ms",
+  this->hint_.c_str(), duration.count() / 1000.0);
 }
 
 /*!
@@ -1832,7 +1878,33 @@ void dynamicDetector::visCB(const ros::TimerEvent &) {
 void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
                                   const Eigen::Vector4f &centroid,
                                   const Eigen::Vector3d &clusterStd,
-                                  const Eigen::Vector3d &maxHistorySize) {
+                                  const Eigen::Vector3d &maxHistorySize,
+                                  int trackIndex) {
+  // 重置分类标志
+  bbox.is_human = false;
+  bbox.is_che = false;
+  bbox.is_uav = false;
+  bbox.is_else = false;
+
+  // 检查box与无人机的xy轴距离，如果小于阈值则继承分类
+  if (trackIndex >= 0 && trackIndex < (int)this->boxHist_.size() &&
+      !this->boxHist_[trackIndex].empty()) {
+    // 计算box质心与无人机的xy距离
+    double dx = centroid(0) - this->position_.x();
+    double dy = centroid(1) - this->position_.y();
+    double xy_distance = std::sqrt(dx * dx + dy * dy);
+
+    // 如果xy距离小于阈值，继承前一帧的分类
+    if (xy_distance < this->classifyXYDistanceThreshold_) {
+      bbox.is_human =
+          this->boxHist_[trackIndex][0].is_human;
+      bbox.is_che = this->boxHist_[trackIndex][0].is_che;
+      bbox.is_uav = this->boxHist_[trackIndex][0].is_uav;
+      bbox.is_else = this->boxHist_[trackIndex][0].is_else;
+      return; // 直接退出函数
+    }
+  }
+
   // 使用历史最大尺寸进行判断，抵抗遮挡和距离衰减
   double x_width = maxHistorySize.x();
   double y_width = maxHistorySize.y();
@@ -1846,24 +1918,12 @@ void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
   double pca_z = clusterStd(2);
   double pca_xy_max = std::max(clusterStd(0), clusterStd(1));
 
-  // 计算距离雷达的距离 (2D平面距离)
-  // 注意：centroid是全局坐标，positionLidar_也是全局坐标
-  double dist =
-      (centroid.head(2).cast<double>() - this->positionLidar_.head(2)).norm();
-  bool isClose = dist < this->classifyCloseRangeThreshold_;
-
-  // 重置分类标志
-  bbox.is_human = false;
-  bbox.is_che = false;
-  bbox.is_uav = false;
-  bbox.is_else = false;
-
   // 1. 分类为人：
   // - 尺寸：高瘦 (z > xy * ratio)
   // - 形态(PCA)：Z轴离散度主导 (pca_z > pca_xy * ratio) [近距离时不强制]
   // - 质心：靠下
   if (z_width >= xy_max * this->classifyHumanZWidthRatio_ &&
-      (isClose || pca_z > pca_xy_max * this->classifyHumanPcaRatio_) &&
+      (pca_z > pca_xy_max * this->classifyHumanPcaRatio_) &&
       centroid_z < z_width * this->classifyHumanCentroidZRatio_) {
     bbox.is_human = true;
   }
@@ -1872,7 +1932,7 @@ void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
   // - 形态(PCA)：XY平面离散度主导 (pca_xy > pca_z * ratio) [近距离时不强制]
   // - 质心：靠下
   else if (xy_max >= z_width * this->classifyVehicleXYWidthRatio_ &&
-           (isClose || pca_xy_max > pca_z * this->classifyVehiclePcaRatio_) &&
+           (pca_xy_max > pca_z * this->classifyVehiclePcaRatio_) &&
            centroid_z < z_width * this->classifyVehicleCentroidZRatio_) {
     bbox.is_che = true;
   }
@@ -2359,6 +2419,8 @@ void dynamicDetector::applyDetectionNMS(
 
     // 计算新的边界框（位置使用点云质心）
     onboardDetector::box3D mergedBox;
+    // 合并得到的边界框没有明确的原始簇 id，设置为 -1 表示未知/合并产生
+    mergedBox.id = -1.0;
     // 计算点云质心
     Eigen::Vector3d mergedCenter = sumPos / static_cast<double>(mergedPc.size());
     // box位置使用点云质心
@@ -2514,6 +2576,13 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
 
         // 统一使用3D门限
         double gateThreshold = this->gateThreshold3D_;
+        
+        // 【改进】对于 coasting 轨迹（trackMissedFrames_[j] > 0），放宽门限
+        // 这样可以更容易地匹配到新检测，防止错误地生成新轨迹
+        if (j < static_cast<int>(this->trackMissedFrames_.size()) &&
+            this->trackMissedFrames_[j] > 0) {
+          gateThreshold *= this->coastingTrackGateRelaxFactor_;
+        }
 
         // 应用关联门限(使用动态门限)
         if (cost < gateThreshold) {
@@ -2555,6 +2624,66 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
   }
 
   this->newDetectFlag_ = false;
+}
+
+/*!
+ * @brief 判断两条轨迹是否为重复轨迹（同一物体）
+ * @param idx1 轨迹1的索引
+ * @param idx2 轨迹2的索引
+ * @return true 如果是重复轨迹，false 否则
+ * 
+ * 判断标准：
+ * 1. IoU重叠度（处理有交集的情况）
+ * 2. 中心距离（处理无交集但距离近的情况）
+ * 3. 速度方向相似度（运动一致性）
+ */
+bool dynamicDetector::areDuplicateTracks(int idx1, int idx2) {
+  if (this->boxHist_[idx1].empty() || this->boxHist_[idx2].empty()) {
+    return false;
+  }
+
+  const auto &bbox1 = this->boxHist_[idx1][0];
+  const auto &bbox2 = this->boxHist_[idx2][0];
+
+  // 1. 计算 IoU
+  double iou = this->compute3DIoU(bbox1, bbox2);
+  if (iou > this->duplicateTrackIoUThreshold_) {
+    return true;  // 有明显重叠
+  }
+
+  // 2. 计算中心距离
+  double dx = bbox1.x - bbox2.x;
+  double dy = bbox1.y - bbox2.y;
+  double dz = bbox1.z - bbox2.z;
+  double centerDist = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+  // 计算物体的平均尺寸作为距离判断的参考
+  double avgSize1 = (bbox1.x_width + bbox1.y_width + bbox1.z_width) / 3.0;
+  double avgSize2 = (bbox2.x_width + bbox2.y_width + bbox2.z_width) / 3.0;
+  double avgSize = (avgSize1 + avgSize2) / 2.0;
+
+  // 如果中心距离小于阈值（考虑物体尺寸），可能是同一物体
+  if (centerDist < this->duplicateTrackDistanceThreshold_ * avgSize) {
+    // 3. 检查速度方向相似度（仅当两者都在运动时）
+    double v1 = std::sqrt(bbox1.Vx * bbox1.Vx + bbox1.Vy * bbox1.Vy + bbox1.Vz * bbox1.Vz);
+    double v2 = std::sqrt(bbox2.Vx * bbox2.Vx + bbox2.Vy * bbox2.Vy + bbox2.Vz * bbox2.Vz);
+
+    // 至少有一个静止，则仅基于距离判断
+    if (v1 < 0.1 || v2 < 0.1) {
+      return (centerDist < avgSize * 1.5);  // 静止物体距离阈值更严格
+    }
+
+    // 两者都在运动，计算速度方向的余弦相似度
+    double vdot = bbox1.Vx * bbox2.Vx + bbox1.Vy * bbox2.Vy + bbox1.Vz * bbox2.Vz;
+    double cosSimilarity = vdot / (v1 * v2);
+
+    // 速度方向相似 + 距离近 = 同一物体
+    if (cosSimilarity > this->duplicateTrackVelocitySimilarityThreshold_) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /*!
@@ -3117,16 +3246,16 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
  * @brief 移除重复/重叠的轨迹（用于解决幽灵轨迹问题）
  *
  * 检测逻辑：
- * - 如果两条轨迹的 IoU > 阈值（如 0.5）
- * - 保留丢失帧数较少的（更可靠）
- * - 删除丢失帧数较多的（coasting 轨迹）
+ * - 使用多维度判断：IoU重叠、中心距离、速度方向相似度
+ * - 可以处理有交集和无交集的重复轨迹
+ * - 保留更可靠的轨迹（丢失帧数少、历史更长）
+ * - 删除不可靠的轨迹（丢失帧数多、新生成的轨迹）
  */
 void dynamicDetector::removeDuplicateTracks() {
   if (this->boxHist_.size() <= 1) {
     return; // 只有一条或零条轨迹，无需去重
   }
 
-  // 使用配置的 IoU 阈值
   std::vector<bool> toRemove(this->boxHist_.size(), false);
 
   // 检查所有轨迹对
@@ -3138,29 +3267,42 @@ void dynamicDetector::removeDuplicateTracks() {
       if (toRemove[j] || this->boxHist_[j].empty())
         continue;
 
-      // 计算两条轨迹最新状态的 IoU
-      const auto &bbox_i = this->boxHist_[i][0];
-      const auto &bbox_j = this->boxHist_[j][0];
-      double iou = this->compute3DIoU(bbox_i, bbox_j);
-
-      // 如果重叠度高，删除丢失帧数多的那条
-      if (iou > this->duplicateTrackIoUThreshold_) {
+      // 使用智能判断函数检测是否为重复轨迹
+      if (this->areDuplicateTracks(i, j)) {
         int missed_i = this->trackMissedFrames_[i];
         int missed_j = this->trackMissedFrames_[j];
+        size_t histLen_i = this->boxHist_[i].size();
+        size_t histLen_j = this->boxHist_[j].size();
 
+        // 优先保留：
+        // 1. 丢失帧数少的（更可靠）
+        // 2. 如果丢失帧数相同，保留历史更长的（更稳定）
+        bool removeI = false;
         if (missed_i > missed_j) {
+          removeI = true;
+        } else if (missed_i == missed_j) {
+          // 丢失帧数相同，保留历史更长的
+          if (histLen_i < histLen_j) {
+            removeI = true;
+          } else if (histLen_i == histLen_j) {
+            // 历史长度也相同，保留第一个（idx小的）
+            removeI = false;
+          }
+        }
+
+        if (removeI) {
           toRemove[i] = true;
           // ROS_WARN_THROTTLE(1.0,
           //                   "%s: Removing duplicate track %zu (missed=%d, "
-          //                   "IoU=%.2f with track %zu)",
-          //                   this->hint_.c_str(), i, missed_i, iou, j);
+          //                   "histLen=%zu, duplicate with track %zu)",
+          //                   this->hint_.c_str(), i, missed_i, histLen_i, j);
           break; // i 已被标记删除，无需继续比较
         } else {
           toRemove[j] = true;
           // ROS_WARN_THROTTLE(1.0,
           //                   "%s: Removing duplicate track %zu (missed=%d, "
-          //                   "IoU=%.2f with track %zu)",
-          //                   this->hint_.c_str(), j, missed_j, iou, i);
+          //                   "histLen=%zu, duplicate with track %zu)",
+          //                   this->hint_.c_str(), j, missed_j, histLen_j, i);
         }
       }
     }
