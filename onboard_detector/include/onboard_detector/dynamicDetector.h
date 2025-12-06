@@ -161,12 +161,11 @@ private:
   // 动态/静态分类参数
   int skipFrame_;               // 点云比较时跳过的帧数
   double dynaVelThresh_;        // 判定为动态的线速度阈值
-  double dynaAngularVelThresh_; // 判定为动态的角速度阈值（原地转弯检测）
   double dynaVoteThresh_;       // 判定为动态的投票比例阈值
   int forceDynaFrames_;      // 在历史中被判定为动态的帧数，超过则强制认为是动态
   int forceDynaCheckRange_;  // 检查强制动态的历史范围
   int dynamicConsistThresh_; // 动态一致性检查的帧数阈值
-  double boxSizeChangeThresh_;   // 尺寸变化阈值
+  double classificationMinNeighborDist_; // 点云匹配距离
   double sizeMergeThresh_;       // 尺寸合并阈值
   double pointCountMergeThresh_; // 点数合并阈值
   int sizeResetFrames_;          // 尺寸重置帧数

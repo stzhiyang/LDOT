@@ -472,22 +472,6 @@ void dynamicDetector::initParam() {
               << this->dynaVelThresh_ << std::endl;
   }
 
-  // angular velocity threshold for dynamic classification (in-place rotation
-  // detection)
-  if (not this->nh_.getParam(this->ns_ + "/dynamic_angular_velocity_threshold",
-                             this->dynaAngularVelThresh_)) {
-    this->dynaAngularVelThresh_ = 0.3; // 默认0.3 rad/s (约17度/秒)
-    std::cout << this->hint_
-              << ": No dynamic angular velocity threshold parameter found. Use "
-                 "default: 0.3 rad/s."
-              << std::endl;
-  } else {
-    std::cout
-        << this->hint_
-        << ": Angular velocity threshold for dynamic classification is set to: "
-        << this->dynaAngularVelThresh_ << " rad/s" << std::endl;
-  }
-
   // voting threshold for dynamic classification
   if (not this->nh_.getParam(this->ns_ + "/dynamic_voting_threshold",
                              this->dynaVoteThresh_)) {
@@ -695,11 +679,16 @@ void dynamicDetector::initParam() {
                     << " No classification_start_frame param. Use default: 10");
   }
   
-  if (not this->nh_.getParam(this->ns_ + "/box_size_change_threshold",
-                             this->boxSizeChangeThresh_)) {
-    this->boxSizeChangeThresh_ = 0.2;
-    ROS_WARN_STREAM(this->hint_ << " No box_size_change_threshold param. "
-                                   "Use default: 0.2");
+  // 点云投票距离
+  if (not this->nh_.getParam(this->ns_ + "/classification_min_neighbor_distance",
+                             this->classificationMinNeighborDist_)) {
+    this->classificationMinNeighborDist_ = 2.0;
+    ROS_INFO_STREAM(
+        this->hint_
+        << " No classification_min_neighbor_distance param. Use default: 2.0");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " classification_min_neighbor_distance: "
+                                << this->classificationMinNeighborDist_);
   }
 
   // Classification Stability Parameters
@@ -1649,8 +1638,8 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
   // 创建一个临时向量来存储当前帧检测到的动态边界框
   std::vector<onboardDetector::box3D> dynamicBBoxesTemp;
 
-  // 遍历所有被跟踪目标的点云/边界框历史，只判断xy平面的动态性
-  // 注意：在某些情况下，我们不需要执行动态障碍物识别
+  // 遍历所有被跟踪目标的点云/边界框历史。
+  // 默认只判断xy平面的动态性，但对于无人机（is_uav）和其他3D类（is_else），保留z轴速度用于3D动态判别
   for (size_t i = 0; i < this->pcHist_.size(); ++i) {
     // ===================================================================================
     // 情况一：历史记录长度不足以进行分类
@@ -1710,6 +1699,8 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
       // 3D CV: [x, y, z, vx, vy, vz]
       Vkf(0) = state(3);
       Vkf(1) = state(4);
+      // include z velocity (vz) when available
+      Vkf(2) = state(5);
     } else if (dim == 7) {
       // 7维可能是 Human CA 或 Vehicle CTRA，依据历史分类决定
       bool isVehicle = this->boxHist_[i][0].is_che; // Vehicle CTRA
@@ -1728,10 +1719,13 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
       // 3D CA: [x, y, z, vx, vy, vz, ax, ay, az]
       Vkf(0) = state(3);
       Vkf(1) = state(4);
+      // include z velocity (vz)
+      Vkf(2) = state(5);
     } else {
       // fallback to historical speed
       Vkf(0) = this->boxHist_[i][0].Vx;
       Vkf(1) = this->boxHist_[i][0].Vy;
+      Vkf(2) = this->boxHist_[i][0].Vz; // use historical vz if available
     }
 
     // 检查尺寸稳定性（解决遮挡导致的误判问题）
@@ -1740,7 +1734,7 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
 
     // 遍历当前点云中的每一个点，通过与历史点云比较来“投票”
     for (size_t j = 0; j < currPc.size(); ++j) {
-      double minDist = 2; // 初始化一个较大的最小距离
+      double minDist = this->classificationMinNeighborDist_; // 初始化一个较大的最小距离，从参数文件读取
       Eigen::Vector3d nearestVect;
       // 在历史点云中为当前点寻找最近邻点
       for (size_t k = 0; k < prevPc.size(); k++) {
@@ -1750,9 +1744,13 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
           nearestVect = currPc[j] - prevPc[k]; // 记录位移向量
         }
       }
-      // 计算该点的速度，并忽略Z轴
+      // 计算该点的速度
       Vcur = nearestVect / (this->dt_ * curFrameGap);
-      Vcur(2) = 0;
+      // 默认情况下（人物/车辆），忽略Z轴速度，以提高平面判别鲁棒性
+      // 但如果被标注为无人机或else类别，则保留Z轴速度（3D运动）用于分类
+      if (!(this->boxHist_[i][0].is_uav || this->boxHist_[i][0].is_else)) {
+        Vcur(2) = 0;
+      }
       // 计算点的速度向量与边界框整体速度向量的余弦相似度
       double velSim = Vcur.dot(Vbox) / (Vcur.norm() * Vbox.norm());
 
