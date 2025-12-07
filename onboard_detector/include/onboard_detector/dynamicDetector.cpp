@@ -938,61 +938,169 @@ void dynamicDetector::registerCallback() {
 bool dynamicDetector::getDynamicObstacles(
     onboard_detector::GetDynamicObstacles::Request &req,
     onboard_detector::GetDynamicObstacles::Response &res) {
-  std::lock_guard<std::mutex> lock(bboxMutex_); // 加锁保护动态边界框数据
+  
+  // 定义结构体用于存储动态障碍物的完整信息（包括滤波器索引）
+  struct DynamicObstacleInfo {
+    double distance;                    // 与机器人的距离
+    onboardDetector::box3D bbox;        // 边界框数据
+    int filterIndex;                    // 对应的滤波器索引
+    Eigen::VectorXd filterState;        // 滤波器状态
+    Eigen::MatrixXd filterCovariance;   // 滤波器协方差
+  };
 
-  // 从服务请求中获取机器人当前的位置
-  Eigen::Vector3d currPos = Eigen::Vector3d(
-      req.current_position.x, req.current_position.y, req.current_position.z);
-
-  // 创建一个向量，用于存储障碍物id及与机器人距离的键值对，方便后续排序
-  std::vector<std::pair<double, onboardDetector::box3D>> obstaclesWithDistances;
-
-  // 遍历当前所有已检测到的动态障碍物
-  for (const onboardDetector::box3D &bbox : this->dynamicBBoxes_) {
-    Eigen::Vector3d obsPos(bbox.x, bbox.y, bbox.z);
-    Eigen::Vector3d diff = currPos - obsPos;
-    // diff(2) = 0.; // 忽略Z轴差异，计算2D平面距离
-    double distance = diff.norm();
-
-    // 如果障碍物在请求的范围之内，则将其添加到列表中
-    if (distance <= req.range) {
-      obstaclesWithDistances.push_back(std::make_pair(distance, bbox));
+  // 使用局部拷贝来减少锁持有时间
+  std::vector<DynamicObstacleInfo> obstaclesWithInfo;
+  {
+    std::lock_guard<std::mutex> lock(bboxMutex_); // 加锁保护动态边界框数据
+    
+    // 检查是否有有效的跟踪数据
+    if (this->boxHist_.empty()) {
+      ROS_WARN_THROTTLE(2.0, "%s: No tracked obstacles available", this->hint_.c_str());
+      return true; // 返回空结果，但服务调用成功
     }
+
+    // 从服务请求中获取机器人当前的位置
+    Eigen::Vector3d currPos = Eigen::Vector3d(
+        req.current_position.x, req.current_position.y, req.current_position.z);
+
+    // 遍历所有历史轨迹，找出被标记为动态的障碍物
+    for (size_t i = 0; i < this->boxHist_.size(); ++i) {
+      // 检查历史轨迹是否为空
+      if (this->boxHist_[i].empty()) {
+        continue;
+      }
+
+      // 获取最新帧的边界框
+      const onboardDetector::box3D &bbox = this->boxHist_[i][0];
+      
+      // 只处理被标记为动态的障碍物
+      if (!bbox.is_dynamic) {
+        continue;
+      }
+
+      // 检查对应的滤波器是否存在且已初始化
+      if (i >= this->filters_.size() || !this->filters_[i] || 
+          !this->filters_[i]->isInitialized()) {
+        continue;
+      }
+
+      // 计算与机器人的距离
+      Eigen::Vector3d obsPos(bbox.x, bbox.y, bbox.z);
+      Eigen::Vector3d diff = currPos - obsPos;
+      double distance = diff.norm();
+
+      // 如果障碍物在请求的范围之内，则将其添加到列表中
+      if (distance <= req.range) {
+        DynamicObstacleInfo info;
+        info.distance = distance;
+        info.bbox = bbox;
+        info.filterIndex = static_cast<int>(i);
+        info.filterState = this->filters_[i]->getState();
+        info.filterCovariance = this->filters_[i]->getCovariance();
+        obstaclesWithInfo.push_back(info);
+      }
+    }
+  } // 锁在这里自动释放
+
+  // 检查是否有有效的动态障碍物
+  if (obstaclesWithInfo.empty()) {
+    ROS_DEBUG_THROTTLE(2.0, "%s: No dynamic obstacles in range", this->hint_.c_str());
+    return true; // 返回空结果，但服务调用成功
   }
 
   // 按距离从小到大对障碍物进行排序
-  std::sort(obstaclesWithDistances.begin(), obstaclesWithDistances.end(),
-            [](const std::pair<double, onboardDetector::box3D> &a,
-               const std::pair<double, onboardDetector::box3D> &b) {
-              return a.first < b.first;
+  std::sort(obstaclesWithInfo.begin(), obstaclesWithInfo.end(),
+            [](const DynamicObstacleInfo &a, const DynamicObstacleInfo &b) {
+              return a.distance < b.distance;
             });
 
   // 将排序后的障碍物信息填充到服务响应中
-  for (const auto &item : obstaclesWithDistances) {
-    const onboardDetector::box3D &bbox = item.second;
+  for (const auto &info : obstaclesWithInfo) {
+    const onboardDetector::box3D &bbox = info.bbox;
+    const Eigen::VectorXd &state = info.filterState;
+    const Eigen::MatrixXd &P = info.filterCovariance;
+    int dim = state.size();
 
     geometry_msgs::Vector3 pos;
     geometry_msgs::Vector3 vel;
     geometry_msgs::Vector3 size;
+    geometry_msgs::Vector3 predPos;
+    geometry_msgs::Vector3 posCov;
 
-    // 填充位置
+    // 填充当前位置
     pos.x = bbox.x;
     pos.y = bbox.y;
     pos.z = bbox.z;
-
-    // 填充速度（Z轴速度设为0）
-    vel.x = bbox.Vx;
-    vel.y = bbox.Vy;
-    vel.z = 0.;
 
     // 填充尺寸
     size.x = bbox.x_width;
     size.y = bbox.y_width;
     size.z = bbox.z_width;
 
+    // 根据不同的滤波器模型提取速度和计算预测位置
+    // 预测位置 = 当前位置 + 速度 * dt
+    double vx = 0, vy = 0, vz = 0;
+    double ax = 0, ay = 0, az = 0;
+    
+    if (dim == 6) {
+      // 3D CV模型: [x, y, z, vx, vy, vz]
+      vx = state(3);
+      vy = state(4);
+      vz = state(5);
+    } else if (dim == 7) {
+      // 7维可能是 Human CA 或 Vehicle CTRA
+      bool isVehicle = bbox.is_che;
+      if (isVehicle) {
+        // CTRA模型: [x, y, z, v, a, yaw, yaw_rate]
+        double v = state(3);
+        double a = state(4);
+        double yaw = state(5);
+        double yaw_rate = state(6);
+        vx = v * cos(yaw);
+        vy = v * sin(yaw);
+        // 对于CTRA模型，考虑转弯率的影响计算加速度分量
+        ax = a * cos(yaw) - v * yaw_rate * sin(yaw);
+        ay = a * sin(yaw) + v * yaw_rate * cos(yaw);
+      } else {
+        // Human CA模型: [x, y, z, vx, vy, ax, ay]
+        vx = state(3);
+        vy = state(4);
+        ax = state(5);
+        ay = state(6);
+      }
+    } else if (dim == 9) {
+      // 3D CA模型 (UAV): [x, y, z, vx, vy, vz, ax, ay, az]
+      vx = state(3);
+      vy = state(4);
+      vz = state(5);
+      ax = state(6);
+      ay = state(7);
+      az = state(8);
+    }
+
+    // 填充速度
+    vel.x = vx;
+    vel.y = vy;
+    vel.z = vz;
+
+    // 计算下一帧预测位置（使用运动学方程：x' = x + v*dt + 0.5*a*dt^2）
+    double dt = this->dt_;
+    predPos.x = bbox.x + vx * dt + 0.5 * ax * dt * dt;
+    predPos.y = bbox.y + vy * dt + 0.5 * ay * dt * dt;
+    predPos.z = bbox.z + vz * dt + 0.5 * az * dt * dt;
+
+    // 提取位置协方差（状态向量前3维对应位置的协方差对角元素）
+    // 协方差的平方根表示标准差，即位置不确定性
+    posCov.x = std::sqrt(std::max(0.0, P(0, 0)));
+    posCov.y = std::sqrt(std::max(0.0, P(1, 1)));
+    posCov.z = std::sqrt(std::max(0.0, P(2, 2)));
+
+    // 将数据添加到响应中
     res.position.push_back(pos);
     res.velocity.push_back(vel);
     res.size.push_back(size);
+    res.predicted_position.push_back(predPos);
+    res.position_covariance.push_back(posCov);
   }
 
   return true; // 表示服务成功完成
@@ -1436,6 +1544,8 @@ void dynamicDetector::lidarDetectionCB(const ros::TimerEvent &event) {
       end_time - start_time);
   ROS_INFO_THROTTLE(1.0, "%s: lidarDetectionCB took %.3f ms",
                     this->hint_.c_str(), duration.count() / 1000.0);
+  
+  lastProcessTime_ = ros::Time::now(); // 更新最后处理时间
 }
 
 // 跟踪定时器回调函数,有个问题，匹配时，多出的轨迹直接丢掉
@@ -1461,6 +1571,15 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
     for (int i = 0; i < int(bestMatch.size()); ++i) {
       if (bestMatch[i] >= 0) { // 匹配成功的旧轨迹
         int histIndex = bestMatch[i];
+
+        // 边界检查：确保 histIndex 在所有向量的有效范围内
+        if (histIndex < 0 ||
+            histIndex >= static_cast<int>(this->boxHist_.size()) ||
+            histIndex >= static_cast<int>(this->maxHistorySizes_.size()) ||
+            histIndex >= static_cast<int>(this->maxHistoryPcClusterStds_.size()) ||
+            histIndex >= static_cast<int>(this->smallSizeCounter_.size())) {
+          continue;  // 跳过无效索引
+        }
 
         // 1.1 稳健的历史尺寸和PCA特征更新
         double curr_x = this->filteredBBoxes_[i].x_width;
@@ -1694,6 +1813,10 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
               (this->dt_ * curFrameGap);
 
     // 获取卡尔曼滤波器估计的速度，根据不同模型维度进行计算
+    // 边界检查
+    if (i >= this->filters_.size() || !this->filters_[i]) {
+      continue;
+    }
     Eigen::VectorXd state = this->filters_[i]->getState();
     int dim = state.size();
     if (dim == 6) {
@@ -1833,31 +1956,60 @@ void dynamicDetector::visCB(const ros::TimerEvent &) {
   // // [Performance Timing] 测量回调函数耗时
   auto start_time = std::chrono::high_resolution_clock::now();
 
-  // 加锁：先锁住点云数据，再锁定bbox数据，避免死锁请遵循顺序
-  std::lock_guard<std::mutex> lock_cloud(cloudMutex_);
-  std::lock_guard<std::mutex> lock_bbox(bboxMutex_);
+  // ============================================================================
+  // 方案3（可选）：使用 try_lock 避免阻塞，如果锁被占用则跳过本次可视化
+  // 如需启用，请取消下面的注释，并注释掉后面的分离锁代码
+  // ============================================================================
+  // std::unique_lock<std::mutex> lock_cloud(cloudMutex_, std::try_to_lock);
+  // std::unique_lock<std::mutex> lock_bbox(bboxMutex_, std::try_to_lock);
+  // 
+  // if (!lock_cloud.owns_lock() || !lock_bbox.owns_lock()) {
+  //   ROS_DEBUG_THROTTLE(2.0, "%s: Skipping visualization (locks busy)", this->hint_.c_str());
+  //   return; // 锁被占用，跳过本次可视化
+  // }
+  // ============================================================================
 
-  //----------------------------障碍物检测阶段----------------------------------------
-  // 从原始（未降采样）的激光雷达数据中提取并发布动态点云，以获得更密集的视觉效果
-  this->publishRawDynamicPoints();
-  this->publishFilteredPoints();
-  this->publish3dBox(this->filteredBBoxes_, this->filteredBBoxesPub_, 0, 1, 1);
+  // 方案2（当前启用）：分离锁的使用，减少同时持有多个锁的时间
+  // 优点：减少对其他线程的阻塞，提高系统并发性能
+  
+  //----------------------------第一部分：只需要 bboxMutex_ 的可视化----------------------------------------
+  {
+    std::lock_guard<std::mutex> lock(bboxMutex_);
+    
+    // 发布过滤后的边界框（青色）
+    this->publish3dBox(this->filteredBBoxes_, this->filteredBBoxesPub_, 0, 1, 1);
+    
+    // 发布经过卡尔曼滤波跟踪后的边界框（黄色）
+    this->publish3dBox(this->trackedBBoxes_, this->trackedBBoxesPub_, 1, 1, 0);
+    
+    // 发布最终被分类为动态的边界框（蓝色）
+    this->publish3dBox(this->dynamicBBoxes_, this->dynamicBBoxesPub_, 0, 0, 1);
+    
+    // 发布被跟踪物体的历史轨迹线
+    this->publishHistoryTraj();
+    
+    // 发布动态障碍物的专用轨迹可视化（轨迹线、轨迹点、速度箭头等）
+    this->publishDynamicBoxTrajectory();
+  } // 释放 bboxMutex_，让其他线程可以继续工作
 
-  //----------------------------障碍物关联和跟踪阶段-------------------------------------
-  // 发布经过卡尔曼滤波跟踪后的边界框（黄色）
-  this->publish3dBox(this->trackedBBoxes_, this->trackedBBoxesPub_, 1, 1, 0);
-  // 发布被跟踪物体的历史轨迹线
-  this->publishHistoryTraj();
-
-  //-----------------------------动态障碍物识别阶段--------------------------------------
-  // 发布最终被分类为动态的边界框（蓝色）
-  this->publish3dBox(this->dynamicBBoxes_, this->dynamicBBoxesPub_, 0, 0, 1);
-  // 发布动态障碍物的专用轨迹可视化（轨迹线、轨迹点、速度箭头等）
-  this->publishDynamicBoxTrajectory();
-  // 提取并发布属于动态障碍物的点云
-  std::vector<Eigen::Vector3d> dynamicPoints;
-  this->getDynamicPc(dynamicPoints);
-  this->publishPoints(dynamicPoints, this->dynamicPointsPub_);
+  //----------------------------第二部分：需要 cloudMutex_ 和 bboxMutex_ 的可视化----------------------------------------
+  {
+    // 这部分需要同时访问点云和边界框数据
+    // 按照固定顺序加锁：先 cloudMutex_，再 bboxMutex_，避免死锁
+    std::lock_guard<std::mutex> lock_cloud(cloudMutex_);
+    std::lock_guard<std::mutex> lock_bbox(bboxMutex_);
+    
+    // 从原始（未降采样）的激光雷达数据中提取并发布动态点云，以获得更密集的视觉效果
+    this->publishRawDynamicPoints();
+    
+    // 发布过滤后的点云
+    this->publishFilteredPoints();
+    
+    // 提取并发布属于动态障碍物的点云
+    std::vector<Eigen::Vector3d> dynamicPoints;
+    this->getDynamicPc(dynamicPoints);
+    this->publishPoints(dynamicPoints, this->dynamicPointsPub_);
+  } // 释放所有锁
 
   // [Performance Timing] 输出耗时
   auto end_time = std::chrono::high_resolution_clock::now();
@@ -1957,6 +2109,12 @@ void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
  */
 void dynamicDetector::switchKalmanModel(int index,
                                         const onboardDetector::box3D &bbox) {
+  // 边界检查
+  if (index < 0 || index >= static_cast<int>(this->filters_.size()) ||
+      !this->filters_[index]) {
+    return;
+  }
+
   // 获取当前滤波器
   auto &filter = this->filters_[index];
   Eigen::VectorXd oldState = filter->getState();
@@ -2264,10 +2422,13 @@ void dynamicDetector::lidarDetect() {
   }
 
   // 更新最终的过滤结果
-  this->filteredBBoxes_ = lidarBBoxesTemp;
-  this->filteredPcClusters_ = lidarPcClustersTemp;
-  this->filteredPcClusterCenters_ = lidarPcClusterCentersTemp;
-  this->filteredPcClusterStds_ = lidarPcClusterStdsTemp;
+  {
+    std::lock_guard<std::mutex> lock(this->bboxMutex_);
+    this->filteredBBoxes_ = lidarBBoxesTemp;
+    this->filteredPcClusters_ = lidarPcClustersTemp;
+    this->filteredPcClusterCenters_ = lidarPcClusterCentersTemp;
+    this->filteredPcClusterStds_ = lidarPcClusterStdsTemp;
+  }
 }
 
 /*!
@@ -2473,21 +2634,40 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
 
   // 第一次检测：初始化所有目标
   if (this->boxHist_.size() == 0) {
-    this->boxHist_.resize(numCurrObjs);
-    this->pcHist_.resize(numCurrObjs);
-    this->pcCenterHist_.resize(numCurrObjs);
-    this->pcStdHist_.resize(numCurrObjs);
-    this->maxHistorySizes_.resize(numCurrObjs);
-    this->smallSizeCounter_.resize(numCurrObjs, 0);
-    this->maxHistoryPcClusterStds_.resize(numCurrObjs);
-    bestMatch.resize(numCurrObjs, -1);
+    // 预留空间但不初始化，避免 resize + push_back 导致大小翻倍
+    this->boxHist_.reserve(numCurrObjs);
+    this->pcHist_.reserve(numCurrObjs);
+    this->pcCenterHist_.reserve(numCurrObjs);
+    this->pcStdHist_.reserve(numCurrObjs);
+    this->maxHistorySizes_.reserve(numCurrObjs);
+    this->smallSizeCounter_.reserve(numCurrObjs);
+    this->maxHistoryPcClusterStds_.reserve(numCurrObjs);
+    this->filters_.reserve(numCurrObjs);
+    this->trackMissedFrames_.reserve(numCurrObjs);
+    this->trackedBBoxes_.reserve(numCurrObjs);
+    // 第一帧：bestMatch[i] = i 表示自己匹配自己，避免在 kalmanFilterAndUpdateHist 中重复初始化
+    bestMatch.resize(numCurrObjs);
 
     for (int i = 0; i < numCurrObjs; ++i) {
-      this->boxHist_[i].push_back(this->filteredBBoxes_[i]);
-      this->pcHist_[i].push_back(this->filteredPcClusters_[i]);
-      this->pcCenterHist_[i].push_back(this->filteredPcClusterCenters_[i]);
-      this->pcStdHist_.push_back(std::deque<Eigen::Vector3d>());
-      this->pcStdHist_.back().push_back(this->filteredPcClusterStds_[i]);
+      // 设置匹配索引为自己，避免被当作新目标重复初始化
+      bestMatch[i] = i;
+
+      // 使用 push_back 统一添加元素
+      std::deque<onboardDetector::box3D> newBoxHist;
+      newBoxHist.push_back(this->filteredBBoxes_[i]);
+      this->boxHist_.push_back(newBoxHist);
+
+      std::deque<std::vector<Eigen::Vector3d>> newPcHist;
+      newPcHist.push_back(this->filteredPcClusters_[i]);
+      this->pcHist_.push_back(newPcHist);
+
+      std::deque<Eigen::Vector3d> newPcCenterHist;
+      newPcCenterHist.push_back(this->filteredPcClusterCenters_[i]);
+      this->pcCenterHist_.push_back(newPcCenterHist);
+
+      std::deque<Eigen::Vector3d> newPcStdHist;
+      newPcStdHist.push_back(this->filteredPcClusterStds_[i]);
+      this->pcStdHist_.push_back(newPcStdHist);
 
       // 初始化历史最大尺寸
       this->maxHistorySizes_.push_back(Eigen::Vector3d(
@@ -2495,9 +2675,9 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
           this->filteredBBoxes_[i].z_width));
 
       // 初始化历史最大PCA特征
-      // 同步新增向量
       this->maxHistoryPcClusterStds_.push_back(this->filteredPcClusterStds_[i]);
       this->smallSizeCounter_.push_back(0);
+      this->trackMissedFrames_.push_back(0);
 
       // 强制所有目标使用 3D CV 模型
       auto &bbox = this->filteredBBoxes_[i];
@@ -2520,16 +2700,32 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
 
       newFilter->initialize(detection);
       this->filters_.push_back(newFilter);
+
+      // 初始化 trackedBBoxes_，第一帧的跟踪结果就是检测结果
+      this->trackedBBoxes_.push_back(this->filteredBBoxes_[i]);
     }
+
+    // 第一帧初始化完成，设置标志并返回，不需要再调用 kalmanFilterAndUpdateHist
+    this->newDetectFlag_ = false;
+    return;
   } else if (this->newDetectFlag_) {
     // 后续检测：使用匈牙利算法进行关联
     int numHistObjs = int(this->boxHist_.size());
     bestMatch.resize(numCurrObjs, -1);
 
+    // 确保 filters_ 大小与 boxHist_ 一致
+    if (this->filters_.size() != this->boxHist_.size()) {
+      ROS_WARN_THROTTLE(1.0, "%s: filters_ size mismatch, skipping association",
+                        this->hint_.c_str());
+      return;
+    }
+
     // 首先对所有历史轨迹的卡尔曼滤波器执行预测步骤
     for (int j = 0; j < numHistObjs; ++j) {
-      this->filters_[j]->setDt(this->dt_);
-      this->filters_[j]->predict();
+      if (this->filters_[j]) {
+        this->filters_[j]->setDt(this->dt_);
+        this->filters_[j]->predict();
+      }
     }
 
     // 构建代价矩阵
@@ -2542,6 +2738,12 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
       const Eigen::Vector3d &currStd = this->filteredPcClusterStds_[i];
 
       for (int j = 0; j < numHistObjs; ++j) {
+        // 边界检查和空指针检查
+        if (this->boxHist_[j].empty() || this->pcStdHist_[j].empty() ||
+            !this->filters_[j]) {
+          continue;
+        }
+
         // 获取历史轨迹的最新状态
         const onboardDetector::box3D &histBox = this->boxHist_[j][0];
         const Eigen::Vector3d &histStd = this->pcStdHist_[j][0];
@@ -2637,6 +2839,11 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
  * 3. 速度方向相似度（运动一致性）
  */
 bool dynamicDetector::areDuplicateTracks(int idx1, int idx2) {
+  // 边界检查
+  if (idx1 < 0 || idx1 >= static_cast<int>(this->boxHist_.size()) ||
+      idx2 < 0 || idx2 >= static_cast<int>(this->boxHist_.size())) {
+    return false;
+  }
   if (this->boxHist_[idx1].empty() || this->boxHist_[idx2].empty()) {
     return false;
   }
@@ -2903,12 +3110,21 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   std::vector<std::deque<Eigen::Vector3d>> pcCenterHistTemp;
   std::vector<std::deque<Eigen::Vector3d>> pcStdHistTemp;
   std::vector<Eigen::Vector3d> maxHistorySizesTemp;
+  std::vector<Eigen::Vector3d> maxHistoryPcClusterStdsTemp;
+  std::vector<int> smallSizeCounterTemp;
   std::vector<std::shared_ptr<KalmanFilterBase>> filtersTemp;
   std::vector<int> trackMissedFramesTemp;
 
-  // 确保 trackMissedFrames_ 大小与 boxHist_ 一致
-  if (this->trackMissedFrames_.size() != this->boxHist_.size()) {
-    this->trackMissedFrames_.resize(this->boxHist_.size(), 0);
+  // 确保所有向量大小与 boxHist_ 一致
+  size_t histSize = this->boxHist_.size();
+  if (this->trackMissedFrames_.size() != histSize) {
+    this->trackMissedFrames_.resize(histSize, 0);
+  }
+  if (this->maxHistoryPcClusterStds_.size() != histSize) {
+    this->maxHistoryPcClusterStds_.resize(histSize, Eigen::Vector3d::Zero());
+  }
+  if (this->smallSizeCounter_.size() != histSize) {
+    this->smallSizeCounter_.resize(histSize, 0);
   }
 
   // 为新出现的目标准备的空历史记录模板
@@ -2946,6 +3162,9 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       pcCenterHistTemp.push_back(this->pcCenterHist_[h_idx]);
       pcStdHistTemp.push_back(this->pcStdHist_[h_idx]);
       maxHistorySizesTemp.push_back(this->maxHistorySizes_[h_idx]);
+      // 同步继承 maxHistoryPcClusterStds_ 和 smallSizeCounter_
+      maxHistoryPcClusterStdsTemp.push_back(this->maxHistoryPcClusterStds_[h_idx]);
+      smallSizeCounterTemp.push_back(this->smallSizeCounter_[h_idx]);
       filtersTemp.push_back(this->filters_[h_idx]);
 
       // 构建测量向量：所有模型都测量3D位置 [x, y, z]
@@ -3041,6 +3260,9 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       maxHistorySizesTemp.push_back(
           Eigen::Vector3d(currDetectedBBox.x_width, currDetectedBBox.y_width,
                           currDetectedBBox.z_width)); // 初始化最大尺寸
+      // 同步初始化 maxHistoryPcClusterStds_ 和 smallSizeCounter_
+      maxHistoryPcClusterStdsTemp.push_back(this->filteredPcClusterStds_[i]);
+      smallSizeCounterTemp.push_back(0);
 
       // 强制所有新轨迹使用 3D CV 模型
       auto newFilter = createKalmanFilter(false, // is_human
@@ -3105,6 +3327,9 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
         pcCenterHistTemp.push_back(this->pcCenterHist_[j]);
         pcStdHistTemp.push_back(this->pcStdHist_[j]);
         maxHistorySizesTemp.push_back(this->maxHistorySizes_[j]);
+        // 同步继承 maxHistoryPcClusterStds_ 和 smallSizeCounter_
+        maxHistoryPcClusterStdsTemp.push_back(this->maxHistoryPcClusterStds_[j]);
+        smallSizeCounterTemp.push_back(this->smallSizeCounter_[j]);
         filtersTemp.push_back(this->filters_[j]);
 
         // 获取预测状态 (已在 trackingCB 中 predict)
@@ -3236,6 +3461,8 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   this->pcCenterHist_ = pcCenterHistTemp;
   this->pcStdHist_ = pcStdHistTemp;
   this->maxHistorySizes_ = maxHistorySizesTemp;
+  this->maxHistoryPcClusterStds_ = maxHistoryPcClusterStdsTemp;
+  this->smallSizeCounter_ = smallSizeCounterTemp;
   this->filters_ = filtersTemp;
   this->trackedBBoxes_ = trackedBBoxesTemp;
   this->trackMissedFrames_ = trackMissedFramesTemp;
@@ -3255,6 +3482,11 @@ void dynamicDetector::removeDuplicateTracks() {
     return; // 只有一条或零条轨迹，无需去重
   }
 
+  // 确保 trackMissedFrames_ 大小与 boxHist_ 一致
+  if (this->trackMissedFrames_.size() != this->boxHist_.size()) {
+    this->trackMissedFrames_.resize(this->boxHist_.size(), 0);
+  }
+
   std::vector<bool> toRemove(this->boxHist_.size(), false);
 
   // 检查所有轨迹对
@@ -3268,8 +3500,9 @@ void dynamicDetector::removeDuplicateTracks() {
 
       // 使用智能判断函数检测是否为重复轨迹
       if (this->areDuplicateTracks(i, j)) {
-        int missed_i = this->trackMissedFrames_[i];
-        int missed_j = this->trackMissedFrames_[j];
+        // 边界检查
+        int missed_i = (i < this->trackMissedFrames_.size()) ? this->trackMissedFrames_[i] : 0;
+        int missed_j = (j < this->trackMissedFrames_.size()) ? this->trackMissedFrames_[j] : 0;
         size_t histLen_i = this->boxHist_[i].size();
         size_t histLen_j = this->boxHist_[j].size();
 
@@ -3366,6 +3599,8 @@ void dynamicDetector::publishPoints(const std::vector<Eigen::Vector3d> &points,
 
   sensor_msgs::PointCloud2 cloudMsg;
   pcl::toROSMsg(cloud, cloudMsg);
+  // 使用传感器数据的时间戳，确保与Gazebo同步
+  cloudMsg.header.stamp = (this->lastCloudTime_.toSec() > 0) ? this->lastCloudTime_ : ros::Time::now();
   publisher.publish(cloudMsg);
 }
 
@@ -3375,12 +3610,17 @@ void dynamicDetector::publish3dBox(const std::vector<box3D> &boxes,
                                    double g, double b) {
   // 创建一个MarkerArray消息，用于批量发布多个Marker
   visualization_msgs::MarkerArray markers;
+  
+  // 使用传感器数据的时间戳，确保与Gazebo同步
+  // 如果没有有效的时间戳，则使用当前时间
+  ros::Time stamp = (this->lastCloudTime_.toSec() > 0) ? this->lastCloudTime_ : ros::Time::now();
 
   // 遍历所有传入的边界框
   for (size_t i = 0; i < boxes.size(); i++) {
     // 为每个边界框创建一个LINE_LIST类型的Marker
     visualization_msgs::Marker line;
     line.header.frame_id = "map"; // 设置Marker的坐标系为"map"
+    line.header.stamp = stamp;    // 使用传感器数据的时间戳，与Gazebo同步
     line.ns = "box3D";            // 设置Marker的命名空间
     line.id = i;                  // 为Marker设置唯一的ID
     line.type = visualization_msgs::Marker::
@@ -3469,13 +3709,15 @@ void dynamicDetector::publish3dBox(const std::vector<box3D> &boxes,
 void dynamicDetector::publishHistoryTraj() {
   visualization_msgs::MarkerArray trajMsg;
   int countMarker = 0;
+  // 使用传感器数据的时间戳，确保与Gazebo同步
+  ros::Time stamp = (this->lastCloudTime_.toSec() > 0) ? this->lastCloudTime_ : ros::Time::now();
   for (size_t i = 0; i < this->boxHist_.size(); ++i) {
     // std::cout << "this->boxHist_[i].size() = "  << this->boxHist_[i].size()
     // << std::endl;
     if (this->boxHist_[i].size() > 5) {
       visualization_msgs::Marker traj;
       traj.header.frame_id = "map";
-      traj.header.stamp = ros::Time::now();
+      traj.header.stamp = stamp;
       traj.ns = "dynamic_detector";
       traj.id = countMarker;
       traj.type = visualization_msgs::Marker::LINE_LIST;
@@ -3523,6 +3765,8 @@ void dynamicDetector::publishHistoryTraj() {
 void dynamicDetector::publishDynamicBoxTrajectory() {
   visualization_msgs::MarkerArray trajMarkers;
   int markerId = 0;
+  // 使用传感器数据的时间戳，确保与Gazebo同步
+  ros::Time stamp = (this->lastCloudTime_.toSec() > 0) ? this->lastCloudTime_ : ros::Time::now();
 
   // 遍历所有被跟踪的物体
   for (size_t i = 0; i < this->boxHist_.size(); ++i) {
@@ -3545,7 +3789,7 @@ void dynamicDetector::publishDynamicBoxTrajectory() {
     // --- 1. 创建轨迹线 (LINE_STRIP) ---
     visualization_msgs::Marker trajLine;
     trajLine.header.frame_id = "map";
-    trajLine.header.stamp = ros::Time::now();
+    trajLine.header.stamp = stamp;
     trajLine.ns = "dynamic_trajectory_lines";
     trajLine.id = markerId++;
     trajLine.type = visualization_msgs::Marker::LINE_STRIP;
@@ -3595,7 +3839,7 @@ void dynamicDetector::publishDynamicBoxTrajectory() {
     // --- 2. 创建轨迹点标记 (SPHERE_LIST) ---
     visualization_msgs::Marker trajPoints;
     trajPoints.header.frame_id = "map";
-    trajPoints.header.stamp = ros::Time::now();
+    trajPoints.header.stamp = stamp;
     trajPoints.ns = "dynamic_trajectory_points";
     trajPoints.id = markerId++;
     trajPoints.type = visualization_msgs::Marker::SPHERE_LIST;
@@ -3637,7 +3881,7 @@ void dynamicDetector::publishDynamicBoxTrajectory() {
     if (velNorm > 0.1) {
       visualization_msgs::Marker velArrow;
       velArrow.header.frame_id = "map";
-      velArrow.header.stamp = ros::Time::now();
+      velArrow.header.stamp = stamp;
       velArrow.ns = "dynamic_velocity_arrows";
       velArrow.id = markerId++;
       velArrow.type = visualization_msgs::Marker::ARROW;
@@ -3656,7 +3900,7 @@ void dynamicDetector::publishDynamicBoxTrajectory() {
       start.z = this->boxHist_[i][0].z;
       
       // 箭头长度与速度成正比（缩放因子可调整）
-      double arrowScale = 1; // 0.5秒的运动距离
+      double arrowScale = 0.5; // 0.5秒的运动距离
       end.x = start.x + vx * arrowScale;
       end.y = start.y + vy * arrowScale;
       end.z = start.z + vz * arrowScale;
@@ -3682,7 +3926,7 @@ void dynamicDetector::publishDynamicBoxTrajectory() {
     // --- 4. 创建文本标签显示轨迹ID和速度信息 ---
     visualization_msgs::Marker textLabel;
     textLabel.header.frame_id = "map";
-    textLabel.header.stamp = ros::Time::now();
+    textLabel.header.stamp = stamp;
     textLabel.ns = "dynamic_trajectory_labels";
     textLabel.id = markerId++;
     textLabel.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
@@ -3742,7 +3986,8 @@ void dynamicDetector::publishFilteredPoints() {
   }
   pcl::toROSMsg(*colored_cloud, filteredPointsMsg);
   filteredPointsMsg.header.frame_id = "map";
-  filteredPointsMsg.header.stamp = ros::Time::now();
+  // 使用传感器数据的时间戳，确保与Gazebo同步
+  filteredPointsMsg.header.stamp = (this->lastCloudTime_.toSec() > 0) ? this->lastCloudTime_ : ros::Time::now();
   this->filteredPointsPub_.publish(filteredPointsMsg);
 }
 
@@ -3776,7 +4021,8 @@ void dynamicDetector::publishRawDynamicPoints() {
       sensor_msgs::PointCloud2 cloudMsg;
       pcl::toROSMsg(*globalCloud, cloudMsg);
       cloudMsg.header.frame_id = "map";         // 设置坐标系为 "map"
-      cloudMsg.header.stamp = ros::Time::now(); // 设置时间戳
+      // 使用传感器数据的时间戳，确保与Gazebo同步
+      cloudMsg.header.stamp = (this->lastCloudTime_.toSec() > 0) ? this->lastCloudTime_ : ros::Time::now();
       this->rawLidarPointsPub_.publish(
           cloudMsg); // 发布转换到全局坐标系的原始点云
 

@@ -176,7 +176,7 @@ private:
   // 帧内去重(NMS)参数
   bool enableDetectionNMS_;        // 是否启用检测NMS
   double detectionNMSIoUThreshold_; // NMS的IoU阈值
-    double detectionNMSDistScale_;   // NMS 合并时距离阈值的缩放参数（乘以平均尺寸）
+  double detectionNMSDistScale_;   // NMS 合并时距离阈值的缩放参数（乘以平均尺寸）
 
   // 分类阈值参数
   double classifyHumanZWidthRatio_;      // 人：z轴宽度 >= x/y轴的倍数
@@ -332,18 +332,6 @@ public:
   void publishLidarClusters();    // 发布激光雷达聚类
   void publishFilteredPoints();   // 发布过滤后的点云
   void publishRawDynamicPoints(); // 发布原始动态点云
-
-  // 用户接口函数
-  void getDynamicObstacles(
-      std::vector<onboardDetector::box3D> &incomeDynamicBBoxes,
-      const Eigen::Vector3d &robotSize = Eigen::Vector3d(
-          0.0, 0.0, 0.0)); // 获取动态障碍物（考虑机器人尺寸膨胀）
-  void
-  getDynamicObstaclesHist(std::vector<std::vector<Eigen::Vector3d>> &posHist,
-                          std::vector<std::vector<Eigen::Vector3d>> &velHist,
-                          std::vector<std::vector<Eigen::Vector3d>> &sizeHist,
-                          const Eigen::Vector3d &robotSize = Eigen::Vector3d(
-                              0.0, 0.0, 0.0)); // 获取动态障碍物的历史轨迹
 
   // 内联辅助函数
   void getLidarPose(const geometry_msgs::PoseStampedConstPtr &pose,

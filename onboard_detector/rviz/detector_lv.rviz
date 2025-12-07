@@ -148,20 +148,12 @@ Visualization Manager:
       Value: false
     - Class: rviz/MarkerArray
       Enabled: false
-      Marker Topic: /onboard_detector/velocity_visualizaton
-      Name: Velocity Info
+      Marker Topic: /onboard_detector/history_trajectories
+      Name: Historic Trajectory
       Namespaces:
         {}
       Queue Size: 100
       Value: false
-    - Class: rviz/MarkerArray
-      Enabled: true
-      Marker Topic: /onboard_detector/history_trajectories
-      Name: Historic Trajectory
-      Namespaces:
-        dynamic_detector: true
-      Queue Size: 100
-      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -196,6 +188,17 @@ Visualization Manager:
       Name: Dynamic Obstacles BBoxes
       Namespaces:
         box3D: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /onboard_detector/dynamic_trajectories
+      Name: Dynamic Trajectory
+      Namespaces:
+        dynamic_trajectory_labels: true
+        dynamic_trajectory_lines: true
+        dynamic_trajectory_points: true
+        dynamic_velocity_arrows: true
       Queue Size: 100
       Value: true
     - Class: rviz/Image
