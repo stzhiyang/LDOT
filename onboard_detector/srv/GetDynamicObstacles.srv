@@ -1,8 +1,12 @@
-geometry_msgs/Point current_position
-float64 range
+# 获取动态障碍物服务请求
+geometry_msgs/Point current_position    # 机器人当前位置
+float64 range                           # 查询范围（米）
 ---
-geometry_msgs/Vector3[] position
-geometry_msgs/Vector3[] velocity
-geometry_msgs/Vector3[] size
-geometry_msgs/Vector3[] predicted_position
-geometry_msgs/Vector3[] position_covariance
+# 响应字段
+geometry_msgs/Vector3[] position        # 当前位置
+geometry_msgs/Vector3[] velocity        # 当前速度
+geometry_msgs/Vector3[] size            # 障碍物尺寸
+string[] obstacle_types                 # 障碍物类型（human/vehicle/uav/other）
+uint32[] state_dims                     # 每个障碍物的状态向量维度
+float64[] states                        # 所有状态向量（扁平化）
+float64[] covariances                   # 所有协方差矩阵（扁平化，按行存储）

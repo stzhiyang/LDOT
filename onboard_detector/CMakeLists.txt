@@ -70,6 +70,7 @@ find_package(PCL 1.7 REQUIRED)
 add_service_files(
   FILES
   GetDynamicObstacles.srv
+  GetPredictedTrajectories.srv
 )
 
 ## Generate actions in the 'action' folder

@@ -309,4 +309,59 @@ void StaticPointFilter::cleanMap(double current_time) {
   }
 }
 
+bool StaticPointFilter::checkCollision(const Eigen::Vector3d &point) {
+  // 将 Eigen::Vector3d 转换为 pcl::PointXYZ 以复用现有的 isPointStatic 逻辑
+  pcl::PointXYZ pcl_point;
+  pcl_point.x = static_cast<float>(point.x());
+  pcl_point.y = static_cast<float>(point.y());
+  pcl_point.z = static_cast<float>(point.z());
+
+  // 复用现有的静态点检测逻辑
+  // 如果点位于静态体素中，则认为发生碰撞
+  return isPointStatic(pcl_point);
+}
+
+bool StaticPointFilter::checkBoxCollision(const Eigen::Vector3d &center,
+                                          const Eigen::Vector3d &size,
+                                          double inflation) {
+  // 计算膨胀后的半尺寸
+  double half_x = (size.x() / 2.0) + inflation;
+  double half_y = (size.y() / 2.0) + inflation;
+  double half_z = (size.z() / 2.0) + inflation;
+
+  // 计算需要检查的体素范围
+  int x_range = static_cast<int>(std::ceil(half_x / voxel_size_)) + 1;
+  int y_range = static_cast<int>(std::ceil(half_y / voxel_size_)) + 1;
+  int z_range = static_cast<int>(std::ceil(half_z / voxel_size_)) + 1;
+
+  // 遍历包围框范围内的所有体素
+  for (int dx = -x_range; dx <= x_range; ++dx) {
+    for (int dy = -y_range; dy <= y_range; ++dy) {
+      for (int dz = -z_range; dz <= z_range; ++dz) {
+        // 计算体素中心点
+        pcl::PointXYZ voxel_center;
+        voxel_center.x = static_cast<float>(center.x() + dx * voxel_size_);
+        voxel_center.y = static_cast<float>(center.y() + dy * voxel_size_);
+        voxel_center.z = static_cast<float>(center.z() + dz * voxel_size_);
+
+        // 检查体素中心是否在膨胀后的包围框内
+        double local_x = std::abs(voxel_center.x - center.x());
+        double local_y = std::abs(voxel_center.y - center.y());
+        double local_z = std::abs(voxel_center.z - center.z());
+
+        if (local_x <= half_x && local_y <= half_y && local_z <= half_z) {
+          // 体素在包围框内，检查是否为静态体素
+          if (isPointStatic(voxel_center)) {
+            // 发现碰撞，立即返回
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  // 未发现碰撞
+  return false;
+}
+
 } // namespace onboardDetector

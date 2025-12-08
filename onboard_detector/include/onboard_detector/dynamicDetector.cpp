@@ -816,6 +816,54 @@ void dynamicDetector::initParam() {
     this->kfParams_.ctra.meas_noise = {0.1, 0.1, 0.1};
   }
 
+  // -----------------------------------------轨迹预测参数--------------------------------------------------------------
+  // 默认预测时域（秒）
+  if (not this->nh_.getParam(
+          this->ns_ + "/trajectory_prediction/default_horizon",
+          this->trajPredDefaultHorizon_)) {
+    this->trajPredDefaultHorizon_ = 3.0;
+    ROS_INFO_STREAM(this->hint_
+                    << " No trajectory_prediction/default_horizon param. Use default: 3.0s");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Trajectory prediction default horizon: "
+                                << this->trajPredDefaultHorizon_ << "s");
+  }
+
+  // 默认预测步长（秒）
+  if (not this->nh_.getParam(this->ns_ + "/trajectory_prediction/default_dt",
+                             this->trajPredDefaultDt_)) {
+    this->trajPredDefaultDt_ = 0.2;
+    ROS_INFO_STREAM(this->hint_
+                    << " No trajectory_prediction/default_dt param. Use default: 0.2s");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Trajectory prediction default dt: "
+                                << this->trajPredDefaultDt_ << "s");
+  }
+
+  // 碰撞检测膨胀系数（米）
+  if (not this->nh_.getParam(
+          this->ns_ + "/trajectory_prediction/collision_inflation",
+          this->trajPredCollisionInflation_)) {
+    this->trajPredCollisionInflation_ = 0.1;
+    ROS_INFO_STREAM(this->hint_
+                    << " No trajectory_prediction/collision_inflation param. Use default: 0.1m");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Trajectory prediction collision inflation: "
+                                << this->trajPredCollisionInflation_ << "m");
+  }
+
+  // 最大轨迹点数限制
+  if (not this->nh_.getParam(
+          this->ns_ + "/trajectory_prediction/max_trajectory_points",
+          this->trajPredMaxPoints_)) {
+    this->trajPredMaxPoints_ = 30;
+    ROS_INFO_STREAM(this->hint_
+                    << " No trajectory_prediction/max_trajectory_points param. Use default: 30");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " Trajectory prediction max points: "
+                                << this->trajPredMaxPoints_);
+  }
+
   // 初始化激光雷达检测器（避免每次回调时重复初始化）
   this->lidarDetector_.reset(new lidarDetector());
   this->lidarDetector_->setParams(
@@ -955,6 +1003,11 @@ void dynamicDetector::registerCallback() {
   this->getDynamicObstacleServer_ =
       this->nh_.advertiseService("onboard_detector/get_dynamic_obstacles",
                                  &dynamicDetector::getDynamicObstacles, this);
+
+  // 获取预测轨迹服务
+  this->getPredictedTrajectoriesServer_ =
+      this->nh_.advertiseService("onboard_detector/get_predicted_trajectories",
+                                 &dynamicDetector::getPredictedTrajectories, this);
 }
 
 // 获取动态障碍物的服务回调函数。对获取的障碍物按与机器人的距离从小到大排序
@@ -962,6 +1015,9 @@ bool dynamicDetector::getDynamicObstacles(
     onboard_detector::GetDynamicObstacles::Request &req,
     onboard_detector::GetDynamicObstacles::Response &res) {
   
+  // 记录服务开始时间
+  auto start_time = std::chrono::high_resolution_clock::now();
+
   // 定义结构体用于存储动态障碍物的完整信息（包括滤波器索引）
   struct DynamicObstacleInfo {
     double distance;                    // 与机器人的距离
@@ -1047,8 +1103,6 @@ bool dynamicDetector::getDynamicObstacles(
     geometry_msgs::Vector3 pos;
     geometry_msgs::Vector3 vel;
     geometry_msgs::Vector3 size;
-    geometry_msgs::Vector3 predPos;
-    geometry_msgs::Vector3 posCov;
 
     // 填充当前位置
     pos.x = bbox.x;
@@ -1060,10 +1114,8 @@ bool dynamicDetector::getDynamicObstacles(
     size.y = bbox.y_width;
     size.z = bbox.z_width;
 
-    // 根据不同的滤波器模型提取速度和计算预测位置
-    // 预测位置 = 当前位置 + 速度 * dt
+    // 根据不同的滤波器模型提取速度
     double vx = 0, vy = 0, vz = 0;
-    double ax = 0, ay = 0, az = 0;
     
     if (dim == 6) {
       // 3D CV模型: [x, y, z, vx, vy, vz]
@@ -1076,29 +1128,19 @@ bool dynamicDetector::getDynamicObstacles(
       if (isVehicle) {
         // CTRA模型: [x, y, z, v, a, yaw, yaw_rate]
         double v = state(3);
-        double a = state(4);
         double yaw = state(5);
-        double yaw_rate = state(6);
         vx = v * cos(yaw);
         vy = v * sin(yaw);
-        // 对于CTRA模型，考虑转弯率的影响计算加速度分量
-        ax = a * cos(yaw) - v * yaw_rate * sin(yaw);
-        ay = a * sin(yaw) + v * yaw_rate * cos(yaw);
       } else {
         // Human CA模型: [x, y, z, vx, vy, ax, ay]
         vx = state(3);
         vy = state(4);
-        ax = state(5);
-        ay = state(6);
       }
     } else if (dim == 9) {
       // 3D CA模型 (UAV): [x, y, z, vx, vy, vz, ax, ay, az]
       vx = state(3);
       vy = state(4);
       vz = state(5);
-      ax = state(6);
-      ay = state(7);
-      az = state(8);
     }
 
     // 填充速度
@@ -1106,27 +1148,237 @@ bool dynamicDetector::getDynamicObstacles(
     vel.y = vy;
     vel.z = vz;
 
-    // 计算下一帧预测位置（使用运动学方程：x' = x + v*dt + 0.5*a*dt^2）
-    double dt = this->dt_;
-    predPos.x = bbox.x + vx * dt + 0.5 * ax * dt * dt;
-    predPos.y = bbox.y + vy * dt + 0.5 * ay * dt * dt;
-    predPos.z = bbox.z + vz * dt + 0.5 * az * dt * dt;
+    // 障碍物类型
+    std::string obstacleType;
+    if (bbox.is_human) {
+      obstacleType = "human";
+    } else if (bbox.is_che) {
+      obstacleType = "vehicle";
+    } else if (bbox.is_uav) {
+      obstacleType = "uav";
+    } else {
+      obstacleType = "other";
+    }
 
-    // 提取位置协方差（状态向量前3维对应位置的协方差对角元素）
-    // 协方差的平方根表示标准差，即位置不确定性
-    posCov.x = std::sqrt(std::max(0.0, P(0, 0)));
-    posCov.y = std::sqrt(std::max(0.0, P(1, 1)));
-    posCov.z = std::sqrt(std::max(0.0, P(2, 2)));
-
-    // 将数据添加到响应中
+    // 将基本数据添加到响应中
     res.position.push_back(pos);
     res.velocity.push_back(vel);
     res.size.push_back(size);
-    res.predicted_position.push_back(predPos);
-    res.position_covariance.push_back(posCov);
+    res.obstacle_types.push_back(obstacleType);
+
+    // 添加状态向量维度
+    res.state_dims.push_back(static_cast<uint32_t>(dim));
+
+    // 添加状态向量（扁平化）
+    for (int i = 0; i < dim; ++i) {
+      res.states.push_back(state(i));
+    }
+
+    // 添加协方差矩阵（扁平化，按行存储）
+    for (int i = 0; i < dim; ++i) {
+      for (int j = 0; j < dim; ++j) {
+        res.covariances.push_back(P(i, j));
+      }
+    }
   }
 
+  // 计算并输出服务耗时
+  auto end_time = std::chrono::high_resolution_clock::now();
+  double duration_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+  ROS_INFO_THROTTLE(1.0, "%s: GetDynamicObstacles service took %.2f ms, returned %zu obstacles",
+            this->hint_.c_str(), duration_ms, res.position.size());
   return true; // 表示服务成功完成
+}
+
+// 获取预测轨迹的服务回调函数
+// 返回动态障碍物的长期预测轨迹，支持碰撞检测截断
+bool dynamicDetector::getPredictedTrajectories(
+    onboard_detector::GetPredictedTrajectories::Request &req,
+    onboard_detector::GetPredictedTrajectories::Response &res) {
+
+  // 记录服务开始时间
+  auto start_time = std::chrono::high_resolution_clock::now();
+  
+  // 解析请求参数，处理无效参数使用默认值
+  double horizon = req.prediction_horizon;
+  double dt = req.prediction_dt;
+  double range = req.range;
+
+  // 无效参数处理：使用默认值（需求3.4）
+  if (horizon <= 0) {
+    horizon = this->trajPredDefaultHorizon_;
+    ROS_DEBUG_THROTTLE(2.0, "%s: Invalid prediction_horizon, using default: %.2f",
+                       this->hint_.c_str(), horizon);
+  }
+  if (dt <= 0) {
+    dt = this->trajPredDefaultDt_;
+    ROS_DEBUG_THROTTLE(2.0, "%s: Invalid prediction_dt, using default: %.2f",
+                       this->hint_.c_str(), dt);
+  }
+  if (range <= 0) {
+    range = 10.0;  // 默认查询范围10米
+    ROS_DEBUG_THROTTLE(2.0, "%s: Invalid range, using default: %.2f",
+                       this->hint_.c_str(), range);
+  }
+
+  // 定义结构体用于存储动态障碍物的完整信息
+  struct DynamicObstacleInfo {
+    double distance;                    // 与机器人的距离
+    onboardDetector::box3D bbox;        // 边界框数据
+    int filterIndex;                    // 对应的滤波器索引
+  };
+
+  // 使用局部拷贝来减少锁持有时间
+  std::vector<DynamicObstacleInfo> obstaclesWithInfo;
+  {
+    std::lock_guard<std::mutex> lock(bboxMutex_);  // 加锁保护动态边界框数据
+
+    // 检查是否有有效的跟踪数据（需求3.3：无动态障碍物返回空列表）
+    if (this->boxHist_.empty()) {
+      ROS_DEBUG_THROTTLE(2.0, "%s: No tracked obstacles available", this->hint_.c_str());
+      return true;  // 返回空结果，但服务调用成功
+    }
+
+    // 从服务请求中获取机器人当前的位置
+    Eigen::Vector3d currPos = Eigen::Vector3d(
+        req.current_position.x, req.current_position.y, req.current_position.z);
+
+    // 遍历所有历史轨迹，找出被标记为动态的障碍物
+    for (size_t i = 0; i < this->boxHist_.size(); ++i) {
+      // 检查历史轨迹是否为空
+      if (this->boxHist_[i].empty()) {
+        continue;
+      }
+
+      // 获取最新帧的边界框
+      const onboardDetector::box3D &bbox = this->boxHist_[i][0];
+
+      // 只处理被标记为动态的障碍物
+      if (!bbox.is_dynamic) {
+        continue;
+      }
+
+      // 检查对应的滤波器是否存在且已初始化
+      if (i >= this->filters_.size() || !this->filters_[i] ||
+          !this->filters_[i]->isInitialized()) {
+        continue;
+      }
+
+      // 计算与机器人的距离
+      Eigen::Vector3d obsPos(bbox.x, bbox.y, bbox.z);
+      Eigen::Vector3d diff = currPos - obsPos;
+      double distance = diff.norm();
+
+      // 如果障碍物在请求的范围之内，则将其添加到列表中
+      if (distance <= range) {
+        DynamicObstacleInfo info;
+        info.distance = distance;
+        info.bbox = bbox;
+        info.filterIndex = static_cast<int>(i);
+        obstaclesWithInfo.push_back(info);
+      }
+    }
+  }  // 锁在这里自动释放
+
+  // 检查是否有有效的动态障碍物（需求3.3：无动态障碍物返回空列表）
+  if (obstaclesWithInfo.empty()) {
+    ROS_DEBUG_THROTTLE(2.0, "%s: No dynamic obstacles in range", this->hint_.c_str());
+    return true;  // 返回空结果，但服务调用成功
+  }
+
+  // 按距离从小到大对障碍物进行排序
+  std::sort(obstaclesWithInfo.begin(), obstaclesWithInfo.end(),
+            [](const DynamicObstacleInfo &a, const DynamicObstacleInfo &b) {
+              return a.distance < b.distance;
+            });
+
+  // 遍历动态障碍物，调用predictTrajectory生成预测轨迹
+  for (size_t i = 0; i < obstaclesWithInfo.size(); ++i) {
+    const DynamicObstacleInfo &info = obstaclesWithInfo[i];
+    const onboardDetector::box3D &bbox = info.bbox;
+
+    // 调用轨迹预测函数
+    std::vector<TrajectoryPoint> trajectory;
+    this->predictTrajectory(info.filterIndex, bbox, horizon, dt, trajectory);
+
+    // 跳过空轨迹
+    if (trajectory.empty()) {
+      continue;
+    }
+
+    // 填充响应数据
+    // 障碍物ID（使用滤波器索引作为ID）
+    res.obstacle_ids.push_back(static_cast<uint32_t>(info.filterIndex));
+
+    // 障碍物类型（根据分类标志确定）
+    std::string obstacleType;
+    if (bbox.is_human) {
+      obstacleType = "human";
+    } else if (bbox.is_che) {
+      obstacleType = "vehicle";
+    } else if (bbox.is_uav) {
+      obstacleType = "uav";
+    } else {
+      obstacleType = "other";
+    }
+    res.obstacle_types.push_back(obstacleType);
+
+    // 当前位置
+    geometry_msgs::Vector3 currPos;
+    currPos.x = bbox.x;
+    currPos.y = bbox.y;
+    currPos.z = bbox.z;
+    res.current_positions.push_back(currPos);
+
+    // 当前速度（从第一个轨迹点获取）
+    geometry_msgs::Vector3 currVel;
+    currVel.x = trajectory[0].velocity.x();
+    currVel.y = trajectory[0].velocity.y();
+    currVel.z = trajectory[0].velocity.z();
+    res.current_velocities.push_back(currVel);
+
+    // 障碍物尺寸
+    geometry_msgs::Vector3 size;
+    size.x = bbox.x_width;
+    size.y = bbox.y_width;
+    size.z = bbox.z_width;
+    res.sizes.push_back(size);
+
+    // 轨迹长度（碰撞截断后的实际长度）
+    res.trajectory_lengths.push_back(static_cast<uint32_t>(trajectory.size()));
+
+    // 扁平化轨迹数据
+    for (const auto &point : trajectory) {
+      // 轨迹点位置
+      geometry_msgs::Vector3 pos;
+      pos.x = point.position.x();
+      pos.y = point.position.y();
+      pos.z = point.position.z();
+      res.trajectory_positions.push_back(pos);
+
+      // 轨迹点速度
+      geometry_msgs::Vector3 vel;
+      vel.x = point.velocity.x();
+      vel.y = point.velocity.y();
+      vel.z = point.velocity.z();
+      res.trajectory_velocities.push_back(vel);
+
+      // 位置协方差对角元素
+      geometry_msgs::Vector3 cov;
+      cov.x = point.covariance.x();
+      cov.y = point.covariance.y();
+      cov.z = point.covariance.z();
+      res.position_covariances.push_back(cov);
+    }
+  }
+
+  // 计算并输出服务耗时
+  auto end_time = std::chrono::high_resolution_clock::now();
+  double duration_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+  ROS_INFO_THROTTLE(1.0, "%s: GetPredictedTrajectories service took %.2f ms, returned %zu obstacles",
+            this->hint_.c_str(), duration_ms, res.obstacle_ids.size());
+
+  return true;  // 服务调用成功
 }
 
 // 将Livox CustomMsg格式转换为PointCloud2格式
@@ -1964,7 +2216,7 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
     // 这种情况下 velNorm 很小（质心速度），但 voteRatio 会很高（点在动）
     // 【修复】添加形状稳定性检查，抑制因LiDAR时序抖动导致的误判
     bool is_rotation_dynamic = false;
-    if (voteRatio >= (this->dynaVoteThresh_ + 0.1) && velNorm < this->dynaVelThresh_) {
+    if (voteRatio >= (this->dynaVoteThresh_ + 0.1) && velNorm > 0.01) {
       // 远距离的LiDAR点云稀疏，时序抖动导致的"形状不稳定"是假象
       // 检查点云形状稳定性：通过PCA标准差变化率判断
       bool isShapeStable = true;
@@ -1998,7 +2250,7 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
                                   this->boxHist_[i][0].z_width);
         Eigen::Vector3d maxSize = this->maxHistorySizes_[i];
         double sizeRatio = currSize.norm() / (maxSize.norm() + 1e-6);
-        if (sizeRatio < (1.0 / this->sizeMergeThresh_) || sizeRatio > this->sizeMergeThresh_) {
+        if (sizeRatio < 0.75 || sizeRatio > 1.25) {
           isSizeChanged = true; // 尺寸变化过大，可能是遮挡
         }
       }
@@ -4195,4 +4447,224 @@ void dynamicDetector::publishRawDynamicPoints() {
     ROS_ERROR("Unknown error during dynamic point extraction.");
   }
 }
+
+// 轨迹预测函数实现
+// 基于卡尔曼滤波器状态进行多步轨迹外推，并进行碰撞检测截断
+void dynamicDetector::predictTrajectory(int filterIndex,
+                                        const onboardDetector::box3D &bbox,
+                                        double horizon, double dt,
+                                        std::vector<TrajectoryPoint> &trajectory) {
+  trajectory.clear();
+
+  // 参数有效性检查
+  if (horizon <= 0 || dt <= 0) {
+    ROS_WARN_THROTTLE(1.0, "%s: Invalid prediction parameters (horizon=%.2f, dt=%.2f)",
+                      this->hint_.c_str(), horizon, dt);
+    return;
+  }
+
+  // 检查滤波器索引有效性
+  if (filterIndex < 0 || filterIndex >= static_cast<int>(this->filters_.size())) {
+    ROS_WARN_THROTTLE(1.0, "%s: Invalid filter index %d", this->hint_.c_str(), filterIndex);
+    return;
+  }
+
+  // 检查滤波器是否存在且已初始化
+  if (!this->filters_[filterIndex] || !this->filters_[filterIndex]->isInitialized()) {
+    ROS_WARN_THROTTLE(1.0, "%s: Filter %d not initialized", this->hint_.c_str(), filterIndex);
+    return;
+  }
+
+  // 获取滤波器状态和协方差
+  Eigen::VectorXd state = this->filters_[filterIndex]->getState();
+  Eigen::MatrixXd P = this->filters_[filterIndex]->getCovariance();
+  int dim = state.size();
+
+  // 计算预测步数（限制最大点数）
+  int numSteps = static_cast<int>(std::floor(horizon / dt)) + 1;
+  numSteps = std::min(numSteps, this->trajPredMaxPoints_);
+
+  // 获取障碍物尺寸用于碰撞检测
+  Eigen::Vector3d obstacleSize(bbox.x_width, bbox.y_width, bbox.z_width);
+
+  // 根据不同的滤波器模型进行预测
+  // 判断模型类型：
+  // dim == 6: CV模型 [x, y, z, vx, vy, vz]
+  // dim == 7: Human CA模型 [x, y, z, vx, vy, ax, ay] 或 CTRA模型 [x, y, z, v, a, yaw, yaw_rate]
+  // dim == 9: UAV CA模型 [x, y, z, vx, vy, vz, ax, ay, az]
+
+  for (int step = 0; step < numSteps; ++step) {
+    double t = step * dt;
+    TrajectoryPoint point;
+    point.timestamp = t;
+
+    // 根据模型类型计算预测位置和速度
+    if (dim == 6) {
+      // CV模型: [x, y, z, vx, vy, vz]
+      // 恒速度运动学方程: x(t) = x0 + vx*t
+      double x0 = state(0), y0 = state(1), z0 = state(2);
+      double vx = state(3), vy = state(4), vz = state(5);
+
+      point.position = Eigen::Vector3d(x0 + vx * t, y0 + vy * t, z0 + vz * t);
+      point.velocity = Eigen::Vector3d(vx, vy, vz);
+
+      // 协方差传播（简化版本：使用状态转移矩阵的位置部分）
+      // 对于CV模型，位置协方差随时间增长
+      // P_pos(t) ≈ P_pos(0) + t² * P_vel(0) + 2*t*P_pos_vel(0)
+      // 简化为对角元素
+      double sigma_x = std::sqrt(P(0, 0) + t * t * P(3, 3));
+      double sigma_y = std::sqrt(P(1, 1) + t * t * P(4, 4));
+      double sigma_z = std::sqrt(P(2, 2) + t * t * P(5, 5));
+      point.covariance = Eigen::Vector3d(sigma_x * sigma_x, sigma_y * sigma_y, sigma_z * sigma_z);
+
+    } else if (dim == 7) {
+      // 判断是Human CA模型还是CTRA模型
+      bool isVehicle = bbox.is_che;
+
+      if (isVehicle) {
+        // CTRA模型: [x, y, z, v, a, yaw, yaw_rate]
+        double x0 = state(0), y0 = state(1), z0 = state(2);
+        double v = state(3), a = state(4);
+        double yaw = state(5), omega = state(6);
+
+        double x_pred, y_pred, yaw_pred;
+        double vx_pred, vy_pred;
+
+        // CTRA运动学方程
+        const double eps = 1e-6;
+        if (std::abs(omega) > eps) {
+          // 转弯情况
+          double v_t = v + a * t;
+          double yaw_t = yaw + omega * t;
+
+          // 位置积分（考虑加速度的CTRA方程）
+          x_pred = x0 + (v / omega) * (std::sin(yaw_t) - std::sin(yaw)) +
+                   (a / (omega * omega)) *
+                       (std::cos(yaw) - std::cos(yaw_t) + omega * t * std::sin(yaw_t));
+          y_pred = y0 + (v / omega) * (-std::cos(yaw_t) + std::cos(yaw)) +
+                   (a / (omega * omega)) *
+                       (std::sin(yaw) - std::sin(yaw_t) + omega * t * std::cos(yaw_t));
+          yaw_pred = yaw_t;
+
+          // 速度分量
+          vx_pred = v_t * std::cos(yaw_pred);
+          vy_pred = v_t * std::sin(yaw_pred);
+        } else {
+          // 直行情况（退化为CA模型）
+          double v_t = v + a * t;
+          x_pred = x0 + v * t * std::cos(yaw) + 0.5 * a * t * t * std::cos(yaw);
+          y_pred = y0 + v * t * std::sin(yaw) + 0.5 * a * t * t * std::sin(yaw);
+          yaw_pred = yaw;
+
+          vx_pred = v_t * std::cos(yaw_pred);
+          vy_pred = v_t * std::sin(yaw_pred);
+        }
+
+        point.position = Eigen::Vector3d(x_pred, y_pred, z0);
+        point.velocity = Eigen::Vector3d(vx_pred, vy_pred, 0.0);
+
+        // 协方差传播（简化）
+        double sigma_x = std::sqrt(P(0, 0) + t * t * P(3, 3));
+        double sigma_y = std::sqrt(P(1, 1) + t * t * P(3, 3));
+        double sigma_z = std::sqrt(P(2, 2));
+        point.covariance = Eigen::Vector3d(sigma_x * sigma_x, sigma_y * sigma_y, sigma_z * sigma_z);
+
+      } else {
+        // Human CA模型: [x, y, z, vx, vy, ax, ay]
+        // 恒加速度运动学方程: x(t) = x0 + vx*t + 0.5*ax*t²
+        double x0 = state(0), y0 = state(1), z0 = state(2);
+        double vx = state(3), vy = state(4);
+        double ax = state(5), ay = state(6);
+
+        point.position = Eigen::Vector3d(x0 + vx * t + 0.5 * ax * t * t,
+                                         y0 + vy * t + 0.5 * ay * t * t, z0);
+        point.velocity = Eigen::Vector3d(vx + ax * t, vy + ay * t, 0.0);
+
+        // 协方差传播
+        double sigma_x = std::sqrt(P(0, 0) + t * t * P(3, 3) + 0.25 * t * t * t * t * P(5, 5));
+        double sigma_y = std::sqrt(P(1, 1) + t * t * P(4, 4) + 0.25 * t * t * t * t * P(6, 6));
+        double sigma_z = std::sqrt(P(2, 2));
+        point.covariance = Eigen::Vector3d(sigma_x * sigma_x, sigma_y * sigma_y, sigma_z * sigma_z);
+      }
+
+    } else if (dim == 9) {
+      // UAV CA模型: [x, y, z, vx, vy, vz, ax, ay, az]
+      // 恒加速度运动学方程（3D）
+      double x0 = state(0), y0 = state(1), z0 = state(2);
+      double vx = state(3), vy = state(4), vz = state(5);
+      double ax = state(6), ay = state(7), az = state(8);
+
+      point.position = Eigen::Vector3d(x0 + vx * t + 0.5 * ax * t * t,
+                                       y0 + vy * t + 0.5 * ay * t * t,
+                                       z0 + vz * t + 0.5 * az * t * t);
+      point.velocity = Eigen::Vector3d(vx + ax * t, vy + ay * t, vz + az * t);
+
+      // 协方差传播
+      double sigma_x = std::sqrt(P(0, 0) + t * t * P(3, 3) + 0.25 * t * t * t * t * P(6, 6));
+      double sigma_y = std::sqrt(P(1, 1) + t * t * P(4, 4) + 0.25 * t * t * t * t * P(7, 7));
+      double sigma_z = std::sqrt(P(2, 2) + t * t * P(5, 5) + 0.25 * t * t * t * t * P(8, 8));
+      point.covariance = Eigen::Vector3d(sigma_x * sigma_x, sigma_y * sigma_y, sigma_z * sigma_z);
+
+    } else {
+      // 未知模型类型，使用简单的位置外推
+      ROS_WARN_THROTTLE(5.0, "%s: Unknown filter dimension %d, using simple extrapolation",
+                        this->hint_.c_str(), dim);
+      point.position = Eigen::Vector3d(state(0), state(1), state(2));
+      point.velocity = Eigen::Vector3d(0, 0, 0);
+      point.covariance = Eigen::Vector3d(1.0, 1.0, 1.0);
+    }
+
+    // 检查预测值是否有效（非NaN/Inf）
+    if (!std::isfinite(point.position.x()) || !std::isfinite(point.position.y()) ||
+        !std::isfinite(point.position.z()) || !std::isfinite(point.velocity.x()) ||
+        !std::isfinite(point.velocity.y()) || !std::isfinite(point.velocity.z())) {
+      ROS_WARN_THROTTLE(1.0, "%s: Invalid prediction at step %d, truncating trajectory",
+                        this->hint_.c_str(), step);
+      break;
+    }
+
+    // 碰撞检测：检查预测点是否与静态体素地图发生碰撞
+    if (this->staticFilter_ && step > 0) {
+      bool collision = this->staticFilter_->checkBoxCollision(
+          point.position, obstacleSize, this->trajPredCollisionInflation_);
+
+      if (collision) {
+        // 检测到碰撞，截断轨迹
+        ROS_DEBUG_THROTTLE(1.0, "%s: Trajectory collision detected at step %d (t=%.2fs)",
+                           this->hint_.c_str(), step, t);
+        break;
+      }
+    }
+
+    // 添加轨迹点
+    trajectory.push_back(point);
+  }
+
+  // 确保至少有一个轨迹点（起始点）
+  if (trajectory.empty() && numSteps > 0) {
+    TrajectoryPoint startPoint;
+    startPoint.timestamp = 0.0;
+    startPoint.position = Eigen::Vector3d(state(0), state(1), state(2));
+
+    // 根据模型类型设置速度
+    if (dim == 6) {
+      startPoint.velocity = Eigen::Vector3d(state(3), state(4), state(5));
+    } else if (dim == 7) {
+      if (bbox.is_che) {
+        double v = state(3), yaw = state(5);
+        startPoint.velocity = Eigen::Vector3d(v * std::cos(yaw), v * std::sin(yaw), 0.0);
+      } else {
+        startPoint.velocity = Eigen::Vector3d(state(3), state(4), 0.0);
+      }
+    } else if (dim == 9) {
+      startPoint.velocity = Eigen::Vector3d(state(3), state(4), state(5));
+    } else {
+      startPoint.velocity = Eigen::Vector3d(0, 0, 0);
+    }
+
+    startPoint.covariance = Eigen::Vector3d(P(0, 0), P(1, 1), P(2, 2));
+    trajectory.push_back(startPoint);
+  }
+}
+
 } // namespace onboardDetector

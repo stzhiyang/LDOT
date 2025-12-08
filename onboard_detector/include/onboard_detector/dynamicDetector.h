@@ -19,6 +19,7 @@
 #include <mutex>
 #include <nav_msgs/Odometry.h>
 #include <onboard_detector/GetDynamicObstacles.h>
+#include <onboard_detector/GetPredictedTrajectories.h>
 #include <onboard_detector/dbscan.h>
 #include <onboard_detector/lidarDetector.h>
 #include <onboard_detector/multiModelKalmanFilter.h>
@@ -36,6 +37,16 @@
 #include <visualization_msgs/MarkerArray.h>
 
 namespace onboardDetector {
+
+// 轨迹预测点结构体
+// 用于存储预测轨迹中每个时间步的状态信息
+struct TrajectoryPoint {
+  Eigen::Vector3d position;   // 预测位置
+  Eigen::Vector3d velocity;   // 预测速度
+  Eigen::Vector3d covariance; // 位置协方差对角元素 (σx², σy², σz²)
+  double timestamp;           // 相对时间戳（从当前时刻开始的秒数）
+};
+
 class dynamicDetector {
 private:
   // ROS相关句柄、订阅者、发布者和定时器
@@ -96,7 +107,8 @@ private:
   ros::Publisher dynamicTrajPub_;         // 动态障碍物的专用轨迹可视化
 
   // 服务
-  ros::ServiceServer getDynamicObstacleServer_; // 获取动态障碍物的服务
+  ros::ServiceServer getDynamicObstacleServer_;      // 获取动态障碍物的服务
+  ros::ServiceServer getPredictedTrajectoriesServer_; // 获取预测轨迹的服务
 
   // 检测器实例
   std::shared_ptr<onboardDetector::lidarDetector>
@@ -201,6 +213,12 @@ private:
   // 卡尔曼滤波器参数
   KF_Params kfParams_;
 
+  // 轨迹预测参数
+  double trajPredDefaultHorizon_;    // 默认预测时域（秒）
+  double trajPredDefaultDt_;         // 默认预测步长（秒）
+  double trajPredCollisionInflation_; // 碰撞检测膨胀系数（米）
+  int trajPredMaxPoints_;            // 最大轨迹点数限制
+
   // 传感器原始数据
   Eigen::Vector3d position_;         // 机器人当前位置
   Eigen::Matrix3d orientation_;      // 机器人当前姿态
@@ -273,6 +291,22 @@ public:
   bool
   getDynamicObstacles(onboard_detector::GetDynamicObstacles::Request &req,
                       onboard_detector::GetDynamicObstacles::Response &res);
+
+  // 获取预测轨迹的服务回调函数
+  bool getPredictedTrajectories(
+      onboard_detector::GetPredictedTrajectories::Request &req,
+      onboard_detector::GetPredictedTrajectories::Response &res);
+
+  // 轨迹预测函数
+  // 基于卡尔曼滤波器状态进行多步轨迹外推，并进行碰撞检测截断
+  // filterIndex: 滤波器索引
+  // bbox: 障碍物边界框（用于获取尺寸信息）
+  // horizon: 预测时域（秒）
+  // dt: 预测时间步长（秒）
+  // trajectory: 输出的预测轨迹点序列
+  void predictTrajectory(int filterIndex, const onboardDetector::box3D &bbox,
+                         double horizon, double dt,
+                         std::vector<TrajectoryPoint> &trajectory);
 
   // 传感器数据回调函数
   void lidarPoseCB(const sensor_msgs::PointCloud2ConstPtr &cloudMsg,

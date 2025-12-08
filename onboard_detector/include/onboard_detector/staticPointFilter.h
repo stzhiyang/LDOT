@@ -6,6 +6,7 @@
 #ifndef ONBOARDDETECTOR_STATICPOINTFILTER_H
 #define ONBOARDDETECTOR_STATICPOINTFILTER_H
 
+#include <Eigen/Dense>
 #include <onboard_detector/lidarDetector.h>
 #include <onboard_detector/utils.h>
 #include <pcl/point_cloud.h>
@@ -55,6 +56,17 @@ public:
 
   // 清理旧体素
   void cleanMap(double current_time);
+
+  // 碰撞检测接口
+  // 检查单个点是否与静态地图碰撞
+  bool checkCollision(const Eigen::Vector3d &point);
+
+  // 检查带尺寸的包围框是否与静态地图碰撞
+  // center: 包围框中心位置
+  // size: 包围框尺寸 (x_width, y_width, z_width)
+  // inflation: 膨胀系数（米），用于安全裕度
+  bool checkBoxCollision(const Eigen::Vector3d &center,
+                         const Eigen::Vector3d &size, double inflation = 0.0);
 
 private:
   // 计算体素键值的辅助函数

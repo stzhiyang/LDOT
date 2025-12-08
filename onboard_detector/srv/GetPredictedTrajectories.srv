@@ -1,0 +1,21 @@
+# 轨迹预测服务请求
+# 用于获取动态障碍物的长期预测轨迹
+
+# 请求字段
+geometry_msgs/Point current_position    # 机器人当前位置
+float64 range                           # 查询范围（米）
+float64 prediction_horizon              # 预测时域（秒），默认3.0
+float64 prediction_dt                   # 预测时间步长（秒），默认0.2
+---
+# 响应字段（每个障碍物一组轨迹，使用扁平化数组存储）
+
+uint32[] obstacle_ids                        # 障碍物ID列表
+string[] obstacle_types                      # 障碍物类型（human/vehicle/uav/other）
+geometry_msgs/Vector3[] current_positions    # 当前位置
+geometry_msgs/Vector3[] current_velocities   # 当前速度
+geometry_msgs/Vector3[] sizes                # 障碍物尺寸
+
+uint32[] trajectory_lengths                  # 每个障碍物的轨迹点数（碰撞截断后的实际长度）
+geometry_msgs/Vector3[] trajectory_positions # 所有轨迹点位置（扁平化）
+geometry_msgs/Vector3[] trajectory_velocities # 所有轨迹点速度（扁平化）
+geometry_msgs/Vector3[] position_covariances # 位置协方差对角元素（扁平化）

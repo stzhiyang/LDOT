@@ -197,7 +197,6 @@ Visualization Manager:
       Namespaces:
         dynamic_trajectory_labels: true
         dynamic_trajectory_lines: true
-        dynamic_trajectory_points: true
         dynamic_velocity_arrows: true
       Queue Size: 100
       Value: true
@@ -212,6 +211,18 @@ Visualization Manager:
       Queue Size: 2
       Transport Hint: raw
       Unreliable: false
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /trajectory_prediction_tester_106766_1765200305497/visualization_markers
+      Name: MarkerArray
+      Namespaces:
+        covariance_ellipse: true
+        current_position: true
+        labels: true
+        trajectory_endpoint: true
+        trajectory_line: true
+      Queue Size: 100
       Value: true
   Enabled: true
   Global Options:
@@ -241,7 +252,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 30.131988525390625
+      Distance: 26.83078384399414
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -257,9 +268,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.059795618057251
+      Pitch: 1.0197956562042236
       Target Frame: <Fixed Frame>
-      Yaw: 3.125397205352783
+      Yaw: 3.1854026317596436
     Saved: ~
 Window Geometry:
   Displays:

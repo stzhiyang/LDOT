@@ -60,8 +60,8 @@ classification_size_reset_frames: 20            # 尺寸重置帧数，当物体
 classification_start_frame: 30 # 跟踪多少帧后开始进行分类和模型切换
 classification_interval_sec: 3 # 分类检查时间间隔 s
 classify_xy_distance_threshold: 3.0 # box与无人机xy轴距离阈值(米)，小于该值则继承前一帧的分类
-classify_human_threshold: [1.8, 0.8, 1.6]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
-classify_vehicle_threshold: [1.2, 0.7, 1.2] # [x/y >=z, z<0.7*zw, PCA xy_std/z_std > 1.2]
+classify_human_threshold: [1.2, 0.8, 1.2]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
+classify_vehicle_threshold: [1.2, 0.8, 1.2] # [x/y >=z, z<0.7*zw, PCA xy_std/z_std > 1.2]
 classify_uav_threshold: [0.8, 1.2] # z/y/z <0.7 ,z>1.2*zw
 # 跟踪、防幽灵轨迹
 box_size_smoothing_alpha: 0.4 # 包围框尺寸平滑系数 (0.0 - 1.0), 越小越平滑重叠
@@ -119,3 +119,10 @@ kalman_filter:
 
 
     
+
+# 轨迹预测参数
+trajectory_prediction:
+  default_horizon: 3.0        # 默认预测时域（秒）
+  default_dt: 0.2             # 默认预测步长（秒）
+  collision_inflation: 0.1    # 碰撞检测膨胀系数（米）
+  max_trajectory_points: 30   # 最大轨迹点数限制
