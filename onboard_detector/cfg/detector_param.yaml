@@ -32,6 +32,11 @@ static_filter_voxel_size: 0.2    # 静态滤波器体素大小 (米)，比第一
 static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
 static_filter_time_threshold: 5.0 # 静态点在地图中保留的时间阈值 (秒)
 static_cluster_filter_ratio: 0.6    # 判定为静态聚类的静态点比例阈值
+
+# 静态体素地图误判修复参数
+voxel_clear_dynamic_frames: 5       # 触发体素清除所需的连续动态帧数，防止短暂误判导致静态标记丢失
+shape_stability_threshold: 0.3      # 形状稳定性检查的PCA变化率阈值，抑制因LiDAR时序抖动导致的误判
+
 # DBSCAN 激光雷达聚类参数
 lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数
 lidar_DBSCAN_epsilon: 0.2    # 激光雷达DBSCAN邻域搜索半径 (米)，不能小于最大体素大小

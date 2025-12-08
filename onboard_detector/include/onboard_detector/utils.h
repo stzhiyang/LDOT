@@ -41,11 +41,11 @@ struct box3D {
   bool is_else = false;
   // 是否被检测为动态物体 (false: 未被检测为动态, true: 被检测为动态)
   bool is_dynamic = false;
-  // 强制未来包围框尺寸固定的标志
+  // 强制未来包围框尺寸固定的标志 0
   bool fix_size = false;
   // 是否为动态候选物体
   bool is_dynamic_candidate = false;
-  // 是否经过估计
+  // 是否经过估计 0
   bool is_estimated = false;
   // 边界框的偏航角（yaw），用于支持有向边界框（OBB）
   // 0表示未旋转，弧度制，绕z轴旋转

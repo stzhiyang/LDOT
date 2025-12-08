@@ -706,6 +706,29 @@ void dynamicDetector::initParam() {
     this->sizeResetFrames_ = 30;
   }
 
+  // -----------------------------------------静态体素地图误判修复参数--------------------------------------------------------------
+  // 触发体素清除所需的连续动态帧数
+  if (not this->nh_.getParam(this->ns_ + "/voxel_clear_dynamic_frames",
+                             this->voxelClearDynamicFrames_)) {
+    this->voxelClearDynamicFrames_ = 5;
+    ROS_INFO_STREAM(this->hint_
+                    << " No voxel_clear_dynamic_frames param. Use default: 5");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " voxel_clear_dynamic_frames: "
+                                << this->voxelClearDynamicFrames_);
+  }
+
+  // 形状稳定性检查的PCA变化率阈值
+  if (not this->nh_.getParam(this->ns_ + "/shape_stability_threshold",
+                             this->shapeStabilityThreshold_)) {
+    this->shapeStabilityThreshold_ = 0.3;
+    ROS_INFO_STREAM(this->hint_
+                    << " No shape_stability_threshold param. Use default: 0.3");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " shape_stability_threshold: "
+                                << this->shapeStabilityThreshold_);
+  }
+
   // -----------------------------------------卡尔曼滤波器参数--------------------------------------------------------------
   if (not this->nh_.getParam(this->ns_ + "/kalman_filter/adaptive_window_size",
                              this->kfParams_.adaptive_window_size)) {
@@ -1516,8 +1539,9 @@ void dynamicDetector::lidarDetectionCB(const ros::TimerEvent &event) {
 
   // 检查是否有新点云数据
   if (!hasNewCloud_) {
-    ROS_WARN_THROTTLE(5.0, "%s: No new cloud data available for detection",
-                      this->hint_.c_str());
+    // 这是正常的时序行为，定时器和点云数据不完全同步
+    ROS_DEBUG_THROTTLE(5.0, "%s: No new cloud data available for detection",
+                       this->hint_.c_str());
     return;
   }
 
@@ -1555,8 +1579,9 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
 
   // 检查是否有新检测结果
   if (!hasNewDetection_) {
-    ROS_WARN_THROTTLE(5.0, "%s: No new detection available for tracking",
-                      this->hint_.c_str());
+    // 这是正常的时序行为，定时器和检测结果不完全同步
+    ROS_DEBUG_THROTTLE(5.0, "%s: No new detection available for tracking",
+                       this->hint_.c_str());
     return; // 跳过，避免重复处理相同数据
   }
 
@@ -1899,13 +1924,87 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
     // 综合判断是否为动态：
     // 1. 线速度判断：点云投票率足够高 && 卡尔曼滤波器估计的线速度足够快
     // 2. 纯旋转判断：线速度很小 && 点云投票率高（说明点在动但质心不动，即旋转）
+    
+    // 【新增】计算物体到传感器的距离，用于距离自适应判定
+    double distToSensor = std::sqrt(this->boxHist_[i][0].x * this->boxHist_[i][0].x +
+                                     this->boxHist_[i][0].y * this->boxHist_[i][0].y);
+    
+    // 基础线速度判定
     bool is_linear_dynamic =
         (voteRatio >= this->dynaVoteThresh_ && velNorm >= this->dynaVelThresh_);
     
+    // 【修复】远距离物体需要额外的速度方向一致性检查
+    // 真实运动：速度方向在连续帧之间保持一致
+    // LiDAR抖动：质心漂移是随机的，方向不一致
+    if (is_linear_dynamic && distToSensor > 5.0 && this->boxHist_[i].size() >= 3) {
+      // 计算当前速度方向与历史速度方向的一致性
+      Eigen::Vector2d currVelDir(Vkf(0), Vkf(1));
+      double currVelNorm2D = currVelDir.norm();
+      if (currVelNorm2D > 1e-6) {
+        currVelDir.normalize();
+        
+        // 计算历史帧的速度方向
+        Eigen::Vector2d prevVelDir(this->boxHist_[i][1].Vx, this->boxHist_[i][1].Vy);
+        double prevVelNorm2D = prevVelDir.norm();
+        
+        if (prevVelNorm2D > 1e-6) {
+          prevVelDir.normalize();
+          // 计算速度方向的余弦相似度
+          double velDirSimilarity = currVelDir.dot(prevVelDir);
+          
+          // 如果速度方向不一致（余弦相似度 < 0.5，即夹角 > 60度），认为是LiDAR抖动
+          if (velDirSimilarity < 0.5) {
+            is_linear_dynamic = false;
+          }
+        }
+      }
+    }
+    
     // 原地旋转检测：质心几乎不动，但点云有明显速度变化
     // 这种情况下 velNorm 很小（质心速度），但 voteRatio 会很高（点在动）
-    bool is_rotation_dynamic = 
-        (voteRatio >= (this->dynaVoteThresh_ + 0.15) && velNorm < this->dynaVelThresh_);
+    // 【修复】添加形状稳定性检查，抑制因LiDAR时序抖动导致的误判
+    bool is_rotation_dynamic = false;
+    if (voteRatio >= (this->dynaVoteThresh_ + 0.1) && velNorm < this->dynaVelThresh_) {
+      // 远距离的LiDAR点云稀疏，时序抖动导致的"形状不稳定"是假象
+      // 检查点云形状稳定性：通过PCA标准差变化率判断
+      bool isShapeStable = true;
+      if (i < this->pcStdHist_.size() && this->pcStdHist_[i].size() > 1 && curFrameGap > 0) {
+        Eigen::Vector3d currStd = this->pcStdHist_[i][0];
+        Eigen::Vector3d prevStd = this->pcStdHist_[i][std::min(curFrameGap, (int)this->pcStdHist_[i].size() - 1)];
+        // 计算PCA标准差变化率
+        double stdChangeRate = 0.0;
+        double prevNorm = prevStd.norm();
+        if (prevNorm > 1e-6) {
+          stdChangeRate = (currStd - prevStd).norm() / prevNorm;
+        }
+        // 【修改】根据距离调整形状稳定性阈值
+        // 中距离（3-5m）：提高阈值要求，更严格地判断形状不稳定
+        double adaptiveThreshold = this->shapeStabilityThreshold_;
+        if (distToSensor > 10.0) {
+          adaptiveThreshold = this->shapeStabilityThreshold_ * 1.5; // 中距离提高50%阈值
+        }else if (distToSensor > 5.0) {
+          adaptiveThreshold = this->shapeStabilityThreshold_ * 1.2; // 中距离提高50%阈值
+        }
+        // 如果形状变化率低于阈值，认为形状稳定，抑制旋转动态判定
+        if (stdChangeRate < adaptiveThreshold) {
+          isShapeStable = false; // 形状稳定，不是真正的旋转运动
+        }
+      }
+      // 检查尺寸变化：如果尺寸变化超过阈值，可能是遮挡导致的形状变化
+      bool isSizeChanged = false;
+      if (i < this->maxHistorySizes_.size()) {
+        Eigen::Vector3d currSize(this->boxHist_[i][0].x_width, 
+                                  this->boxHist_[i][0].y_width, 
+                                  this->boxHist_[i][0].z_width);
+        Eigen::Vector3d maxSize = this->maxHistorySizes_[i];
+        double sizeRatio = currSize.norm() / (maxSize.norm() + 1e-6);
+        if (sizeRatio < (1.0 / this->sizeMergeThresh_) || sizeRatio > this->sizeMergeThresh_) {
+          isSizeChanged = true; // 尺寸变化过大，可能是遮挡
+        }
+      }
+      // 只有形状不稳定且尺寸未发生大变化时，才认为是真正的旋转动态
+      is_rotation_dynamic = isShapeStable && !isSizeChanged;
+    }
 
     if (is_linear_dynamic || is_rotation_dynamic) {
       // 如果满足条件，首先标记为“动态候选”
@@ -1936,9 +2035,35 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
   this->dynamicBBoxes_ = dynamicBBoxesTemp;
 
   // 【动态反哺机制】清理已确认动态物体历史轨迹区域的体素
-  // 防止动态物体暂停后其区域被标记为静态背景
-  if (this->staticClusterFilterEnabled_ && !dynamicBBoxesTemp.empty()) {
-    this->staticFilter_->clearDynamicRegions(dynamicBBoxesTemp);
+  // 【修复】只有连续多帧确认为动态的物体才触发体素清除，防止短暂误判导致静态标记丢失
+  if (this->staticClusterFilterEnabled_) {
+    // 确保 confirmedDynamicFrames_ 向量大小与轨迹数量一致
+    while (this->confirmedDynamicFrames_.size() < this->boxHist_.size()) {
+      this->confirmedDynamicFrames_.push_back(0);
+    }
+    
+    // 收集需要清除体素的动态物体（连续动态帧数达到阈值）
+    std::vector<onboardDetector::box3D> boxesToClear;
+    for (size_t i = 0; i < this->boxHist_.size(); ++i) {
+      if (!this->boxHist_[i].empty() && this->boxHist_[i][0].is_dynamic) {
+        // 增加连续动态帧数计数
+        this->confirmedDynamicFrames_[i]++;
+        // 只有连续动态帧数达到阈值才触发体素清除
+        if (this->confirmedDynamicFrames_[i] >= this->voxelClearDynamicFrames_) {
+          boxesToClear.push_back(this->boxHist_[i][0]);
+        }
+      } else {
+        // 如果当前帧不是动态，重置计数器
+        if (i < this->confirmedDynamicFrames_.size()) {
+          this->confirmedDynamicFrames_[i] = 0;
+        }
+      }
+    }
+    
+    // 只对达到阈值的物体执行体素清除
+    if (!boxesToClear.empty()) {
+      this->staticFilter_->clearDynamicRegions(boxesToClear);
+    }
   }
 
   hasNewTracking_ = false; // 标记跟踪结果已处理
@@ -2679,8 +2804,14 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
       this->smallSizeCounter_.push_back(0);
       this->trackMissedFrames_.push_back(0);
 
-      // 强制所有目标使用 3D CV 模型
+      // 强制所有目标使用 3D CV 模型，并初始化分类信息为 is_else
       auto &bbox = this->filteredBBoxes_[i];
+      // 初始化分类信息：新目标默认为 is_else（与滤波器模型一致）
+      bbox.is_human = false;
+      bbox.is_che = false;
+      bbox.is_uav = false;
+      bbox.is_else = true;
+
       auto newFilter = createKalmanFilter(false, // is_human
                                           false, // is_che
                                           false, // is_uav
@@ -2701,7 +2832,7 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
       newFilter->initialize(detection);
       this->filters_.push_back(newFilter);
 
-      // 初始化 trackedBBoxes_，第一帧的跟踪结果就是检测结果
+      // 初始化 trackedBBoxes_，第一帧的跟踪结果就是检测结果（已包含正确的分类信息）
       this->trackedBBoxes_.push_back(this->filteredBBoxes_[i]);
     }
 
@@ -3114,6 +3245,7 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   std::vector<int> smallSizeCounterTemp;
   std::vector<std::shared_ptr<KalmanFilterBase>> filtersTemp;
   std::vector<int> trackMissedFramesTemp;
+  std::vector<int> confirmedDynamicFramesTemp; // 连续动态帧数计数器
 
   // 确保所有向量大小与 boxHist_ 一致
   size_t histSize = this->boxHist_.size();
@@ -3125,6 +3257,9 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   }
   if (this->smallSizeCounter_.size() != histSize) {
     this->smallSizeCounter_.resize(histSize, 0);
+  }
+  if (this->confirmedDynamicFrames_.size() != histSize) {
+    this->confirmedDynamicFrames_.resize(histSize, 0);
   }
 
   // 为新出现的目标准备的空历史记录模板
@@ -3165,6 +3300,8 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       // 同步继承 maxHistoryPcClusterStds_ 和 smallSizeCounter_
       maxHistoryPcClusterStdsTemp.push_back(this->maxHistoryPcClusterStds_[h_idx]);
       smallSizeCounterTemp.push_back(this->smallSizeCounter_[h_idx]);
+      // 同步继承 confirmedDynamicFrames_
+      confirmedDynamicFramesTemp.push_back(this->confirmedDynamicFrames_[h_idx]);
       filtersTemp.push_back(this->filters_[h_idx]);
 
       // 构建测量向量：所有模型都测量3D位置 [x, y, z]
@@ -3263,6 +3400,8 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       // 同步初始化 maxHistoryPcClusterStds_ 和 smallSizeCounter_
       maxHistoryPcClusterStdsTemp.push_back(this->filteredPcClusterStds_[i]);
       smallSizeCounterTemp.push_back(0);
+      // 同步初始化 confirmedDynamicFrames_
+      confirmedDynamicFramesTemp.push_back(0);
 
       // 强制所有新轨迹使用 3D CV 模型
       auto newFilter = createKalmanFilter(false, // is_human
@@ -3294,6 +3433,11 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       newEstimatedBBox.Ax = 0.0;
       newEstimatedBBox.Ay = 0.0;
       newEstimatedBBox.Az = 0.0;
+      // 初始化分类信息：新目标默认为 is_else（与滤波器模型一致）
+      newEstimatedBBox.is_human = false;
+      newEstimatedBBox.is_che = false;
+      newEstimatedBBox.is_uav = false;
+      newEstimatedBBox.is_else = true;
     }
 
     // --- 更新历史记录队列 ---
@@ -3330,6 +3474,8 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
         // 同步继承 maxHistoryPcClusterStds_ 和 smallSizeCounter_
         maxHistoryPcClusterStdsTemp.push_back(this->maxHistoryPcClusterStds_[j]);
         smallSizeCounterTemp.push_back(this->smallSizeCounter_[j]);
+        // 同步继承 confirmedDynamicFrames_
+        confirmedDynamicFramesTemp.push_back(this->confirmedDynamicFrames_[j]);
         filtersTemp.push_back(this->filters_[j]);
 
         // 获取预测状态 (已在 trackingCB 中 predict)
@@ -3466,6 +3612,7 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   this->filters_ = filtersTemp;
   this->trackedBBoxes_ = trackedBBoxesTemp;
   this->trackMissedFrames_ = trackMissedFramesTemp;
+  this->confirmedDynamicFrames_ = confirmedDynamicFramesTemp;
 }
 
 /*!
@@ -3795,33 +3942,14 @@ void dynamicDetector::publishDynamicBoxTrajectory() {
     trajLine.type = visualization_msgs::Marker::LINE_STRIP;
     trajLine.action = visualization_msgs::Marker::ADD;
     trajLine.pose.orientation.w = 1.0;
-    
+
     // 轨迹线宽度
-    trajLine.scale.x = 0.08;
-    
-    // 根据物体ID设置不同颜色（使用HSV色环）
-    double hue = fmod(i * 137.5, 360.0); // 黄金角分布
-    double r, g, b;
-    // 简化的HSV到RGB转换（S=1, V=1）
-    double c = 1.0;
-    double x = c * (1.0 - fabs(fmod(hue / 60.0, 2.0) - 1.0));
-    if (hue < 60) {
-      r = c; g = x; b = 0;
-    } else if (hue < 120) {
-      r = x; g = c; b = 0;
-    } else if (hue < 180) {
-      r = 0; g = c; b = x;
-    } else if (hue < 240) {
-      r = 0; g = x; b = c;
-    } else if (hue < 300) {
-      r = x; g = 0; b = c;
-    } else {
-      r = c; g = 0; b = x;
-    }
-    
-    trajLine.color.r = r;
-    trajLine.color.g = g;
-    trajLine.color.b = b;
+    trajLine.scale.x = 0.05;
+
+    // 使用统一的轨迹颜色（青色）
+    trajLine.color.r = 0.0;
+    trajLine.color.g = 0.8;
+    trajLine.color.b = 0.8;
     trajLine.color.a = 0.8;
     trajLine.lifetime = ros::Duration(0.2);
 
@@ -3836,41 +3964,7 @@ void dynamicDetector::publishDynamicBoxTrajectory() {
 
     trajMarkers.markers.push_back(trajLine);
 
-    // --- 2. 创建轨迹点标记 (SPHERE_LIST) ---
-    visualization_msgs::Marker trajPoints;
-    trajPoints.header.frame_id = "map";
-    trajPoints.header.stamp = stamp;
-    trajPoints.ns = "dynamic_trajectory_points";
-    trajPoints.id = markerId++;
-    trajPoints.type = visualization_msgs::Marker::SPHERE_LIST;
-    trajPoints.action = visualization_msgs::Marker::ADD;
-    trajPoints.pose.orientation.w = 1.0;
-    
-    // 点的大小
-    trajPoints.scale.x = 0.12;
-    trajPoints.scale.y = 0.12;
-    trajPoints.scale.z = 0.12;
-    
-    // 点的颜色（与轨迹线相同，但稍暗）
-    trajPoints.color.r = r * 0.7;
-    trajPoints.color.g = g * 0.7;
-    trajPoints.color.b = b * 0.7;
-    trajPoints.color.a = 0.6;
-    trajPoints.lifetime = ros::Duration(0.2);
-
-    // 添加历史位置点（间隔采样以避免过于密集）
-    int stepSize = std::max(1, static_cast<int>(this->boxHist_[i].size()) / 10);
-    for (size_t j = 0; j < this->boxHist_[i].size(); j += stepSize) {
-      geometry_msgs::Point p;
-      p.x = this->boxHist_[i][j].x;
-      p.y = this->boxHist_[i][j].y;
-      p.z = this->boxHist_[i][j].z;
-      trajPoints.points.push_back(p);
-    }
-
-    trajMarkers.markers.push_back(trajPoints);
-
-    // --- 3. 创建速度箭头 (ARROW) ---
+    // --- 2. 创建速度箭头 (ARROW) ---
     // 获取最新的速度信息
     double vx = this->boxHist_[i][0].Vx;
     double vy = this->boxHist_[i][0].Vy;
@@ -3923,7 +4017,7 @@ void dynamicDetector::publishDynamicBoxTrajectory() {
       trajMarkers.markers.push_back(velArrow);
     }
 
-    // --- 4. 创建文本标签显示轨迹ID和速度信息 ---
+    // --- 3. 创建文本标签显示分类和速度信息 ---
     visualization_msgs::Marker textLabel;
     textLabel.header.frame_id = "map";
     textLabel.header.stamp = stamp;
@@ -3931,29 +4025,41 @@ void dynamicDetector::publishDynamicBoxTrajectory() {
     textLabel.id = markerId++;
     textLabel.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
     textLabel.action = visualization_msgs::Marker::ADD;
-    
+
     // 文本位置（在物体上方）
     textLabel.pose.position.x = this->boxHist_[i][0].x;
     textLabel.pose.position.y = this->boxHist_[i][0].y;
-    textLabel.pose.position.z = this->boxHist_[i][0].z + 
-                                 this->boxHist_[i][0].z_width / 2.0 + 0.5;
-    
+    textLabel.pose.position.z = this->boxHist_[i][0].z +
+                                this->boxHist_[i][0].z_width  /2.0 + 0.5;
+
     // 文本大小
-    textLabel.scale.z = 0.2;
-    
+    textLabel.scale.z = 0.25;
+
     // 文本颜色（白色）
     textLabel.color.r = 1.0;
     textLabel.color.g = 1.0;
     textLabel.color.b = 1.0;
     textLabel.color.a = 1.0;
     textLabel.lifetime = ros::Duration(0.2);
-    
-    // 文本内容
+
+    // 获取物体分类信息
+    std::string classStr;
+    if (this->boxHist_[i][0].is_human) {
+      classStr = "Human";
+    } else if (this->boxHist_[i][0].is_che) {
+      classStr = "Vehicle";
+    } else if (this->boxHist_[i][0].is_uav) {
+      classStr = "UAV";
+    } else {
+      classStr = "Other";
+    }
+
+    // 文本内容：分类 + 速度 + 轨迹帧数
     std::ostringstream textStream;
-    textStream << " V:" << std::fixed << std::setprecision(2) << velNorm << "m/s"
-               << " Len:" << this->boxHist_[i].size();
+    textStream << classStr << " V:" << std::fixed << std::setprecision(2)
+               << velNorm << "m/s F:" << this->boxHist_[i].size();
     textLabel.text = textStream.str();
-    
+
     trajMarkers.markers.push_back(textLabel);
   }
 

@@ -170,6 +170,10 @@ private:
   double pointCountMergeThresh_; // 点数合并阈值
   int sizeResetFrames_;          // 尺寸重置帧数
 
+  // 静态体素地图误判修复参数
+  int voxelClearDynamicFrames_;      // 触发体素清除所需的连续动态帧数
+  double shapeStabilityThreshold_;   // 形状稳定性检查的PCA变化率阈值
+
   // 尺寸约束参数
   Eigen::Vector3d maxObjectSize_; // 物体的最大尺寸阈值
 
@@ -242,6 +246,8 @@ private:
       maxHistoryPcClusterStds_; // 存储每个轨迹的历史最大PCA标准差
   std::vector<std::shared_ptr<KalmanFilterBase>>
       filters_; // 每个被跟踪物体对应的多模型卡尔曼滤波器
+  std::vector<int>
+      confirmedDynamicFrames_; // 每个轨迹连续被确认为动态的帧数计数器
 
   // 线程安全与数据同步
   std::mutex cloudMutex_;                    // 保护点云数据的互斥锁
