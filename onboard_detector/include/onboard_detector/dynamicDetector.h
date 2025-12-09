@@ -170,6 +170,8 @@ private:
   double coastingTrackGateRelaxFactor_; // coasting轨迹的门限放松因子
   double boxSizeSmoothingAlpha_;       // 包围框尺寸平滑系数
 
+  double sizeRetainRatio_;             // 尺寸保持比例阈值 (0.0-1.0)，当前尺寸低于此比例时触发约束
+
   // 动态/静态分类参数
   int skipFrame_;               // 点云比较时跳过的帧数
   double dynaVelThresh_;        // 判定为动态的线速度阈值
@@ -177,6 +179,11 @@ private:
   int forceDynaFrames_;      // 在历史中被判定为动态的帧数，超过则强制认为是动态
   int forceDynaCheckRange_;  // 检查强制动态的历史范围
   int dynamicConsistThresh_; // 动态一致性检查的帧数阈值
+  
+  // 动态转静态回退参数
+  int staticFallbackFrames_;            // 连续静止多少帧后回退为静态
+  double staticFallbackVelThresh_;      // 静止判定的位置变化速度阈值 (m/s)
+  std::vector<int> stationaryFrameCount_; // 每个轨迹连续静止的帧数计数器
   double classificationMinNeighborDist_; // 点云匹配距离
   double sizeMergeThresh_;       // 尺寸合并阈值
   double pointCountMergeThresh_; // 点数合并阈值
@@ -184,7 +191,13 @@ private:
 
   // 静态体素地图误判修复参数
   int voxelClearDynamicFrames_;      // 触发体素清除所需的连续动态帧数
-  double shapeStabilityThreshold_;   // 形状稳定性检查的PCA变化率阈值
+
+  // ==================== 鲁棒性增强参数 ====================
+  int minReliablePoints_;            // 最小可靠点数，低于此值提高速度阈值
+  double pointCountDropThreshold_;   // 点数下降阈值（相对于历史平均），用于遮挡检测
+  double hysteresisLower_;           // 滞后系数，动态转静态时速度阈值乘以此系数
+  std::vector<bool> previousDynamicState_;  // 每个轨迹的前一帧动态状态（用于滞后机制）
+  std::vector<std::deque<int>> pointCountHist_;  // 每个轨迹的历史点数（用于遮挡检测）
 
   // 尺寸约束参数
   Eigen::Vector3d maxObjectSize_; // 物体的最大尺寸阈值

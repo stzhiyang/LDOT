@@ -24,6 +24,13 @@ struct KF_Params {
   double adaptive_alpha = 0.3;           // Q 更新的平滑因子 (0.0 - 1.0)
   double adaptive_r_alpha = 0.3;         // R 更新的平滑因子 (0.0 - 1.0)
   double adaptive_min_noise_ratio = 0.5; // 最小Q/R阈值系数
+  
+  // 协方差上限参数
+  bool enable_cov_limit = false;         // 是否启用协方差上限限制
+  double max_pos_cov = 9.0;              // 位置协方差上限 (m²)，对应标准差3米
+  double max_vel_cov = 16.0;             // 速度协方差上限 ((m/s)²)，对应标准差4m/s
+  double max_acc_cov = 100.0;            // 加速度协方差上限 ((m/s²)²)，对应标准差10m/s²
+  double prediction_cov_multiplier = 5.0; // 预测时协方差上限倍数（相对于跟踪器上限）
 };
 
 /**
@@ -50,6 +57,20 @@ public:
     // 更新最小阈值
     min_q_ = model_->getProcessNoiseQ() * min_noise_ratio;
     min_r_ = model_->getMeasNoiseR() * min_noise_ratio;
+  }
+
+  /**
+   * @brief 设置协方差上限参数
+   * @param enable 是否启用协方差上限限制
+   * @param max_pos 位置协方差上限 (m²)
+   * @param max_vel 速度协方差上限 ((m/s)²)
+   * @param max_acc 加速度协方差上限 ((m/s²)²)
+   */
+  void setCovLimitParams(bool enable, double max_pos, double max_vel, double max_acc) {
+    enable_cov_limit_ = enable;
+    max_pos_cov_ = max_pos;
+    max_vel_cov_ = max_vel;
+    max_acc_cov_ = max_acc;
   }
 
   virtual ~KalmanFilterBase() = default;
@@ -255,6 +276,44 @@ protected:
   double r_alpha_;
   Eigen::MatrixXd min_q_;
   Eigen::MatrixXd min_r_;
+
+  // 协方差上限参数
+  bool enable_cov_limit_ = false;  // 是否启用协方差上限限制
+  double max_pos_cov_ = 9.0;       // 位置协方差上限 (m²)
+  double max_vel_cov_ = 16.0;      // 速度协方差上限 ((m/s)²)
+  double max_acc_cov_ = 100.0;     // 加速度协方差上限 ((m/s²)²)
+
+  /**
+   * @brief 限制协方差矩阵的对角元素不超过上限
+   * 根据状态维度自动判断各状态量的类型（位置/速度/加速度）
+   */
+  void clampCovariance() {
+    if (!enable_cov_limit_) return;
+    
+    // 根据状态维度判断模型类型并限制协方差
+    // CV模型: [x, y, z, vx, vy, vz] dim=6
+    // Human CA模型: [x, y, z, vx, vy, ax, ay] dim=7
+    // CTRA模型: [x, y, z, v, a, yaw, yaw_rate] dim=7
+    // UAV CA模型: [x, y, z, vx, vy, vz, ax, ay, az] dim=9
+    
+    if (state_dim_ == 6) {
+      // CV模型: 位置[0-2], 速度[3-5]
+      for (int i = 0; i < 3; ++i) P_(i, i) = std::min(P_(i, i), max_pos_cov_);
+      for (int i = 3; i < 6; ++i) P_(i, i) = std::min(P_(i, i), max_vel_cov_);
+    } else if (state_dim_ == 7) {
+      // CA或CTRA模型: 位置[0-2], 速度/加速度[3-6]
+      for (int i = 0; i < 3; ++i) P_(i, i) = std::min(P_(i, i), max_pos_cov_);
+      P_(3, 3) = std::min(P_(3, 3), max_vel_cov_);  // vx 或 v
+      P_(4, 4) = std::min(P_(4, 4), max_vel_cov_);  // vy 或 a
+      P_(5, 5) = std::min(P_(5, 5), max_acc_cov_);  // ax 或 yaw
+      P_(6, 6) = std::min(P_(6, 6), max_acc_cov_);  // ay 或 yaw_rate
+    } else if (state_dim_ == 9) {
+      // UAV CA模型: 位置[0-2], 速度[3-5], 加速度[6-8]
+      for (int i = 0; i < 3; ++i) P_(i, i) = std::min(P_(i, i), max_pos_cov_);
+      for (int i = 3; i < 6; ++i) P_(i, i) = std::min(P_(i, i), max_vel_cov_);
+      for (int i = 6; i < 9; ++i) P_(i, i) = std::min(P_(i, i), max_acc_cov_);
+    }
+  }
 };
 
 /**
@@ -277,6 +336,9 @@ public:
 
     // 预测协方差
     P_ = F * P_ * F.transpose() + Q_;
+
+    // 限制协方差上限
+    clampCovariance();
 
     // 归一化yaw（如果有）
     model_->normalizeYaw(state_);
@@ -328,6 +390,9 @@ public:
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(state_dim_, state_dim_);
     P_ = (I - K * H) * P_;
 
+    // 限制协方差上限
+    clampCovariance();
+
     // 归一化yaw
     model_->normalizeYaw(state_);
   }
@@ -353,6 +418,9 @@ public:
 
     // 预测协方差
     P_ = F * P_ * F.transpose() + Q_;
+
+    // 限制协方差上限
+    clampCovariance();
 
     // 归一化yaw
     model_->normalizeYaw(state_);
@@ -408,6 +476,9 @@ public:
     Eigen::MatrixXd I_KH = I - K * H;
     P_ = I_KH * P_ * I_KH.transpose() + K * R_ * K.transpose();
 
+    // 限制协方差上限
+    clampCovariance();
+
     // 归一化yaw
     model_->normalizeYaw(state_);
   }
@@ -432,6 +503,8 @@ createKalmanFilter(bool is_human, bool is_che, bool is_uav, bool is_else,
     kf->setAdaptiveParams(params.adaptive_window_size, params.adaptive_alpha,
                           params.adaptive_r_alpha,
                           params.adaptive_min_noise_ratio);
+    kf->setCovLimitParams(params.enable_cov_limit, params.max_pos_cov,
+                          params.max_vel_cov, params.max_acc_cov);
     return kf;
   } else if (is_uav) {
     // 无人机 -> CA-KF (3D)
@@ -440,6 +513,8 @@ createKalmanFilter(bool is_human, bool is_che, bool is_uav, bool is_else,
     kf->setAdaptiveParams(params.adaptive_window_size, params.adaptive_alpha,
                           params.adaptive_r_alpha,
                           params.adaptive_min_noise_ratio);
+    kf->setCovLimitParams(params.enable_cov_limit, params.max_pos_cov,
+                          params.max_vel_cov, params.max_acc_cov);
     return kf;
   } else if (is_che) {
     // 车 -> CTRA-EKF
@@ -448,6 +523,8 @@ createKalmanFilter(bool is_human, bool is_che, bool is_uav, bool is_else,
     kf->setAdaptiveParams(params.adaptive_window_size, params.adaptive_alpha,
                           params.adaptive_r_alpha,
                           params.adaptive_min_noise_ratio);
+    kf->setCovLimitParams(params.enable_cov_limit, params.max_pos_cov,
+                          params.max_vel_cov, params.max_acc_cov);
     return kf;
   } else {
     // 其他 -> CV-KF (3D)
@@ -456,6 +533,8 @@ createKalmanFilter(bool is_human, bool is_che, bool is_uav, bool is_else,
     kf->setAdaptiveParams(params.adaptive_window_size, params.adaptive_alpha,
                           params.adaptive_r_alpha,
                           params.adaptive_min_noise_ratio);
+    kf->setCovLimitParams(params.enable_cov_limit, params.max_pos_cov,
+                          params.max_vel_cov, params.max_acc_cov);
     return kf;
   }
 }

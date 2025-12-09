@@ -101,7 +101,7 @@ void StaticPointFilter::updateMap(
     if (dist < 3.0) {
       // 使用模运算实现每3帧累积1次
       // 基于当前计数的模运算，确保不同体素有不同的累积节奏
-      should_increment = (status.hit_count % 3 == 0);
+      should_increment = (status.hit_count % 2 == 0);
     }
 
     // 增加体素格子命中计数，但进行截断以避免溢出
@@ -206,31 +206,94 @@ void StaticPointFilter::filterClusters(
       continue;
     }
 
-    // 自适应阈值选择：根据簇的特征动态调整过滤阈值
-    float adaptive_threshold = static_ratio_threshold;
+    // ==================== 多维度自适应阈值策略 ====================
+    // 综合考虑距离、几何特征、点云密度等多个因素
 
     // 计算簇到传感器的距离（2D平面距离）
     double dist_to_sensor = std::sqrt(bbox.x * bbox.x + bbox.y * bbox.y);
 
-    // 【关键策略】距离自适应：近距离动态物体优先保护
-    // 近距离（<3m）：使用极严格的阈值，防止误判动态障碍物
-    // 远距离（>8m）：使用宽松阈值，更激进地过滤背景
+    // 基础阈值
+    float adaptive_threshold = static_ratio_threshold;
+
+    // -------------------- 策略1：距离自适应（平滑曲线过渡） --------------------
+    // 距离越近，保护系数越高（阈值越高，越难被过滤）
+    float dist_factor = 0.0f;
     if (dist_to_sensor < 3.0) {
-      // 近距离（<3m）：大幅提高阈值0.3，极难被判定为静态（极度保守）
-      // 0.6 + 0.3 = 0.9，需要90%以上的点是静态才会被过滤
-      adaptive_threshold = std::min(0.95f, static_ratio_threshold + 0.3f);
-    } else if (dist_to_sensor > 8.0) {
-      // 远距离（>8m）：降低阈值0.15，更容易被判定为静态（更激进）
-      adaptive_threshold = std::max(0.35f, static_ratio_threshold - 0.15f);
+      // 极近距离（<3m）：最大保护，几乎不过滤
+      dist_factor = 0.3f;
+    } else if (dist_to_sensor < 5.0) {
+      // 近距离（3-5m）：线性过渡
+      dist_factor = 0.3f * (5.0f - (float)dist_to_sensor) / 2.0f;
+    } else if (dist_to_sensor > 10.0) {
+      // 远距离（>10m）：更激进过滤，随距离增加逐渐加强
+      dist_factor =
+          -0.15f * std::min(1.0f, (float)(dist_to_sensor - 10.0) / 10.0f);
+    }
+    // 中距离（5-10m）：dist_factor = 0，使用基础阈值
+
+    // -------------------- 策略2：几何特征自适应 --------------------
+    float max_dim = std::max({bbox.x_width, bbox.y_width, bbox.z_width});
+    float min_dim = std::min({bbox.x_width, bbox.y_width, bbox.z_width});
+    float volume = bbox.x_width * bbox.y_width * bbox.z_width;
+
+    float geometry_factor = 0.0f;
+
+    // 2a. 高度特征：区分行人、车辆、建筑物
+    if (bbox.z_width > 0.5f && bbox.z_width < 2.2f) {
+      // 行人/自行车高度范围（0.5-2.2m）：增加保护
+      // 特别是近距离的行人，绝对不能误过滤
+      if (dist_to_sensor < 5.0) {
+        geometry_factor += 0.1f;
+      }
     }
 
-    // 策略2：大尺寸物体（可能是建筑物、墙壁等）使用更宽松的阈值
-    // 但近距离的大物体（如停着的车）不应被过滤
-    float max_dim = std::max({bbox.x_width, bbox.y_width, bbox.z_width});
-    if (max_dim > 2.0 && dist_to_sensor > 3.0) {
-      // 只对远距离的大物体降低阈值
-      adaptive_threshold = std::max(0.3f, adaptive_threshold - 0.15f);
+    // 2b. 长宽比特征：细长物体（如电线杆、树干）vs 块状物体
+    float aspect_ratio = max_dim / (min_dim + 0.01f); // 防止除零
+    if (aspect_ratio > 5.0f && max_dim > 2.0f) {
+      // 细长高大物体（如电线杆、树干）：更容易过滤
+      geometry_factor -= 0.1f;
     }
+
+    // 2c. 体积特征：大体积物体（建筑物、墙壁）
+    if (volume > 8.0f && dist_to_sensor > 5.0) {
+      // 远距离大体积物体：更激进过滤
+      geometry_factor -= 0.15f;
+    } else if (volume < 0.5f && dist_to_sensor < 3.0) {
+      // 近距离小体积物体（可能是人的一部分）：增加保护
+      geometry_factor += 0.05f;
+    }
+
+    // -------------------- 策略3：点云密度自适应 --------------------
+    // 动态物体通常有更高的点云密度（因为表面反射特性）
+    float point_density = (float)total_points / (volume + 0.01f);
+    float density_factor = 0.0f;
+
+    if (point_density > 100.0f && dist_to_sensor < 8.0) {
+      // 高密度簇：可能是动态物体，增加保护
+      density_factor = 0.05f;
+    } else if (point_density < 10.0f && dist_to_sensor > 5.0) {
+      // 低密度远距离簇：可能是稀疏背景，更容易过滤
+      density_factor = -0.05f;
+    }
+
+    // -------------------- 策略4：静态比例置信度 --------------------
+    // 如果静态比例处于边界区域（0.4-0.7），需要更谨慎决策
+    float confidence_factor = 0.0f;
+    if (ratio > 0.4f && ratio < 0.7f) {
+      // 边界区域：近距离时偏向保留，远距离时偏向过滤
+      if (dist_to_sensor < 5.0) {
+        confidence_factor = 0.1f; // 偏向保留
+      } else if (dist_to_sensor > 10.0) {
+        confidence_factor = -0.05f; // 偏向过滤
+      }
+    }
+
+    // -------------------- 综合计算最终阈值 --------------------
+    adaptive_threshold = static_ratio_threshold + dist_factor + geometry_factor +
+                         density_factor + confidence_factor;
+
+    // 限制在合理范围内 [0.25, 0.95]
+    adaptive_threshold = std::max(0.25f, std::min(0.95f, adaptive_threshold));
 
     // 如果静态点比例低于（自适应）阈值，则保留该聚类
     if (ratio <= adaptive_threshold) {
