@@ -84,6 +84,8 @@ dynamic_consistency_threshold: 4 # 最近连续k帧被投票为动态候选，�
 # 动态转静态回退参数 - 如果动态物体连续静止，则回退为静态
 static_fallback_frames: 10          # 连续静止多少帧后回退为静态
 static_fallback_vel_threshold: 0.1  # 静止判定阈值 (m/s)，帧间位置变化/dt < 此值视为静止
+motion_dir_consistency_threshold: 0.5  # 运动方向一致性阈值（余弦值），低于此值视为点云抖动而非真实运动
+                                       # 1.0=完全一致，0.5=夹角60度，0=垂直，-1=反向
 # 静态体素地图误判修复参数
 voxel_clear_dynamic_frames: 5       # 触发体素清除所需的连续动态帧数，防止短暂误判导致静态标记丢失
 # 鲁棒性增强参数 - 解决点云稀疏、遮挡误判、LiDAR抖动问题

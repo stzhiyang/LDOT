@@ -558,6 +558,33 @@ void dynamicDetector::initParam() {
               << this->staticFallbackFrames_ << std::endl;
   }
 
+  // 静止判定的速度阈值
+  if (not this->nh_.getParam(this->ns_ + "/static_fallback_vel_threshold",
+                             this->staticFallbackVelThresh_)) {
+    this->staticFallbackVelThresh_ = 0.1;
+    std::cout << this->hint_
+              << ": No static_fallback_vel_threshold param. Use default: 0.1 m/s."
+              << std::endl;
+  } else {
+    std::cout << this->hint_
+              << ": Static fallback velocity threshold is set to: "
+              << this->staticFallbackVelThresh_ << " m/s." << std::endl;
+  }
+
+  // 运动方向一致性阈值（用于区分真实运动和点云抖动）
+  // 余弦值：1.0=完全一致，0.5=夹角60度，0=垂直，-1=反向
+  if (not this->nh_.getParam(this->ns_ + "/motion_dir_consistency_threshold",
+                             this->motionDirConsistencyThresh_)) {
+    this->motionDirConsistencyThresh_ = 0.5;  // 默认60度，低于此视为抖动
+    std::cout << this->hint_
+              << ": No motion_dir_consistency_threshold param. Use default: 0.5 (60 deg)."
+              << std::endl;
+  } else {
+    std::cout << this->hint_
+              << ": Motion direction consistency threshold is set to: "
+              << this->motionDirConsistencyThresh_ << std::endl;
+  }
+
   //-----------------------------------------鲁棒性增强参数--------------------------------------------------------------
   // 最小可靠点数（低于此值时提高速度阈值）
   if (not this->nh_.getParam(this->ns_ + "/min_reliable_points",
@@ -652,15 +679,9 @@ void dynamicDetector::initParam() {
   } else {
     this->classifyHumanZWidthRatio_ = classifyHumanThresh[0];
     this->classifyHumanCentroidZRatio_ = classifyHumanThresh[1];
-    if (classifyHumanThresh.size() > 2) {
-      this->classifyHumanPcaRatio_ = classifyHumanThresh[2];
-    } else {
-      this->classifyHumanPcaRatio_ = 1.6; // Default fallback
-    }
     ROS_INFO_STREAM(this->hint_ << " classify_human_threshold: ["
                                 << this->classifyHumanZWidthRatio_ << ", "
-                                << this->classifyHumanCentroidZRatio_ << ", "
-                                << this->classifyHumanPcaRatio_ << "]");
+                                << this->classifyHumanCentroidZRatio_ << "]");
   }
 
   // 车的分类阈值
@@ -675,15 +696,9 @@ void dynamicDetector::initParam() {
   } else {
     this->classifyVehicleXYWidthRatio_ = classifyVehicleThresh[0];
     this->classifyVehicleCentroidZRatio_ = classifyVehicleThresh[1];
-    if (classifyVehicleThresh.size() > 2) {
-      this->classifyVehiclePcaRatio_ = classifyVehicleThresh[2];
-    } else {
-      this->classifyVehiclePcaRatio_ = 1.2; // Default fallback
-    }
     ROS_INFO_STREAM(this->hint_ << " classify_vehicle_threshold: ["
                                 << this->classifyVehicleXYWidthRatio_ << ", "
-                                << this->classifyVehicleCentroidZRatio_ << ", "
-                                << this->classifyVehiclePcaRatio_ << "]");
+                                << this->classifyVehicleCentroidZRatio_ << "]");
   }
 
   // 无人机的分类阈值
@@ -723,6 +738,17 @@ void dynamicDetector::initParam() {
     this->classificationStartFrame_ = 10;
     ROS_WARN_STREAM(this->hint_
                     << " No classification_start_frame param. Use default: 10");
+  }
+
+  // 固定尺寸所需的连续相同分类次数
+  if (not this->nh_.getParam(this->ns_ + "/fix_size_classification_threshold",
+                             this->fixSizeClassificationThreshold_)) {
+    this->fixSizeClassificationThreshold_ = 3;
+    ROS_INFO_STREAM(this->hint_
+                    << " No fix_size_classification_threshold param. Use default: 3");
+  } else {
+    ROS_INFO_STREAM(this->hint_ << " fix_size_classification_threshold: "
+                                << this->fixSizeClassificationThreshold_);
   }
   
   // 点云投票距离
@@ -1920,21 +1946,18 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
         if (histIndex < 0 ||
             histIndex >= static_cast<int>(this->boxHist_.size()) ||
             histIndex >= static_cast<int>(this->maxHistorySizes_.size()) ||
-            histIndex >= static_cast<int>(this->maxHistoryPcClusterStds_.size()) ||
             histIndex >= static_cast<int>(this->smallSizeCounter_.size())) {
           continue;  // 跳过无效索引
         }
 
-        // 1.1 稳健的历史尺寸和PCA特征更新
+        // 1.1 稳健的历史尺寸更新
         double curr_x = this->filteredBBoxes_[i].x_width;
         double curr_y = this->filteredBBoxes_[i].y_width;
         double curr_z = this->filteredBBoxes_[i].z_width;
-        Eigen::Vector3d currStd = this->filteredPcClusterStds_[i];
 
         double max_x = this->maxHistorySizes_[histIndex].x();
         double max_y = this->maxHistorySizes_[histIndex].y();
         double max_z = this->maxHistorySizes_[histIndex].z();
-        Eigen::Vector3d maxStd = this->maxHistoryPcClusterStds_[histIndex];
 
         // 检查合并 (尺寸突增且点数突增)
         bool isMerge = false;
@@ -1978,8 +2001,6 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
           // 将最大尺寸重置为当前尺寸
           this->maxHistorySizes_[histIndex] =
               Eigen::Vector3d(curr_x, curr_y, curr_z);
-          // 同步重置历史最大PCA特征
-          this->maxHistoryPcClusterStds_[histIndex] = currStd;
           this->smallSizeCounter_[histIndex] = 0;
           // ROS_INFO_STREAM(this->hint_ << " Size reset for object " <<
           // histIndex
@@ -1987,7 +2008,7 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
           //                 of small size.");
         }
 
-        // 如果未合并且未重置，更新历史最大尺寸和最大PCA特征
+        // 如果未合并且未重置，更新历史最大尺寸
         if (!isMerge && !isReset) {
           if (curr_x > this->maxHistorySizes_[histIndex].x())
             this->maxHistorySizes_[histIndex].x() = curr_x;
@@ -1995,14 +2016,6 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
             this->maxHistorySizes_[histIndex].y() = curr_y;
           if (curr_z > this->maxHistorySizes_[histIndex].z())
             this->maxHistorySizes_[histIndex].z() = curr_z;
-
-          // 更新历史最大PCA特征 (逐维度取最大值)
-          if (currStd.x() > this->maxHistoryPcClusterStds_[histIndex].x())
-            this->maxHistoryPcClusterStds_[histIndex].x() = currStd.x();
-          if (currStd.y() > this->maxHistoryPcClusterStds_[histIndex].y())
-            this->maxHistoryPcClusterStds_[histIndex].y() = currStd.y();
-          if (currStd.z() > this->maxHistoryPcClusterStds_[histIndex].z())
-            this->maxHistoryPcClusterStds_[histIndex].z() = currStd.z();
         }
 
         // 1.2 检查是否需要进行分类
@@ -2010,9 +2023,12 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
         // true) 后续分类：使用 ROS 时间间隔 classificationIntervalSec_ 判断
         bool needClassify = false;
 
-        // 确保 lastClassifyTime_ 与历史大小匹配
+        // 确保 lastClassifyTime_ 和 stableClassificationCount_ 与历史大小匹配
         if (lastClassifyTime_.size() < this->boxHist_.size()) {
           lastClassifyTime_.resize(this->boxHist_.size(), ros::Time(0));
+        }
+        if (stableClassificationCount_.size() < this->boxHist_.size()) {
+          stableClassificationCount_.resize(this->boxHist_.size(), 0);
         }
 
         if (int(this->boxHist_[histIndex].size()) ==
@@ -2031,28 +2047,62 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
           }
         }
 
-        if (needClassify) {
+        // 检查分类是否已经固定（连续多次相同分类后不再更新）
+        bool classificationLocked = this->boxHist_[histIndex][0].fix_size;
+
+        if (needClassify && !classificationLocked) {
+          // 保存分类前的状态用于比较
+          bool prevIsHuman = this->boxHist_[histIndex][0].is_human;
+          bool prevIsChe = this->boxHist_[histIndex][0].is_che;
+          bool prevIsUav = this->boxHist_[histIndex][0].is_uav;
+
           Eigen::Vector4f centroid;
           centroid << this->filteredPcClusterCenters_[i](0),
               this->filteredPcClusterCenters_[i](1),
               this->filteredPcClusterCenters_[i](2), 1.0;
 
           // 对当前检测框进行分类,结果写入filteredBBoxes_[i]
-          // 使用历史最大PCA特征，传入轨迹索引用于xy距离检查
+          // 使用历史最大尺寸，传入轨迹索引用于xy距离检查
           this->classifyBox(this->filteredBBoxes_[i], centroid,
-                            this->maxHistoryPcClusterStds_[histIndex],
                             this->maxHistorySizes_[histIndex], histIndex);
+
+          // 检查分类是否与上次相同（仅对明确分类：人/车/无人机）
+          bool currIsSpecific = this->filteredBBoxes_[i].is_human || 
+                                this->filteredBBoxes_[i].is_che || 
+                                this->filteredBBoxes_[i].is_uav;
+          bool prevIsSpecific = prevIsHuman || prevIsChe || prevIsUav;
+          bool sameClassification = currIsSpecific && prevIsSpecific &&
+                                    (this->filteredBBoxes_[i].is_human == prevIsHuman) &&
+                                    (this->filteredBBoxes_[i].is_che == prevIsChe) &&
+                                    (this->filteredBBoxes_[i].is_uav == prevIsUav);
+
+          // 更新连续相同分类计数
+          if (histIndex < static_cast<int>(this->stableClassificationCount_.size())) {
+            if (sameClassification) {
+              this->stableClassificationCount_[histIndex]++;
+              // 达到阈值则固定尺寸和分类
+              if (this->stableClassificationCount_[histIndex] >= this->fixSizeClassificationThreshold_) {
+                this->filteredBBoxes_[i].fix_size = true;
+              }
+            } else {
+              // 分类改变，重置计数
+              this->stableClassificationCount_[histIndex] = currIsSpecific ? 1 : 0;
+              this->filteredBBoxes_[i].fix_size = false;
+            }
+          }
 
           // 立即切换卡尔曼滤波模型(在更新之前)
           this->switchKalmanModel(histIndex, this->filteredBBoxes_[i]);
         } else {
-          // 未达到分类或重新分类条件,继承历史分类结果
+          // 未达到分类或重新分类条件,继承历史分类结果,继承fix_size标志
           this->filteredBBoxes_[i].is_human =
               this->boxHist_[histIndex][0].is_human;
           this->filteredBBoxes_[i].is_che = this->boxHist_[histIndex][0].is_che;
           this->filteredBBoxes_[i].is_uav = this->boxHist_[histIndex][0].is_uav;
           this->filteredBBoxes_[i].is_else =
               this->boxHist_[histIndex][0].is_else;
+          this->filteredBBoxes_[i].fix_size = 
+              this->boxHist_[histIndex][0].fix_size;
         }
       }
     }
@@ -2072,8 +2122,10 @@ void dynamicDetector::trackingCB(const ros::TimerEvent &) {
     this->pcStdHist_.clear();
     this->maxHistorySizes_.clear();
     this->smallSizeCounter_.clear();
-    this->maxHistoryPcClusterStds_.clear();
     this->filters_.clear(); // 同时清空滤波器
+    // 同时清空 stableClassificationCount_ 和 lastClassifyTime_（用于fix_size功能）
+    this->stableClassificationCount_.clear();
+    this->lastClassifyTime_.clear();
   }
 
   hasNewDetection_ = false; // 标记检测结果已处理
@@ -2342,7 +2394,8 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
   }
 
   // ==================================================================================
-  // 【动态转静态回退机制】如果动态物体连续多帧速度很低，则回退为静态
+  // 【动态转静态回退机制】结合位置变化和运动方向一致性判断
+  // 核心思想：真实运动方向连续，点云抖动方向随机
   // 确保 stationaryFrameCount_ 向量大小与轨迹数量一致
   while (this->stationaryFrameCount_.size() < this->boxHist_.size()) {
     this->stationaryFrameCount_.push_back(0);
@@ -2354,19 +2407,60 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
     
     // 只对当前被标记为动态的物体进行检查
     if (this->boxHist_[i][0].is_dynamic) {
-      // 使用位置变化来判断是否静止（比速度更可靠）
-      // 需要至少2帧历史数据来计算位置变化
       bool isStationary = false;
       double posChange = 0.0;
+      double dirConsistency = 1.0;  // 方向一致性，默认为1（一致）
       
-      if (this->boxHist_[i].size() >= 2) {
-        // 计算当前帧与上一帧的位置变化
+      // 使用与动静态分类相同的帧间隔（skipFrame_）来计算方向一致性
+      // 这样位移向量更长，方向更稳定，能更好地区分真实运动和抖动
+      int k = this->skipFrame_;
+      size_t requiredFrames = static_cast<size_t>(2 * k + 1);
+      
+      if (this->boxHist_[i].size() >= requiredFrames) {
+        // 计算两段间隔为k帧的位移向量
+        // motion1: 帧0 -> 帧k
+        // motion2: 帧k -> 帧2k
+        Eigen::Vector3d motion1(
+            this->boxHist_[i][0].x - this->boxHist_[i][k].x,
+            this->boxHist_[i][0].y - this->boxHist_[i][k].y,
+            this->boxHist_[i][0].z - this->boxHist_[i][k].z
+        );
+        Eigen::Vector3d motion2(
+            this->boxHist_[i][k].x - this->boxHist_[i][2 * k].x,
+            this->boxHist_[i][k].y - this->boxHist_[i][2 * k].y,
+            this->boxHist_[i][k].z - this->boxHist_[i][2 * k].z
+        );
+        
+        double norm1 = motion1.norm();
+        double norm2 = motion2.norm();
+        posChange = norm1;  // 最近k帧的累积位移
+        
+        // 计算方向一致性（余弦相似度）
+        // dirConsistency 接近 1.0 = 方向一致（真实运动）
+        // dirConsistency 接近 0 或负值 = 方向随机（点云抖动）
+        if (norm1 > 1e-6 && norm2 > 1e-6) {
+          dirConsistency = motion1.dot(motion2) / (norm1 * norm2);
+        }
+        
+        // 将位置变化转换为速度（除以时间间隔）进行阈值比较
+        double impliedVel = posChange / (k * this->dt_);
+        
+        // 判断是否为静止或抖动：
+        // 1. 速度低于阈值 -> 静止
+        // 2. 方向一致性低（<0.5，即夹角>60度）且速度不高 -> 抖动，视为静止
+        bool lowVelocity = (impliedVel < this->staticFallbackVelThresh_);
+        bool isJitter = (dirConsistency < this->motionDirConsistencyThresh_) && 
+                        (impliedVel < this->staticFallbackVelThresh_ * 3.0);  // 抖动判断用更宽松的速度阈值
+        
+        isStationary = lowVelocity || isJitter;
+        
+      } else if (this->boxHist_[i].size() >= 2) {
+        // 历史数据不足时，退化为纯速度判断
         double dx = this->boxHist_[i][0].x - this->boxHist_[i][1].x;
         double dy = this->boxHist_[i][0].y - this->boxHist_[i][1].y;
         double dz = this->boxHist_[i][0].z - this->boxHist_[i][1].z;
         posChange = std::sqrt(dx * dx + dy * dy + dz * dz);
         
-        // 将位置变化转换为速度（除以时间步长）进行阈值比较
         double impliedVel = posChange / this->dt_;
         isStationary = (impliedVel < this->staticFallbackVelThresh_);
       }
@@ -2394,14 +2488,15 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
           ROS_INFO_THROTTLE(
               1.0,
               "%s: Object %zu reverted to static (pos_change=%.3f m, "
-              "stationary for %d frames)",
-              this->hint_.c_str(), i, posChange, this->stationaryFrameCount_[i]);
+              "dir_consistency=%.2f, stationary for %d frames)",
+              this->hint_.c_str(), i, posChange, dirConsistency, 
+              this->stationaryFrameCount_[i]);
 
           // 重置计数器
           this->stationaryFrameCount_[i] = 0;
         }
       } else {
-        // 如果位置变化大于阈值，重置静止帧计数
+        // 如果是真实运动（速度足够且方向一致），重置静止帧计数
         this->stationaryFrameCount_[i] = 0;
       }
     } else {
@@ -2527,15 +2622,13 @@ void dynamicDetector::visCB(const ros::TimerEvent &) {
 }
 
 /*!
- * @brief 对单个边界框进行物体分类 (重构版)
+ * @brief 对单个边界框进行物体分类
  * @param bbox 待分类的边界框（引用传递，会修改其分类标志）
- * @param centroid 点云质心坐标 [x, y, z, 1]
- * @param clusterStd 点云PCA标准差 [std_x, std_y, std_z]
+ * @param centroid 点云质心坐标 [x, y, z, 1]（世界坐标系）
  * @param maxHistorySize 历史最大尺寸 [max_x, max_y, max_z]
  */
 void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
                                   const Eigen::Vector4f &centroid,
-                                  const Eigen::Vector3d &clusterStd,
                                   const Eigen::Vector3d &maxHistorySize,
                                   int trackIndex) {
   // 重置分类标志
@@ -2554,8 +2647,7 @@ void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
 
     // 如果xy距离小于阈值，继承前一帧的分类
     if (xy_distance < this->classifyXYDistanceThreshold_) {
-      bbox.is_human =
-          this->boxHist_[trackIndex][0].is_human;
+      bbox.is_human = this->boxHist_[trackIndex][0].is_human;
       bbox.is_che = this->boxHist_[trackIndex][0].is_che;
       bbox.is_uav = this->boxHist_[trackIndex][0].is_uav;
       bbox.is_else = this->boxHist_[trackIndex][0].is_else;
@@ -2567,30 +2659,22 @@ void dynamicDetector::classifyBox(onboardDetector::box3D &bbox,
   double x_width = maxHistorySize.x();
   double y_width = maxHistorySize.y();
   double z_width = maxHistorySize.z();
-  double centroid_z = centroid(2);
+  double centroid_z = centroid(2);  // 质心在世界坐标系中的高度
 
-  // 计算x、y轴的最小值和最大值
+  // 计算x、y轴的最大值
   double xy_max = std::max(x_width, y_width);
-
-  // PCA 特征提取
-  double pca_z = clusterStd(2);
-  double pca_xy_max = std::max(clusterStd(0), clusterStd(1));
 
   // 1. 分类为人：
   // - 尺寸：高瘦 (z > xy * ratio)
-  // - 形态(PCA)：Z轴离散度主导 (pca_z > pca_xy * ratio) [近距离时不强制]
-  // - 质心：靠下
+  // - 质心：靠下（质心高度 < 物体高度的一定比例）
   if (z_width >= xy_max * this->classifyHumanZWidthRatio_ &&
-      (pca_z > pca_xy_max * this->classifyHumanPcaRatio_) &&
       centroid_z < z_width * this->classifyHumanCentroidZRatio_) {
     bbox.is_human = true;
   }
   // 2. 分类为车：
   // - 尺寸：扁平 (xy > z * ratio)
-  // - 形态(PCA)：XY平面离散度主导 (pca_xy > pca_z * ratio) [近距离时不强制]
   // - 质心：靠下
   else if (xy_max >= z_width * this->classifyVehicleXYWidthRatio_ &&
-           (pca_xy_max > pca_z * this->classifyVehiclePcaRatio_) &&
            centroid_z < z_width * this->classifyVehicleCentroidZRatio_) {
     bbox.is_che = true;
   }
@@ -3148,7 +3232,6 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     this->pcStdHist_.reserve(numCurrObjs);
     this->maxHistorySizes_.reserve(numCurrObjs);
     this->smallSizeCounter_.reserve(numCurrObjs);
-    this->maxHistoryPcClusterStds_.reserve(numCurrObjs);
     this->filters_.reserve(numCurrObjs);
     this->trackMissedFrames_.reserve(numCurrObjs);
     this->trackedBBoxes_.reserve(numCurrObjs);
@@ -3185,8 +3268,6 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
           this->filteredBBoxes_[i].x_width, this->filteredBBoxes_[i].y_width,
           this->filteredBBoxes_[i].z_width));
 
-      // 初始化历史最大PCA特征
-      this->maxHistoryPcClusterStds_.push_back(this->filteredPcClusterStds_[i]);
       this->smallSizeCounter_.push_back(0);
       this->trackMissedFrames_.push_back(0);
 
@@ -3627,20 +3708,18 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   std::vector<std::deque<Eigen::Vector3d>> pcCenterHistTemp;
   std::vector<std::deque<Eigen::Vector3d>> pcStdHistTemp;
   std::vector<Eigen::Vector3d> maxHistorySizesTemp;
-  std::vector<Eigen::Vector3d> maxHistoryPcClusterStdsTemp;
   std::vector<int> smallSizeCounterTemp;
   std::vector<std::shared_ptr<KalmanFilterBase>> filtersTemp;
   std::vector<int> trackMissedFramesTemp;
   std::vector<int> confirmedDynamicFramesTemp; // 连续动态帧数计数器
   std::vector<int> stationaryFrameCountTemp;   // 连续静止帧数计数器（动态转静态回退）
+  std::vector<int> stableClassificationCountTemp; // 连续相同分类计数器（用于fix_size）
+  std::vector<ros::Time> lastClassifyTimeTemp;    // 上次分类时间戳
 
   // 确保所有向量大小与 boxHist_ 一致
   size_t histSize = this->boxHist_.size();
   if (this->trackMissedFrames_.size() != histSize) {
     this->trackMissedFrames_.resize(histSize, 0);
-  }
-  if (this->maxHistoryPcClusterStds_.size() != histSize) {
-    this->maxHistoryPcClusterStds_.resize(histSize, Eigen::Vector3d::Zero());
   }
   if (this->smallSizeCounter_.size() != histSize) {
     this->smallSizeCounter_.resize(histSize, 0);
@@ -3650,6 +3729,12 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   }
   if (this->stationaryFrameCount_.size() != histSize) {
     this->stationaryFrameCount_.resize(histSize, 0);
+  }
+  if (this->stableClassificationCount_.size() != histSize) {
+    this->stableClassificationCount_.resize(histSize, 0);
+  }
+  if (this->lastClassifyTime_.size() != histSize) {
+    this->lastClassifyTime_.resize(histSize, ros::Time(0));
   }
 
   // 为新出现的目标准备的空历史记录模板
@@ -3687,12 +3772,13 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       pcCenterHistTemp.push_back(this->pcCenterHist_[h_idx]);
       pcStdHistTemp.push_back(this->pcStdHist_[h_idx]);
       maxHistorySizesTemp.push_back(this->maxHistorySizes_[h_idx]);
-      // 同步继承 maxHistoryPcClusterStds_ 和 smallSizeCounter_
-      maxHistoryPcClusterStdsTemp.push_back(this->maxHistoryPcClusterStds_[h_idx]);
       smallSizeCounterTemp.push_back(this->smallSizeCounter_[h_idx]);
       // 同步继承 confirmedDynamicFrames_ 和 stationaryFrameCount_
       confirmedDynamicFramesTemp.push_back(this->confirmedDynamicFrames_[h_idx]);
       stationaryFrameCountTemp.push_back(this->stationaryFrameCount_[h_idx]);
+      // 同步继承 stableClassificationCount_ 和 lastClassifyTime_（用于fix_size功能）
+      stableClassificationCountTemp.push_back(this->stableClassificationCount_[h_idx]);
+      lastClassifyTimeTemp.push_back(this->lastClassifyTime_[h_idx]);
       filtersTemp.push_back(this->filters_[h_idx]);
 
       // 构建测量向量：所有模型都测量3D位置 [x, y, z]
@@ -3754,34 +3840,42 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
         newEstimatedBBox.Az = 0.0;
       }
 
-      // 边界框的尺寸平滑更新
-      // 使用指数平滑公式：smoothed = alpha * curr + (1 - alpha) * prev
-      // 注意：h_idx 是历史轨迹的索引，this->boxHist_[h_idx][0] 是上一帧的边界框
-      double prev_x_width = this->boxHist_[h_idx][0].x_width;
-      double prev_y_width = this->boxHist_[h_idx][0].y_width;
-      double prev_z_width = this->boxHist_[h_idx][0].z_width;
-
-      newEstimatedBBox.x_width =
-          this->boxSizeSmoothingAlpha_ * currDetectedBBox.x_width +
-          (1.0 - this->boxSizeSmoothingAlpha_) * prev_x_width;
-      newEstimatedBBox.y_width =
-          this->boxSizeSmoothingAlpha_ * currDetectedBBox.y_width +
-          (1.0 - this->boxSizeSmoothingAlpha_) * prev_y_width;
-      newEstimatedBBox.z_width =
-          this->boxSizeSmoothingAlpha_ * currDetectedBBox.z_width +
-          (1.0 - this->boxSizeSmoothingAlpha_) * prev_z_width;
-
-      // 历史最大尺寸约束：防止因点云稀疏导致BBox突然缩小
-      // 注意：maxHistorySizes_ 的更新由 classificationCB 统一管理，这里只做尺寸约束
+      // 边界框的尺寸处理
+      // 获取历史最大尺寸
       const Eigen::Vector3d& maxSize = maxHistorySizesTemp.back();
-      
-      // 约束边界框尺寸不低于历史最大尺寸的指定比例
-      newEstimatedBBox.x_width = std::max(newEstimatedBBox.x_width, 
-                                           maxSize.x() * this->sizeRetainRatio_);
-      newEstimatedBBox.y_width = std::max(newEstimatedBBox.y_width, 
-                                           maxSize.y() * this->sizeRetainRatio_);
-      newEstimatedBBox.z_width = std::max(newEstimatedBBox.z_width, 
-                                           maxSize.z() * this->sizeRetainRatio_);
+
+      // 检查是否已固定尺寸
+      if (currDetectedBBox.fix_size) {
+        // 尺寸已固定，直接使用历史最大尺寸
+        newEstimatedBBox.x_width = maxSize.x();
+        newEstimatedBBox.y_width = maxSize.y();
+        newEstimatedBBox.z_width = maxSize.z();
+        newEstimatedBBox.fix_size = true;
+      } else {
+        // 尺寸未固定，使用指数平滑公式：smoothed = alpha * curr + (1 - alpha) * prev
+        double prev_x_width = this->boxHist_[h_idx][0].x_width;
+        double prev_y_width = this->boxHist_[h_idx][0].y_width;
+        double prev_z_width = this->boxHist_[h_idx][0].z_width;
+
+        newEstimatedBBox.x_width =
+            this->boxSizeSmoothingAlpha_ * currDetectedBBox.x_width +
+            (1.0 - this->boxSizeSmoothingAlpha_) * prev_x_width;
+        newEstimatedBBox.y_width =
+            this->boxSizeSmoothingAlpha_ * currDetectedBBox.y_width +
+            (1.0 - this->boxSizeSmoothingAlpha_) * prev_y_width;
+        newEstimatedBBox.z_width =
+            this->boxSizeSmoothingAlpha_ * currDetectedBBox.z_width +
+            (1.0 - this->boxSizeSmoothingAlpha_) * prev_z_width;
+
+        // 约束边界框尺寸不低于历史最大尺寸的指定比例
+        newEstimatedBBox.x_width = std::max(newEstimatedBBox.x_width, 
+                                             maxSize.x() * this->sizeRetainRatio_);
+        newEstimatedBBox.y_width = std::max(newEstimatedBBox.y_width, 
+                                             maxSize.y() * this->sizeRetainRatio_);
+        newEstimatedBBox.z_width = std::max(newEstimatedBBox.z_width, 
+                                             maxSize.z() * this->sizeRetainRatio_);
+        newEstimatedBBox.fix_size = false;
+      }
 
       // 使用当前检测框中的最新分类结果
       newEstimatedBBox.is_dynamic = currDetectedBBox.is_dynamic;
@@ -3800,12 +3894,13 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       maxHistorySizesTemp.push_back(
           Eigen::Vector3d(currDetectedBBox.x_width, currDetectedBBox.y_width,
                           currDetectedBBox.z_width)); // 初始化最大尺寸
-      // 同步初始化 maxHistoryPcClusterStds_ 和 smallSizeCounter_
-      maxHistoryPcClusterStdsTemp.push_back(this->filteredPcClusterStds_[i]);
       smallSizeCounterTemp.push_back(0);
       // 同步初始化 confirmedDynamicFrames_ 和 stationaryFrameCount_
       confirmedDynamicFramesTemp.push_back(0);
       stationaryFrameCountTemp.push_back(0);
+      // 同步初始化 stableClassificationCount_ 和 lastClassifyTime_（用于fix_size功能）
+      stableClassificationCountTemp.push_back(0);
+      lastClassifyTimeTemp.push_back(ros::Time(0));
 
       // 强制所有新轨迹使用 3D CV 模型
       auto newFilter = createKalmanFilter(false, // is_human
@@ -3877,12 +3972,13 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
         pcCenterHistTemp.push_back(this->pcCenterHist_[j]);
         pcStdHistTemp.push_back(this->pcStdHist_[j]);
         maxHistorySizesTemp.push_back(this->maxHistorySizes_[j]);
-        // 同步继承 maxHistoryPcClusterStds_ 和 smallSizeCounter_
-        maxHistoryPcClusterStdsTemp.push_back(this->maxHistoryPcClusterStds_[j]);
         smallSizeCounterTemp.push_back(this->smallSizeCounter_[j]);
         // 同步继承 confirmedDynamicFrames_ 和 stationaryFrameCount_
         confirmedDynamicFramesTemp.push_back(this->confirmedDynamicFrames_[j]);
         stationaryFrameCountTemp.push_back(this->stationaryFrameCount_[j]);
+        // 同步继承 stableClassificationCount_ 和 lastClassifyTime_（用于fix_size功能）
+        stableClassificationCountTemp.push_back(this->stableClassificationCount_[j]);
+        lastClassifyTimeTemp.push_back(this->lastClassifyTime_[j]);
         filtersTemp.push_back(this->filters_[j]);
 
         // 获取预测状态 (已在 trackingCB 中 predict)
@@ -4015,13 +4111,15 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   this->pcCenterHist_ = pcCenterHistTemp;
   this->pcStdHist_ = pcStdHistTemp;
   this->maxHistorySizes_ = maxHistorySizesTemp;
-  this->maxHistoryPcClusterStds_ = maxHistoryPcClusterStdsTemp;
   this->smallSizeCounter_ = smallSizeCounterTemp;
   this->filters_ = filtersTemp;
   this->trackedBBoxes_ = trackedBBoxesTemp;
   this->trackMissedFrames_ = trackMissedFramesTemp;
   this->confirmedDynamicFrames_ = confirmedDynamicFramesTemp;
   this->stationaryFrameCount_ = stationaryFrameCountTemp;
+  // 同步更新 stableClassificationCount_ 和 lastClassifyTime_（用于fix_size功能）
+  this->stableClassificationCount_ = stableClassificationCountTemp;
+  this->lastClassifyTime_ = lastClassifyTimeTemp;
 }
 
 /*!
@@ -4104,9 +4202,6 @@ void dynamicDetector::removeDuplicateTracks() {
       this->pcCenterHist_.erase(this->pcCenterHist_.begin() + i);
       this->pcStdHist_.erase(this->pcStdHist_.begin() + i);
       this->maxHistorySizes_.erase(this->maxHistorySizes_.begin() + i);
-      // 同步删除向量
-      this->maxHistoryPcClusterStds_.erase(
-          this->maxHistoryPcClusterStds_.begin() + i);
       this->smallSizeCounter_.erase(this->smallSizeCounter_.begin() + i);
       // 同步删除动态转静态回退计数器
       if (i < static_cast<int>(this->stationaryFrameCount_.size())) {
@@ -4123,6 +4218,13 @@ void dynamicDetector::removeDuplicateTracks() {
       // 同步删除滞后状态（鲁棒性增强）
       if (i < static_cast<int>(this->previousDynamicState_.size())) {
         this->previousDynamicState_.erase(this->previousDynamicState_.begin() + i);
+      }
+      // 同步删除 stableClassificationCount_ 和 lastClassifyTime_（用于fix_size功能）
+      if (i < static_cast<int>(this->stableClassificationCount_.size())) {
+        this->stableClassificationCount_.erase(this->stableClassificationCount_.begin() + i);
+      }
+      if (i < static_cast<int>(this->lastClassifyTime_.size())) {
+        this->lastClassifyTime_.erase(this->lastClassifyTime_.begin() + i);
       }
 
       this->filters_.erase(this->filters_.begin() + i);

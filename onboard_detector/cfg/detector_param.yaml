@@ -22,7 +22,7 @@ ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.8   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
 lidar_detection_range: [10.0, 10.0, 3.0]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
 enable_voxel_downsampling: false  # 是否启用Voxel Grid自适应下采样
-voxel_base_leaf_size: 0.05       # 基础体素大小 (米), 初始下采样精度
+voxel_base_leaf_size: 0.1       # 基础体素大小 (米), 初始下采样精度
 voxel_target_point_count: 3000  # 目标点云数量, 超过此数量会自适应增大体素尺寸
 
 # 静态点与静态簇去除滤波器参数
@@ -53,12 +53,13 @@ classification_size_merge_threshold: 1.3        # 尺寸增长比例阈值，用
 classification_point_count_merge_threshold: 1.5 # 点数增长比例阈值，用于确认合并
 classification_size_reset_frames: 20            # 尺寸重置帧数，当物体尺寸持续较小时重置最大尺寸
 # 分类与模型切换参数，[box中z、x/y的宽度比较, 质心z高度  z轴宽度的倍数]
-classification_start_frame: 30 # 跟踪多少帧后开始进行分类和模型切换
-classification_interval_sec: 3 # 分类检查时间间隔 s
+classification_start_frame: 10 # 跟踪多少帧后开始进行分类和模型切换
+classification_interval_sec: 1 # 分类检查时间间隔 s
 classify_xy_distance_threshold: 3.0 # box与无人机xy轴距离阈值(米)，小于该值则继承前一帧的分类
-classify_human_threshold: [1.2, 0.8, 1.2]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
-classify_vehicle_threshold: [1.2, 0.8, 1.2] # [x/y >=z, z<0.7*zw, PCA xy_std/z_std > 1.2]
+classify_human_threshold: [1.2, 0.8]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
+classify_vehicle_threshold: [1.5, 0.7] # [x/y >=z, z<0.7*zw, PCA xy_std/z_std > 1.2]
 classify_uav_threshold: [0.8, 1.2] # z/y/z <0.7 ,z>1.2*zw
+fix_size_classification_threshold: 5 # 连续相同分类次数阈值，达到后固定尺寸和分类（仅对人/车/无人机生效）
 # 跟踪、防幽灵轨迹
 size_retain_ratio: 0.7              # 尺寸保持比例阈值 (0.0-1.0)，当前尺寸低于此比例时触发约束
 box_size_smoothing_alpha: 0.4 # 包围框尺寸平滑系数 (0.0 - 1.0), 越小越平滑重叠
@@ -84,6 +85,8 @@ dynamic_consistency_threshold: 3 # 最近连续k帧被投票为动态候选，�
 # 动态转静态回退参数 - 如果动态物体连续静止，则回退为静态
 static_fallback_frames: 10          # 连续静止多少帧后回退为静态
 static_fallback_vel_threshold: 0.1  # 静止判定阈值 (m/s)，帧间位置变化/dt < 此值视为静止
+motion_dir_consistency_threshold: 0.5  # 运动方向一致性阈值（余弦值），低于此值视为点云抖动而非真实运动
+                                       # 1.0=完全一致，0.5=夹角60度，0=垂直，-1=反向
 # 静态体素地图误判修复参数
 voxel_clear_dynamic_frames: 5       # 触发体素清除所需的连续动态帧数，防止短暂误判导致静态标记丢失
 # 鲁棒性增强参数 - 解决点云稀疏、遮挡误判、LiDAR抖动问题

@@ -161,7 +161,6 @@ private:
   double associationPosCostWeight_;    // 位置代价的权重
   double associationIoUCostWeight_;    // 3D IoU代价的权重
   int histSize_;                       // 跟踪历史的长度
-  int kfAvgFrames_;                    // 用于计算观测速度的帧数
   int maxMissedFrames_;                // 最大丢失帧数
   std::vector<int> trackMissedFrames_; // 每个轨迹连续丢失的帧数
   double duplicateTrackIoUThreshold_;  // 重复轨迹检测的IoU阈值
@@ -183,6 +182,7 @@ private:
   // 动态转静态回退参数
   int staticFallbackFrames_;            // 连续静止多少帧后回退为静态
   double staticFallbackVelThresh_;      // 静止判定的位置变化速度阈值 (m/s)
+  double motionDirConsistencyThresh_;   // 运动方向一致性阈值（余弦值），低于此值视为抖动
   std::vector<int> stationaryFrameCount_; // 每个轨迹连续静止的帧数计数器
   double classificationMinNeighborDist_; // 点云匹配距离
   double sizeMergeThresh_;       // 尺寸合并阈值
@@ -218,10 +218,10 @@ private:
 
   // 分类与模型切换参数
   int classificationStartFrame_;       // 跟踪多少帧后开始进行分类和模型切换
-  double classifyHumanPcaRatio_;       // PCA特征: z_std / xy_std 的阈值
-  double classifyVehiclePcaRatio_;     // PCA特征: xy_std / z_std 的阈值
   double classificationIntervalSec_; // 首次分类后，基于时间的重新分类间隔（秒）
   std::vector<ros::Time> lastClassifyTime_; // 每个轨迹上一次分类的时间戳
+  std::vector<int> stableClassificationCount_; // 每个轨迹连续相同分类的次数
+  int fixSizeClassificationThreshold_; // 固定尺寸所需的连续相同分类次数
 
   // 卡尔曼滤波器参数
   KF_Params kfParams_;
@@ -247,7 +247,6 @@ private:
   std::vector<onboardDetector::Cluster> lidarClusters_; // 激光雷达点云聚类结果
 
   // 检测器中间数据
-  int projPointsNum_ = 0;                              // 投影点数量
   std::vector<onboardDetector::box3D> filteredBBoxes_; // 最终过滤后的边界框
   std::vector<std::vector<Eigen::Vector3d>>
       filteredPcClusters_; // 最终过滤后的点云聚类
@@ -273,8 +272,6 @@ private:
   std::vector<Eigen::Vector3d> maxHistorySizes_; // 每个被跟踪物体的历史最大尺寸
   std::vector<int>
       smallSizeCounter_; // 计数器，记录当前尺寸小于历史最大尺寸的连续帧数
-  std::vector<Eigen::Vector3d>
-      maxHistoryPcClusterStds_; // 存储每个轨迹的历史最大PCA标准差
   std::vector<std::shared_ptr<KalmanFilterBase>>
       filters_; // 每个被跟踪物体对应的多模型卡尔曼滤波器
   std::vector<int>
@@ -346,7 +343,6 @@ public:
       std::vector<Eigen::Vector3d> &pcClusterStds); // 帧内检测去重(NMS)
   void
   classifyBox(onboardDetector::box3D &bbox, const Eigen::Vector4f &centroid,
-              const Eigen::Vector3d &clusterStd,
               const Eigen::Vector3d &maxHistorySize,
               int trackIndex = -1); // 对单个边界框进行分类
   void
