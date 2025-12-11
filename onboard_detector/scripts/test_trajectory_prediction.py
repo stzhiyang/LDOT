@@ -30,8 +30,8 @@ class TrajectoryPredictionTester:
         )
         self.query_range = rospy.get_param('~query_range', 10.0)  # 查询范围（米）
         self.prediction_horizon = rospy.get_param('~prediction_horizon', 3.0)  # 预测时域（秒）
-        self.prediction_dt = rospy.get_param('~prediction_dt', 0.2)  # 预测步长（秒）
-        self.query_rate = rospy.get_param('~query_rate', 5.0)  # 查询频率（Hz）
+        self.prediction_dt = rospy.get_param('~prediction_dt', 0.1)  # 预测步长（秒）
+        self.query_rate = rospy.get_param('~query_rate', 10.0)  # 查询频率（Hz）
         self.frame_id = rospy.get_param('~frame_id', 'map')  # 坐标系名称
         self.current_position = [
             rospy.get_param('~current_x', 0.0),
@@ -41,9 +41,9 @@ class TrajectoryPredictionTester:
         
         # 可视化参数
         self.trajectory_line_width = rospy.get_param('~trajectory_line_width', 0.05)
-        self.covariance_scale = rospy.get_param('~covariance_scale', 2.0)  # 协方差缩放因子（2.0对应约95%置信区间）
+        self.covariance_scale = rospy.get_param('~covariance_scale', 1.0)  # 协方差缩放因子（2.0对应约95%置信区间）
         self.show_covariance = rospy.get_param('~show_covariance', True)  # 是否显示协方差椭圆
-        self.covariance_skip = rospy.get_param('~covariance_skip', 2)  # 每隔几个点显示一个协方差椭圆
+        self.covariance_skip = rospy.get_param('~covariance_skip', 3)  # 每隔几个点显示一个协方差椭圆
         
         # 可视化发布器
         self.marker_pub = rospy.Publisher(
@@ -66,8 +66,11 @@ class TrajectoryPredictionTester:
             raise
 
         
-        # 统一颜色（橙色）
-        self.default_color = ColorRGBA(1.0, 0.5, 0.0, 1.0)
+        # 各元素颜色配置
+        self.trajectory_color = ColorRGBA(1.0, 0.5, 0.0, 1.0)  # 轨迹线：橙色
+        self.ellipse_color = ColorRGBA(0.2, 0.8, 0.2, 1.0)  # 椭圆：绿色
+        self.text_color = ColorRGBA(0.8, 0.6, 1.0, 1.0)  # 文本：浅紫色
+        self.endpoint_color = ColorRGBA(1.0, 0.2, 0.2, 1.0)  # 终点：红色
         
         # 定时器
         self.timer = rospy.Timer(
@@ -148,16 +151,7 @@ class TrajectoryPredictionTester:
             traj_covariances = resp.position_covariances[traj_idx:traj_idx + traj_length]
             traj_idx += traj_length
             
-            # 1. 当前位置 - 立方体
-            current_box = self.create_box_marker(
-                marker_id, timestamp, frame_id,
-                current_pos, size, alpha=0.8,
-                ns="current_position"
-            )
-            marker_array.markers.append(current_box)
-            marker_id += 1
-            
-            # 2. 轨迹线 - LINE_STRIP
+            # 1. 轨迹线 - LINE_STRIP
             if traj_length > 1:
                 trajectory_line = self.create_trajectory_line_marker(
                     marker_id, timestamp, frame_id,
@@ -167,7 +161,7 @@ class TrajectoryPredictionTester:
                 marker_array.markers.append(trajectory_line)
                 marker_id += 1
             
-            # 3. 不确定性椭圆 - SPHERE（每隔几个点显示一个）
+            # 2. 不确定性椭圆 - SPHERE（每隔几个点显示一个）
             if self.show_covariance:
                 for j in range(0, traj_length, self.covariance_skip):
                     pos = traj_positions[j]
@@ -184,7 +178,7 @@ class TrajectoryPredictionTester:
                     marker_array.markers.append(cov_ellipse)
                     marker_id += 1
             
-            # 4. 文本标签 - 显示障碍物类型和速度
+            # 3. 文本标签 - 显示障碍物类型和速度
             speed = np.sqrt(
                 current_vel.x**2 + current_vel.y**2 + current_vel.z**2
             )
@@ -197,7 +191,7 @@ class TrajectoryPredictionTester:
             marker_array.markers.append(text_marker)
             marker_id += 1
             
-            # 5. 轨迹终点标记 - 小球
+            # 4. 轨迹终点标记 - 小球
             if traj_length > 0:
                 end_pos = traj_positions[-1]
                 end_marker = self.create_endpoint_marker(
@@ -211,35 +205,6 @@ class TrajectoryPredictionTester:
         # 发布标记
         self.marker_pub.publish(marker_array)
 
-    
-    def create_box_marker(self, marker_id, timestamp, frame_id,
-                          position, size, alpha, ns):
-        """创建立方体标记（表示障碍物当前位置）"""
-        marker = Marker()
-        marker.header.frame_id = frame_id
-        marker.header.stamp = timestamp
-        marker.ns = ns
-        marker.id = marker_id
-        marker.type = Marker.CUBE
-        marker.action = Marker.ADD
-        
-        marker.pose.position.x = position.x
-        marker.pose.position.y = position.y
-        marker.pose.position.z = position.z
-        marker.pose.orientation.w = 1.0
-        
-        marker.scale.x = max(size.x, 0.1)
-        marker.scale.y = max(size.y, 0.1)
-        marker.scale.z = max(size.z, 0.1)
-        
-        marker.color.r = self.default_color.r
-        marker.color.g = self.default_color.g
-        marker.color.b = self.default_color.b
-        marker.color.a = alpha
-        
-        marker.lifetime = rospy.Duration(0.5)
-        
-        return marker
     
     def create_trajectory_line_marker(self, marker_id, timestamp, frame_id,
                                        positions, ns):
@@ -255,21 +220,14 @@ class TrajectoryPredictionTester:
         marker.pose.orientation.w = 1.0
         marker.scale.x = self.trajectory_line_width  # 线宽
         
-        # 添加轨迹点
+        # 轨迹线颜色
+        marker.color = self.trajectory_color
         for pos in positions:
             p = Point()
             p.x = pos.x
             p.y = pos.y
             p.z = pos.z
             marker.points.append(p)
-            
-            # 使用统一颜色
-            c = ColorRGBA()
-            c.r = self.default_color.r
-            c.g = self.default_color.g
-            c.b = self.default_color.b
-            c.a = 1.0
-            marker.colors.append(c)
         
         marker.lifetime = rospy.Duration(0.5)
         
@@ -300,12 +258,11 @@ class TrajectoryPredictionTester:
         marker.scale.y = max(scale_factor * np.sqrt(abs(covariance.y)), 0.1)
         marker.scale.z = max(scale_factor * np.sqrt(abs(covariance.z)), 0.1)
         
-        # 颜色越来越深（time_ratio从0到1，颜色从亮到暗）
-        darken_factor = 1.0 - 0.6 * time_ratio  # 从1.0渐变到0.4
-        marker.color.r = self.default_color.r * darken_factor
-        marker.color.g = self.default_color.g * darken_factor
-        marker.color.b = self.default_color.b * darken_factor
-        marker.color.a = 0.5  # 固定透明度
+        # 椭圆颜色，透明度随时间变化
+        marker.color.r = self.ellipse_color.r
+        marker.color.g = self.ellipse_color.g
+        marker.color.b = self.ellipse_color.b
+        marker.color.a = 0.4 - 0.2 * time_ratio  # 透明度从0.4渐变到0.2
         
         marker.lifetime = rospy.Duration(0.5)
         
@@ -330,10 +287,8 @@ class TrajectoryPredictionTester:
         
         marker.scale.z = 0.25  # 文本高度
         
-        marker.color.r = 1.0
-        marker.color.g = 1.0
-        marker.color.b = 1.0
-        marker.color.a = 1.0
+        # 文本颜色
+        marker.color = self.text_color
         
         marker.text = text
         marker.lifetime = rospy.Duration(0.5)
@@ -361,11 +316,8 @@ class TrajectoryPredictionTester:
         marker.scale.y = 0.15
         marker.scale.z = 0.15
         
-        # 使用较暗的颜色
-        marker.color.r = self.default_color.r * 0.5
-        marker.color.g = self.default_color.g * 0.5
-        marker.color.b = self.default_color.b * 0.5
-        marker.color.a = 1.0
+        # 终点颜色
+        marker.color = self.endpoint_color
         
         marker.lifetime = rospy.Duration(0.5)
         

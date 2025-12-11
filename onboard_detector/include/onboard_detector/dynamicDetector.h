@@ -11,7 +11,6 @@
 #include <atomic>
 #include <boost/math/distributions/chi_squared.hpp> // 用于根据置信度计算卡方分布阈值
 #include <chrono>
-#include <geometry_msgs/PoseStamped.h>
 #include <livox_ros_driver2/CustomMsg.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
@@ -38,6 +37,9 @@
 
 namespace onboardDetector {
 
+// 前向声明
+class ParamLoader;
+
 // 轨迹预测点结构体
 // 用于存储预测轨迹中每个时间步的状态信息
 struct TrajectoryPoint {
@@ -48,6 +50,9 @@ struct TrajectoryPoint {
 };
 
 class dynamicDetector {
+  // 允许 ParamLoader 访问私有成员
+  friend class ParamLoader;
+
 private:
   // ROS相关句柄、订阅者、发布者和定时器
   std::string ns_;   // 命名空间，用于ROS话题和参数
@@ -60,18 +65,6 @@ private:
       lidarCloudSub_; // 激光雷达点云订阅器
   std::shared_ptr<message_filters::Subscriber<livox_ros_driver2::CustomMsg>>
       lidarCustomMsgSub_; // Livox CustomMsg订阅器
-  std::shared_ptr<message_filters::Subscriber<geometry_msgs::PoseStamped>>
-      poseSub_; // 位姿订阅器
-  typedef message_filters::sync_policies::ApproximateTime<
-      sensor_msgs::PointCloud2, geometry_msgs::PoseStamped>
-      lidarPoseSync; // 激光-位姿同步策略
-  std::shared_ptr<message_filters::Synchronizer<lidarPoseSync>>
-      lidarPoseSync_; // 同步器实例
-  typedef message_filters::sync_policies::ApproximateTime<
-      livox_ros_driver2::CustomMsg, geometry_msgs::PoseStamped>
-      lidarCustomPoseSync; // Livox-位姿同步策略
-  std::shared_ptr<message_filters::Synchronizer<lidarCustomPoseSync>>
-      lidarCustomPoseSync_; // 同步器实例
   std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>>
       odomSub_; // 里程计订阅器
   typedef message_filters::sync_policies::ApproximateTime<
@@ -120,11 +113,9 @@ private:
   Eigen::Matrix4d body2Lidar_; // 机体坐标系到激光雷达坐标系的变换矩阵
 
   // ROS话题名称与模式参数
-  int localizationMode_;       // 定位模式 (0: Pose, 1: Odometry)
   bool useLivoxCustomMsg_;     // 是否使用Livox CustomMsg格式 (true: CustomMsg,
                                // false: PointCloud2)
   std::string lidarTopicName_; // 激光雷达点云话题
-  std::string poseTopicName_;  // 位姿话题
   std::string odomTopicName_;  // 里程计话题
 
   // 系统参数
@@ -319,12 +310,8 @@ public:
                          std::vector<TrajectoryPoint> &trajectory);
 
   // 传感器数据回调函数
-  void lidarPoseCB(const sensor_msgs::PointCloud2ConstPtr &cloudMsg,
-                   const geometry_msgs::PoseStampedConstPtr &pose);
   void lidarOdomCB(const sensor_msgs::PointCloud2ConstPtr &cloudMsg,
                    const nav_msgs::OdometryConstPtr &odom);
-  void lidarCustomPoseCB(const livox_ros_driver2::CustomMsgConstPtr &customMsg,
-                         const geometry_msgs::PoseStampedConstPtr &pose);
   void lidarCustomOdomCB(const livox_ros_driver2::CustomMsgConstPtr &customMsg,
                          const nav_msgs::OdometryConstPtr &odom);
 
@@ -383,8 +370,6 @@ public:
   void publishRawDynamicPoints(); // 发布原始动态点云
 
   // 内联辅助函数
-  void getLidarPose(const geometry_msgs::PoseStampedConstPtr &pose,
-                    Eigen::Matrix4d &lidarPoseMatrix); // 获取激光雷达位姿
   void getLidarPose(const nav_msgs::OdometryConstPtr &odom,
                     Eigen::Matrix4d &lidarPoseMatrix); // 获取激光雷达位姿
   void convertCustomMsgToPointCloud2(
@@ -393,32 +378,7 @@ public:
 };
 
 /*!
- * \brief 根据位姿信息计算激光雷达位姿矩阵（使用PoseStamped消息）
- * \param pose 机器人位姿信息
- * \param lidarPoseMatrix 输出参数，激光雷达的位姿矩阵
- */
-inline void
-dynamicDetector::getLidarPose(const geometry_msgs::PoseStampedConstPtr &pose,
-                              Eigen::Matrix4d &lidarPoseMatrix) {
-  Eigen::Quaterniond quat;
-  quat = Eigen::Quaterniond(pose->pose.orientation.w, pose->pose.orientation.x,
-                            pose->pose.orientation.y, pose->pose.orientation.z);
-  Eigen::Matrix3d rot = quat.toRotationMatrix();
-
-  // convert body pose to camera pose
-  Eigen::Matrix4d map2body;
-  map2body.setZero();
-  map2body.block<3, 3>(0, 0) = rot;
-  map2body(0, 3) = pose->pose.position.x;
-  map2body(1, 3) = pose->pose.position.y;
-  map2body(2, 3) = pose->pose.position.z;
-  map2body(3, 3) = 1.0;
-
-  lidarPoseMatrix = map2body * this->body2Lidar_;
-}
-
-/*!
- * \brief 根据位姿信息计算激光雷达位姿矩阵（使用Odometry消息）
+ * \brief 根据里程计信息计算激光雷达位姿矩阵（使用Odometry消息）
  * \param odom 机器人里程计信息
  * \param lidarPoseMatrix 输出参数，激光雷达的位姿矩阵
  */

@@ -372,6 +372,56 @@ void StaticPointFilter::cleanMap(double current_time) {
   }
 }
 
+void StaticPointFilter::boostStaticRegions(
+    const std::vector<onboardDetector::box3D> &static_boxes) {
+  if (static_boxes.empty()) {
+    return;
+  }
+
+  for (const auto &box : static_boxes) {
+    // 计算需要遍历的体素范围
+    float max_half_width =
+        std::max({box.x_width, box.y_width, box.z_width}) / 2.0f;
+    int range = std::ceil(max_half_width / voxel_size_) + 1;
+
+    // 生成box中心点
+    pcl::PointXYZ center;
+    center.x = box.x;
+    center.y = box.y;
+    center.z = box.z;
+
+    // 遍历box周围的体素网格
+    for (int dx = -range; dx <= range; ++dx) {
+      for (int dy = -range; dy <= range; ++dy) {
+        for (int dz = -range; dz <= range; ++dz) {
+          // 计算体素中心点
+          pcl::PointXYZ voxel_center;
+          voxel_center.x = center.x + dx * voxel_size_;
+          voxel_center.y = center.y + dy * voxel_size_;
+          voxel_center.z = center.z + dz * voxel_size_;
+
+          // 检查体素中心是否在box内
+          if (isPointInBox(voxel_center, box)) {
+            long long key = getVoxelKey(voxel_center);
+            auto it = voxel_map_.find(key);
+
+            if (it != voxel_map_.end()) {
+              // 直接将hit_count提升到阈值以上，使其立即被标记为静态
+              it->second.hit_count = hit_threshold_ + 1;
+            } else {
+              // 如果体素不存在，创建一个新的静态体素
+              VoxelStatus status;
+              status.hit_count = hit_threshold_ + 1;
+              status.last_seen_time = ros::Time::now().toSec();
+              voxel_map_[key] = status;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 bool StaticPointFilter::checkCollision(const Eigen::Vector3d &point) {
   // 将 Eigen::Vector3d 转换为 pcl::PointXYZ 以复用现有的 isPointStatic 逻辑
   pcl::PointXYZ pcl_point;

@@ -1,13 +1,9 @@
-# 定位模式: 0: 使用姿态(pose)信息 (默认), 1: 使用里程计(odom)信息
-localization_mode: 0
-
 # 点云格式: true: 使用Livox CustomMsg格式, false: 使用标准PointCloud2格式 (默认)
 use_livox_custom_msg: true
 
 # ROS 主题
 lidar_pointcloud_topic: /livox_lidar      # 激光雷达点云主题/livox_lidar/cloud_registered
-pose_topic: /mavros/local_position/pose        # 姿态主题
-odom_topic: /mavros/local_position/odom        # 里程计主题
+odom_topic: /Odometry        # 里程计主题 /mavros/local_position/odom
 
 body_to_lidar:  [1.0,  0.0,  0.0, -0.005,
                 0.0,  1.0,  0.0,  0.0,
@@ -70,29 +66,27 @@ duplicate_track_distance_threshold: 1.2 # 重复轨迹检测的平均尺寸缩�
 duplicate_track_velocity_similarity_threshold: 0.7 # 重复轨迹检测的速度方向相似度阈值（余弦相似度，0-1）
 coasting_track_gate_relax_factor: 1.5 # coasting轨迹的关联门限放松倍数（防止轨迹断裂和新轨迹生成）
 
-# 动态/静态分类
 # 动态/静态分类相关
 frame_skip: 3 # 动态计算时间间隔
 dynamic_velocity_threshold: 0.1 # 判断为动态障碍物的线速度阈值 (米/秒)
 dynamic_voting_threshold: 0.7 # 动态性投票的阈值, 超过该比例则认为可能是动态
 classification_min_neighbor_distance: 2.0 # 点云匹配距离
+# 鲁棒性增强参数 - 解决点云稀疏、遮挡误判、LiDAR抖动问题
+min_reliable_points: 20             # 最小可靠点数，低于此值时自适应提高速度阈值
+point_count_drop_threshold: 0.6     # 点数下降阈值 (0-1)，当前点数/历史平均 < 此值时认为可能遮挡
+hysteresis_lower: 0.7               # 滞后系数 (0-1)，动态物体变静态时速度阈值乘以此系数（防止抖动）
 # 动态条件一，最近的check_range帧范围内有K帧被投票为动态候选，才被最终分类为动态
 frames_force_dynamic_check_range: 7 # 强制判断为动态障碍物前，历史轨迹的最小长度
 frames_force_dynamic: 5 # 满足前面的条件下，连续k帧被投票为动态候选的障碍物则强制为动态
 # 动态条件二
 dynamic_consistency_threshold: 3 # 最近连续k帧被投票为动态候选，才被最终分类为动态
-
 # 动态转静态回退参数 - 如果动态物体连续静止，则回退为静态
-static_fallback_frames: 10          # 连续静止多少帧后回退为静态
-static_fallback_vel_threshold: 0.1  # 静止判定阈值 (m/s)，帧间位置变化/dt < 此值视为静止
-motion_dir_consistency_threshold: 0.5  # 运动方向一致性阈值（余弦值），低于此值视为点云抖动而非真实运动
-                                       # 1.0=完全一致，0.5=夹角60度，0=垂直，-1=反向
+static_fallback_frames: 5          # 连续静止多少帧后回退为静态
+static_fallback_vel_threshold: 0.15  # 静止判定阈值 (m/s)，帧间位置变化/dt < 此值视为静止
+motion_dir_consistency_threshold: 0.867  # 运动方向一致性阈值（余弦值），低于此值视为点云抖动而非真实运动
+                                         # 1.0=完全一致，0.5=夹角60度，0.867=30度，0=垂直，-1=反向
 # 静态体素地图误判修复参数
 voxel_clear_dynamic_frames: 5       # 触发体素清除所需的连续动态帧数，防止短暂误判导致静态标记丢失
-# 鲁棒性增强参数 - 解决点云稀疏、遮挡误判、LiDAR抖动问题
-min_reliable_points: 20             # 最小可靠点数，低于此值时自适应提高速度阈值
-point_count_drop_threshold: 0.6     # 点数下降阈值 (0-1)，当前点数/历史平均 < 此值时认为可能遮挡
-hysteresis_lower: 0.7               # 滞后系数 (0-1)，动态物体变静态时速度阈值乘以此系数（防止抖动）
 
 # 卡尔曼滤波器参数
 kalman_filter:
@@ -102,9 +96,9 @@ kalman_filter:
   adaptive_min_noise_ratio: 0.3 # Minimum Q/R threshold ratio relative to initial value
   # 协方差上限参数 - 防止预测不确定性椭圆过大
   enable_cov_limit: true   # 是否启用协方差上限限制
-  max_pos_cov: 9.0         # 位置协方差上限 (m²)，对应标准差3米
-  max_vel_cov: 16.0        # 速度协方差上限 ((m/s)²)，对应标准差4m/s
-  max_acc_cov: 100.0       # 加速度协方差上限 ((m/s²)²)，对应标准差10m/s²
+  max_pos_cov: 1.5         # 位置协方差上限 (m²)，对应标准差3米
+  max_vel_cov: 9.0        # 速度协方差上限 ((m/s)²)，对应标准差4m/s
+  max_acc_cov: 25.0       # 加速度协方差上限 ((m/s²)²)，对应标准差10m/s²
   prediction_cov_multiplier: 3.0  # 预测时协方差上限倍数（相对于跟踪器位置协方差上限）
   # Constant Acceleration Model (Jerk noise)
   ca_model:

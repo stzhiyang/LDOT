@@ -1,12 +1,8 @@
-# 定位模式: 0: 使用姿态(pose)信息 (默认), 1: 使用里程计(odom)信息
-localization_mode: 0
-
 # 点云格式: true: 使用Livox CustomMsg格式, false: 使用标准PointCloud2格式 (默认)
 use_livox_custom_msg: true
 
 # ROS 主题
 lidar_pointcloud_topic: /livox/lidar      # 激光雷达点云主题/livox_lidar/cloud_registered
-pose_topic: /mavros/local_position/pose        # 姿态主题
 odom_topic: /mavros/local_position/odom        # 里程计主题
 
 body_to_lidar:  [1.0,  0.0,  0.0, 0.00,
