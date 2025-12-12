@@ -52,6 +52,9 @@ namespace onboardDetector{
         double groundHeight_; // 用于过滤地面点的Z轴高度阈值
         double roofHeight_;   // 用于过滤天花板/屋顶点的Z轴高度阈值
         
+        // 传感器位置（全局坐标系），用于自适应DBSCAN
+        Eigen::Vector3d sensorPosition_;
+        
     public:
         // 构造函数
         lidarDetector();
@@ -61,6 +64,9 @@ namespace onboardDetector{
 
         // 获取并设置待处理的输入点云
         void getPointcloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
+
+        // 设置传感器位置（全局坐标系），用于自适应DBSCAN
+        void setSensorPosition(const Eigen::Vector3d& position);
 
         // 对点云执行DBSCAN聚类
         void lidarDBSCAN();

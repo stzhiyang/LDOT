@@ -307,11 +307,35 @@ void ParamLoader::loadStaticFilterParams(dynamicDetector *detector) {
                           << detector->staticClusterFilterRatio_);
   }
 
+  // 是否启用邻域投票（用于稀疏点云的静态点判断增强）
+  if (not nh_.getParam(ns_ + "/static_filter_use_neighbor_voting",
+                       detector->staticFilterUseNeighborVoting_)) {
+    detector->staticFilterUseNeighborVoting_ = true;
+    ROS_WARN_STREAM(hint_ << " No static_filter_use_neighbor_voting param. Use "
+                             "default: true");
+  } else {
+    ROS_INFO_STREAM(hint_ << " static_filter_use_neighbor_voting: "
+                          << (detector->staticFilterUseNeighborVoting_ ? "true"
+                                                                       : "false"));
+  }
+
+  // 最小邻域投票数
+  if (not nh_.getParam(ns_ + "/static_filter_min_neighbor_votes",
+                       detector->staticFilterMinNeighborVotes_)) {
+    detector->staticFilterMinNeighborVotes_ = 3;
+    ROS_WARN_STREAM(hint_ << " No static_filter_min_neighbor_votes param. Use "
+                             "default: 3");
+  } else {
+    ROS_INFO_STREAM(hint_ << " static_filter_min_neighbor_votes: "
+                          << detector->staticFilterMinNeighborVotes_);
+  }
+
   // 初始化静态点滤波器
   detector->staticFilter_.reset(new StaticPointFilter());
   detector->staticFilter_->setParams(
       detector->staticFilterEnabled_, detector->staticFilterVoxelSize_,
-      detector->staticFilterHitThreshold_, detector->staticFilterTimeThreshold_);
+      detector->staticFilterHitThreshold_, detector->staticFilterTimeThreshold_,
+      detector->staticFilterUseNeighborVoting_, detector->staticFilterMinNeighborVotes_);
   if (detector->staticFilterEnabled_ || detector->staticClusterFilterEnabled_) {
     ROS_INFO_STREAM(hint_ << " Static Point Filter initialized (voxel: "
                           << detector->staticFilterVoxelSize_

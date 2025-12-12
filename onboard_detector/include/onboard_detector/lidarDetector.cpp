@@ -11,6 +11,7 @@ namespace onboardDetector{
         this->useAdaptive_ = false;
         this->distanceScale_ = 0.05;
         this->cloud_ = pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>());
+        this->sensorPosition_ = Eigen::Vector3d::Zero();
     }
 
     void lidarDetector::setParams(double eps, int minPts, bool useAdaptive, double distScale){
@@ -22,6 +23,10 @@ namespace onboardDetector{
 
     void lidarDetector::getPointcloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud){
         this->cloud_ = cloud;
+    }
+
+    void lidarDetector::setSensorPosition(const Eigen::Vector3d& position){
+        this->sensorPosition_ = position;
     }
 
     /*
@@ -57,8 +62,11 @@ namespace onboardDetector{
             points.push_back(p);
         }
 
-        // 创建并运行DBSCAN聚类算法
-        DBSCAN dbscan(minPts_, eps_, points, useAdaptive_, distanceScale_);
+        // 创建并运行DBSCAN聚类算法（传入传感器位置用于自适应epsilon计算）
+        DBSCAN dbscan(minPts_, eps_, points, useAdaptive_, distanceScale_,
+                      static_cast<float>(sensorPosition_.x()),
+                      static_cast<float>(sensorPosition_.y()),
+                      static_cast<float>(sensorPosition_.z()));
         dbscan.run();  // 得到分好类的自定义Points
 
         // 统计聚类数量（查找最大的clusterID）

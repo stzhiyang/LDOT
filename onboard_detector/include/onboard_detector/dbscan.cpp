@@ -136,10 +136,13 @@ namespace onboardDetector{
         return 0;
     }
 
-    // 计算点到原点（传感器位置）的距离
-    inline double DBSCAN::calculateDistanceToOrigin(const Point& point)
+    // 计算点到传感器的距离（点云在全局坐标系下）
+    inline double DBSCAN::calculateDistanceToSensor(const Point& point)
     {
-        return sqrt(pow(point.x, 2) + pow(point.y, 2) + pow(point.z, 2));
+        double dx = point.x - m_sensorX;
+        double dy = point.y - m_sensorY;
+        double dz = point.z - m_sensorZ;
+        return sqrt(dx * dx + dy * dy + dz * dz);
     }
 
     // 获取基于距离的自适应epsilon值
@@ -151,12 +154,12 @@ namespace onboardDetector{
             return m_epsilon * m_epsilon;
         }
         
-        // 计算点到原点的距离
-        double distToOrigin = calculateDistanceToOrigin(point);
+        // 计算点到传感器的距离（在全局坐标系下）
+        double distToSensor = calculateDistanceToSensor(point);
         
         // 自适应epsilon = 基础epsilon + 距离 * 缩放因子
         // 这样可以根据点的深度动态调整邻域半径
-        double adaptiveEps = m_epsilon + distToOrigin * m_distanceScale;
+        double adaptiveEps = m_epsilon + distToSensor * m_distanceScale;
         
         // 返回平方值，因为calculateDistance返回距离的平方
         return adaptiveEps * adaptiveEps;

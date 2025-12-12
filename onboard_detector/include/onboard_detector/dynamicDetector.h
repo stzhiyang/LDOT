@@ -141,6 +141,8 @@ private:
   float staticFilterVoxelSize_;
   int staticFilterHitThreshold_;
   double staticFilterTimeThreshold_;
+  bool staticFilterUseNeighborVoting_;   // 是否启用邻域投票
+  int staticFilterMinNeighborVotes_;     // 最小邻域投票数
 
   // 静态聚类滤波器参数
   bool staticClusterFilterEnabled_;

@@ -31,11 +31,14 @@ public:
 
   // 设置参数
   void setParams(bool enabled, float voxel_size, int hit_threshold,
-                 double time_threshold);
+                 double time_threshold, bool use_neighbor_voting = true,
+                 int min_neighbor_votes = 3);
 
   // 仅更新地图
+  // sensor_position: 传感器在全局坐标系中的位置（用于近距离累积抑制）
   void updateMap(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
-                 double current_time);
+                 double current_time,
+                 const Eigen::Vector3d &sensor_position);
 
   // 点级过滤 (原 filter 函数)
   void filterPoints(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
@@ -43,6 +46,7 @@ public:
                         std::vector<onboardDetector::box3D>());
 
   // 聚类级过滤
+  // 注意：使用成员变量 sensor_position_，需要先调用 updateMap 更新传感器位置
   void
   filterClusters(std::vector<onboardDetector::Cluster> &clusters,
                  std::vector<onboardDetector::box3D> &bboxes,
@@ -79,16 +83,35 @@ private:
   // 检查点是否在边界框内
   bool isPointInBox(const pcl::PointXYZ &pt, const onboardDetector::box3D &box);
 
-  // 检查点是否为静态 (基于当前地图)
+  // 检查点是否为静态 (基于当前地图) - 原始版本
   bool isPointStatic(const pcl::PointXYZ &pt);
+
+  // 【新增】距离自适应阈值 - 远距离降低判定门槛
+  // 使用成员变量 sensor_position_ 计算距离
+  int getAdaptiveThreshold(const pcl::PointXYZ &pt);
+
+  // 【新增】带邻域投票的静态点判断 - 利用空间连续性
+  // 使用成员变量 sensor_position_ 计算距离
+  bool isPointStaticWithNeighbors(const pcl::PointXYZ &pt);
 
   bool enabled_;
   float voxel_size_;
   int hit_threshold_;
   double time_threshold_;
 
+  // 【新增】邻域投票相关参数
+  bool use_neighbor_voting_;      // 是否启用邻域投票
+  int min_neighbor_votes_;        // 最小邻域投票数
+
+  // 帧计数器，用于控制清理频率
+  int frame_count_;
+
   // 体素地图：键值 -> 状态
   std::unordered_map<long long, VoxelStatus> voxel_map_;
+
+  // 【新增】传感器位置（全局坐标系），用于距离计算
+  // 在 updateMap 时更新，供 isPointStatic 等函数使用
+  Eigen::Vector3d sensor_position_;
 };
 
 } // namespace onboardDetector

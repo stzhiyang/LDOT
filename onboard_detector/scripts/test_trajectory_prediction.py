@@ -29,7 +29,7 @@ class TrajectoryPredictionTester:
             '/onboard_detector/get_predicted_trajectories'
         )
         self.query_range = rospy.get_param('~query_range', 10.0)  # 查询范围（米）
-        self.prediction_horizon = rospy.get_param('~prediction_horizon', 3.0)  # 预测时域（秒）
+        self.prediction_horizon = rospy.get_param('~prediction_horizon', 1.5)  # 预测时域（秒）
         self.prediction_dt = rospy.get_param('~prediction_dt', 0.1)  # 预测步长（秒）
         self.query_rate = rospy.get_param('~query_rate', 10.0)  # 查询频率（Hz）
         self.frame_id = rospy.get_param('~frame_id', 'map')  # 坐标系名称
@@ -43,7 +43,7 @@ class TrajectoryPredictionTester:
         self.trajectory_line_width = rospy.get_param('~trajectory_line_width', 0.05)
         self.covariance_scale = rospy.get_param('~covariance_scale', 1.0)  # 协方差缩放因子（2.0对应约95%置信区间）
         self.show_covariance = rospy.get_param('~show_covariance', True)  # 是否显示协方差椭圆
-        self.covariance_skip = rospy.get_param('~covariance_skip', 3)  # 每隔几个点显示一个协方差椭圆
+        self.covariance_skip = rospy.get_param('~covariance_skip', 2)  # 每隔几个点显示一个协方差椭圆
         
         # 可视化发布器
         self.marker_pub = rospy.Publisher(

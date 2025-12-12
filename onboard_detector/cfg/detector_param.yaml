@@ -22,12 +22,14 @@ voxel_base_leaf_size: 0.1       # 基础体素大小 (米), 初始下采样精�
 voxel_target_point_count: 3000  # 目标点云数量, 超过此数量会自适应增大体素尺寸
 
 # 静态点与静态簇去除滤波器参数
-static_filter_enabled: false      # 是否启用静态点去除
-static_cluster_filter_enabled: true # 是否启用静态聚类去除
+static_filter_enabled: true     # 是否启用静态点去除
+static_cluster_filter_enabled: false # 是否启用静态聚类去除
 static_filter_voxel_size: 0.2    # 静态滤波器体素大小 (米)，比第一个体素大
 static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
 static_filter_time_threshold: 5.0 # 静态点在地图中保留的时间阈值 (秒)
 static_cluster_filter_ratio: 0.6    # 判定为静态聚类的静态点比例阈值
+static_filter_use_neighbor_voting: true  # 是否启用邻域投票（利用空间连续性增强稀疏点云的静态判断）
+static_filter_min_neighbor_votes: 3      # 最小邻域投票数（6邻域中至少需要多少个邻居支持）
 
 # DBSCAN 激光雷达聚类参数
 lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数
@@ -52,7 +54,7 @@ classification_size_reset_frames: 20            # 尺寸重置帧数，当物体
 classification_start_frame: 10 # 跟踪多少帧后开始进行分类和模型切换
 classification_interval_sec: 1 # 分类检查时间间隔 s
 classify_xy_distance_threshold: 3.0 # box与无人机xy轴距离阈值(米)，小于该值则继承前一帧的分类
-classify_human_threshold: [1.2, 0.8]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
+classify_human_threshold: [1.0, 0.8]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
 classify_vehicle_threshold: [1.5, 0.7] # [x/y >=z, z<0.7*zw, PCA xy_std/z_std > 1.2]
 classify_uav_threshold: [0.8, 1.2] # z/y/z <0.7 ,z>1.2*zw
 fix_size_classification_threshold: 5 # 连续相同分类次数阈值，达到后固定尺寸和分类（仅对人/车/无人机生效）
