@@ -279,6 +279,11 @@ private:
   ros::Time lastCloudTime_;                  // 最后一次接收点云的时间戳
   ros::Time lastProcessTime_;                // 最后一次处理的时间戳
 
+  // 静态地图初始化参数
+  double staticMapWarmupDuration_;           // 静态地图预热时长（秒）
+  ros::Time systemStartTime_;                // 系统启动时间
+  bool isStaticMapReady_;                    // 静态地图是否已准备好
+
 public:
   // 构造与析构函数
   dynamicDetector();

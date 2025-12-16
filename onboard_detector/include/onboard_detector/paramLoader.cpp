@@ -102,6 +102,14 @@ void ParamLoader::loadSystemParams(dynamicDetector *detector) {
   } else {
     ROS_INFO_STREAM(hint_ << " time_step: " << detector->dt_ << "s");
   }
+
+  // 静态地图预热时长
+  if (not nh_.getParam(ns_ + "/static_map_warmup_duration", detector->staticMapWarmupDuration_)) {
+    detector->staticMapWarmupDuration_ = 3.0;
+    ROS_WARN_STREAM(hint_ << " No static_map_warmup_duration param. Use default: 3.0s");
+  } else {
+    ROS_INFO_STREAM(hint_ << " static_map_warmup_duration: " << detector->staticMapWarmupDuration_ << "s");
+  }
 }
 
 // ==================== Point Cloud Filter Parameters ====================

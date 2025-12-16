@@ -16,6 +16,7 @@ namespace onboardDetector {
 dynamicDetector::dynamicDetector() {
   this->ns_ = "onboard_detector";
   this->hint_ = "[onboardDetector]";
+  this->isStaticMapReady_ = false;
 }
 
 // 带节点句柄的构造函数
@@ -23,6 +24,7 @@ dynamicDetector::dynamicDetector(const ros::NodeHandle &nh) {
   this->ns_ = "onboard_detector";
   this->hint_ = "[onboardDetector]";
   this->nh_ = nh;
+  this->isStaticMapReady_ = false;
   this->initParam();
   this->registerPub();
   this->registerCallback();
@@ -91,6 +93,11 @@ void dynamicDetector::registerPub() {
 }
 
 void dynamicDetector::registerCallback() {
+  // 记录系统启动时间
+  this->systemStartTime_ = ros::Time::now();
+  ROS_INFO_STREAM(this->hint_ << " System started. Static map warmup duration: " 
+                  << this->staticMapWarmupDuration_ << "s");
+
   this->odomSub_.reset(new message_filters::Subscriber<nav_msgs::Odometry>(
       this->nh_, this->odomTopicName_, 25));
 
@@ -386,12 +393,12 @@ void dynamicDetector::lidarDetectionCB(const ros::TimerEvent &event) {
   }
 
   // 检查数据时效性（避免处理过时数据）
-  if ((event.current_real - lastCloudTime_).toSec() > 0.5) {
-    ROS_WARN_THROTTLE(
-        5.0, "%s: Cloud data too old (%.3f s), skipping detection",
-        this->hint_.c_str(), (event.current_real - lastCloudTime_).toSec());
-    return;
-  }
+  // if ((event.current_real - lastCloudTime_).toSec() > 0.5) {
+  //   ROS_WARN_THROTTLE(
+  //       5.0, "%s: Cloud data too old (%.3f s), skipping detection",
+  //       this->hint_.c_str(), (event.current_real - lastCloudTime_).toSec());
+  //   return;
+  // }
 
   {
     std::lock_guard<std::mutex> lock(cloudMutex_);
@@ -423,6 +430,21 @@ void dynamicDetector::lidarDetect() {
   // 1. 始终更新静态地图，使用当前ROS时间，并传入传感器位置（全局坐标系）
   double currentTime = ros::Time::now().toSec();
   this->staticFilter_->updateMap(this->lidarCloud_, currentTime, this->positionLidar_);
+
+  // 检查静态地图预热阶段
+  double elapsedTime = (ros::Time::now() - this->systemStartTime_).toSec();
+  if (!this->isStaticMapReady_) {
+    if (elapsedTime < this->staticMapWarmupDuration_) {
+      // 预热阶段：只更新静态地图，不进行检测
+      ROS_INFO_THROTTLE(1.0, "%s: Static map warmup phase (%.1f/%.1f s). Only updating static map...",
+                        this->hint_.c_str(), elapsedTime, this->staticMapWarmupDuration_);
+      return;
+    } else {
+      // 预热完成
+      this->isStaticMapReady_ = true;
+      ROS_INFO_STREAM(this->hint_ << " Static map warmup completed! Starting dynamic detection...");
+    }
+  }
 
   // 2. 收集保护区域（动态物体边界框）- 只收集一次，供点级和聚类级过滤共用
   std::vector<onboardDetector::box3D> protectedBoxes;
@@ -2779,7 +2801,7 @@ void dynamicDetector::publish3dBox(const std::vector<box3D> &boxes,
     line.color.b = b;
     line.color.a = 1.0;
 
-    line.lifetime = ros::Duration(0.05); // Marker的生命周期，0.05秒后会自动消失
+    line.lifetime = ros::Duration(0.2); // Marker的生命周期，设置为3倍dt_以避免闪烁
 
     // 设置Marker的姿态，这里表示无旋转
     line.pose.orientation.x = 0.0;
@@ -2877,6 +2899,7 @@ void dynamicDetector::publishHistoryTraj() {
       traj.pose.orientation.x = 0.0;
       traj.pose.orientation.y = 0.0;
       traj.pose.orientation.z = 0.0;
+      traj.lifetime = ros::Duration(0.2); // 设置生命周期，避免闪烁
       for (size_t j = 0; j < this->boxHist_[i].size() - 1; ++j) {
         geometry_msgs::Point p1, p2;
         onboardDetector::box3D box1 = this->boxHist_[i][j];

@@ -229,7 +229,7 @@ class TrajectoryPredictionTester:
             p.z = pos.z
             marker.points.append(p)
         
-        marker.lifetime = rospy.Duration(0.5)
+        marker.lifetime = rospy.Duration(0.1)
         
         return marker
     
@@ -264,7 +264,7 @@ class TrajectoryPredictionTester:
         marker.color.b = self.ellipse_color.b
         marker.color.a = 0.4 - 0.2 * time_ratio  # 透明度从0.4渐变到0.2
         
-        marker.lifetime = rospy.Duration(0.5)
+        marker.lifetime = rospy.Duration(0.1)
         
         return marker
     
@@ -291,7 +291,7 @@ class TrajectoryPredictionTester:
         marker.color = self.text_color
         
         marker.text = text
-        marker.lifetime = rospy.Duration(0.5)
+        marker.lifetime = rospy.Duration(0.1)
         
         return marker
     
@@ -319,7 +319,7 @@ class TrajectoryPredictionTester:
         # 终点颜色
         marker.color = self.endpoint_color
         
-        marker.lifetime = rospy.Duration(0.5)
+        marker.lifetime = rospy.Duration(0.1)
         
         return marker
     

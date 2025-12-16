@@ -135,9 +135,8 @@ bool StaticPointFilter::isPointStaticWithNeighbors(const pcl::PointXYZ &pt) {
   }
   
   // 2. 自身未达标，检查邻域投票
-  // 只有当自身有一定累积（至少达到阈值的1/3）时才考虑邻域投票
-  // 这样可以避免完全没有观测的点被误判
-  if (self_hits < adaptive_thresh / 3) {
+  // 只有当自身有一定累积（至少达到阈值的1/2）时才考虑邻域投票
+  if (self_hits < adaptive_thresh / 2) {
     return false;
   }
   
@@ -167,7 +166,7 @@ bool StaticPointFilter::isPointStaticWithNeighbors(const pcl::PointXYZ &pt) {
         // 提前退出：如果已经达到投票阈值，无需继续检查
         if (neighbor_votes >= min_neighbor_votes_) {
           // 4. 综合判断：自身接近达标 且 邻域投票支持
-          if (self_hits > adaptive_thresh / 2) {
+          if (self_hits > (adaptive_thresh * 0.67)) {
             return true;
           }
         }
@@ -204,9 +203,9 @@ void StaticPointFilter::updateMap(
     // 近距离（<3m）：降低累积速度，每2帧才累积1次
     // 这样可以防止近距离的动态物体（如人、车）被快速标记为静态
     bool should_increment = true;
-    if (dist < 9.0) {
+    if (dist < 4.0) {
       // 基于当前计数的模运算，确保不同体素有不同的累积节奏
-      should_increment = (status.hit_count % 2 == 0);
+      should_increment = (status.hit_count % 1 == 0);
     }
 
     // 增加体素格子命中计数，但进行截断以避免溢出
@@ -217,7 +216,7 @@ void StaticPointFilter::updateMap(
 
   // 每10帧清理一次地图
   frame_count_++;
-  if (frame_count_ >= 10) {
+  if (frame_count_ >= 1) {
     cleanMap(current_time);
     frame_count_ = 0;
   }
