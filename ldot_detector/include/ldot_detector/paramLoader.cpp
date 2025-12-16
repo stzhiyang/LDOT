@@ -6,8 +6,8 @@
     日志规范：成功读取用 ROS_INFO_STREAM，失败用 ROS_WARN_STREAM
 */
 #include <boost/math/distributions/chi_squared.hpp>
-#include <onboard_detector/dynamicDetector.h>
-#include <onboard_detector/paramLoader.h>
+#include <ldot_detector/dynamicDetector.h>
+#include <ldot_detector/paramLoader.h>
 
 namespace onboardDetector {
 

@@ -1,7 +1,0 @@
-<launch>
-    <!-- 加载探测器参数 -->
-	<rosparam file="$(find onboard_detector)/cfg/detector_param0.yaml" ns="/onboard_detector" />
-    <!-- 启动激光雷达探测器节点 -->
-	<node pkg="onboard_detector" type="detector_node" name="detector_node" output="screen" />
-	<node name="rviz" pkg="rviz" type="rviz" args="-d $(find onboard_detector)/rviz/detector_lv.rviz"/>
-</launch>

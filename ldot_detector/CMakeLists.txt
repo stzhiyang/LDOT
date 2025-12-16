@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(onboard_detector)
+project(ldot_detector)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 # add_compile_options(-std=c++11)
@@ -126,7 +126,7 @@ generate_messages(
 # 依赖的catkin包列表
 catkin_package(
    INCLUDE_DIRS include
-   LIBRARIES onboard_detector
+   LIBRARIES ldot_detector
    CATKIN_DEPENDS roscpp rospy std_msgs message_generation geometry_msgs livox_ros_driver2
   #  DEPENDS system_lib
 )

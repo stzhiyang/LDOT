@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>onboard_detector</name>
+  <name>ldot_detector</name>
   <version>1.0.0</version>
   <description>The onboard detector package for dynamic object detection.</description>
   <maintainer email="zhefanx@andrew.cmu.edu">Zhefan Xu</maintainer>

@@ -7,8 +7,8 @@
 #define ONBOARDDETECTOR_LIDARDETECTOR_H
 
 #include <ros/ros.h>
-#include <onboard_detector/dbscan.h>
-#include <onboard_detector/utils.h>
+#include <ldot_detector/dbscan.h>
+#include <ldot_detector/utils.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/common/common.h>

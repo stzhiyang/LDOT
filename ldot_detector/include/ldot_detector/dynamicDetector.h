@@ -17,13 +17,13 @@
 #include <message_filters/synchronizer.h>
 #include <mutex>
 #include <nav_msgs/Odometry.h>
-#include <onboard_detector/GetDynamicObstacles.h>
-#include <onboard_detector/GetPredictedTrajectories.h>
-#include <onboard_detector/dbscan.h>
-#include <onboard_detector/lidarDetector.h>
-#include <onboard_detector/multiModelKalmanFilter.h>
-#include <onboard_detector/staticPointFilter.h>
-#include <onboard_detector/utils.h>
+#include <ldot_detector/GetDynamicObstacles.h>
+#include <ldot_detector/GetPredictedTrajectories.h>
+#include <ldot_detector/dbscan.h>
+#include <ldot_detector/lidarDetector.h>
+#include <ldot_detector/multiModelKalmanFilter.h>
+#include <ldot_detector/staticPointFilter.h>
+#include <ldot_detector/utils.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/point_cloud.h>
@@ -297,13 +297,13 @@ public:
 
   // 服务回调函数
   bool
-  getDynamicObstacles(onboard_detector::GetDynamicObstacles::Request &req,
-                      onboard_detector::GetDynamicObstacles::Response &res);
+  getDynamicObstacles(ldot_detector::GetDynamicObstacles::Request &req,
+                      ldot_detector::GetDynamicObstacles::Response &res);
 
   // 获取预测轨迹的服务回调函数
   bool getPredictedTrajectories(
-      onboard_detector::GetPredictedTrajectories::Request &req,
-      onboard_detector::GetPredictedTrajectories::Response &res);
+      ldot_detector::GetPredictedTrajectories::Request &req,
+      ldot_detector::GetPredictedTrajectories::Response &res);
 
   // 轨迹预测函数
   // 基于卡尔曼滤波器状态进行多步轨迹外推，并进行碰撞检测截断

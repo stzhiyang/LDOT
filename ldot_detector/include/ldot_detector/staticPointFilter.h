@@ -7,8 +7,8 @@
 #define ONBOARDDETECTOR_STATICPOINTFILTER_H
 
 #include <Eigen/Dense>
-#include <onboard_detector/lidarDetector.h>
-#include <onboard_detector/utils.h>
+#include <ldot_detector/lidarDetector.h>
+#include <ldot_detector/utils.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <ros/ros.h>

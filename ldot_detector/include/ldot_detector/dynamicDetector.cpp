@@ -5,8 +5,8 @@
 */
 #include <cmath>   // for std::isfinite
 #include <numeric> // for std::iota
-#include <onboard_detector/dynamicDetector.h>
-#include <onboard_detector/paramLoader.h>
+#include <ldot_detector/dynamicDetector.h>
+#include <ldot_detector/paramLoader.h>
 
 // ===================================================================
 // 初始化
@@ -14,15 +14,15 @@
 namespace onboardDetector {
 // 默认构造函数
 dynamicDetector::dynamicDetector() {
-  this->ns_ = "onboard_detector";
-  this->hint_ = "[onboardDetector]";
+  this->ns_ = "ldot_detector";
+  this->hint_ = "[LDOT]";
   this->isStaticMapReady_ = false;
 }
 
 // 带节点句柄的构造函数
 dynamicDetector::dynamicDetector(const ros::NodeHandle &nh) {
-  this->ns_ = "onboard_detector";
-  this->hint_ = "[onboardDetector]";
+  this->ns_ = "ldot_detector";
+  this->hint_ = "[LDOT]";
   this->nh_ = nh;
   this->isStaticMapReady_ = false;
   this->initParam();
@@ -93,10 +93,10 @@ void dynamicDetector::registerPub() {
 }
 
 void dynamicDetector::registerCallback() {
-  // 记录系统启动时间
-  this->systemStartTime_ = ros::Time::now();
-  ROS_INFO_STREAM(this->hint_ << " System started. Static map warmup duration: " 
-                  << this->staticMapWarmupDuration_ << "s");
+  // 启动时间将在收到第一帧点云时记录（避免仿真时间未初始化的问题）
+  this->systemStartTime_ = ros::Time(0);  // 初始化为0，表示尚未记录
+  ROS_INFO_STREAM(this->hint_ << " Detector initialized. Static map warmup duration: " 
+                  << this->staticMapWarmupDuration_ << "s (will start when first cloud received)");
 
   this->odomSub_.reset(new message_filters::Subscriber<nav_msgs::Odometry>(
       this->nh_, this->odomTopicName_, 25));
@@ -142,12 +142,12 @@ void dynamicDetector::registerCallback() {
 
   // 获取动态障碍物服务
   this->getDynamicObstacleServer_ =
-      this->nh_.advertiseService("onboard_detector/get_dynamic_obstacles",
+      this->nh_.advertiseService("ldot_detector/get_dynamic_obstacles",
                                  &dynamicDetector::getDynamicObstacles, this);
 
   // 获取预测轨迹服务
   this->getPredictedTrajectoriesServer_ =
-      this->nh_.advertiseService("onboard_detector/get_predicted_trajectories",
+      this->nh_.advertiseService("ldot_detector/get_predicted_trajectories",
                                  &dynamicDetector::getPredictedTrajectories, this);
 }
 
@@ -432,6 +432,13 @@ void dynamicDetector::lidarDetect() {
   this->staticFilter_->updateMap(this->lidarCloud_, currentTime, this->positionLidar_);
 
   // 检查静态地图预热阶段
+  // 如果是第一帧，记录启动时间
+  if (this->systemStartTime_.toSec() < 0.001) {
+    this->systemStartTime_ = ros::Time::now();
+    ROS_INFO_STREAM(this->hint_ << " First cloud received. Starting static map warmup (" 
+                    << this->staticMapWarmupDuration_ << "s)...");
+  }
+  
   double elapsedTime = (ros::Time::now() - this->systemStartTime_).toSec();
   if (!this->isStaticMapReady_) {
     if (elapsedTime < this->staticMapWarmupDuration_) {
@@ -766,6 +773,11 @@ void dynamicDetector::applyDetectionNMS(
 void dynamicDetector::trackingCB(const ros::TimerEvent &) {
   // [Performance Timing] 测量回调函数耗时
   auto start_time = std::chrono::high_resolution_clock::now();
+
+  // 静态地图预热阶段，跳过跟踪
+  if (!this->isStaticMapReady_) {
+    return;
+  }
 
   // 检查是否有新检测结果
   if (!hasNewDetection_) {
@@ -2239,6 +2251,11 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
   // // [Performance Timing] 测量回调函数耗时
   auto start_time = std::chrono::high_resolution_clock::now();
 
+  // 静态地图预热阶段，跳过分类
+  if (!this->isStaticMapReady_) {
+    return;
+  }
+
   // 检查是否有新跟踪结果
   if (!hasNewTracking_) {
     return; // 跳过，避免重复处理相同数据
@@ -2488,127 +2505,127 @@ void dynamicDetector::classificationCB(const ros::TimerEvent &) {
     }
   }
 
-  // ==================================================================================
-  // 【动态转静态回退机制】结合位置变化和运动方向一致性判断
-  // 核心思想：真实运动方向连续，点云抖动方向随机
-  // 确保 stationaryFrameCount_ 向量大小与轨迹数量一致
-  while (this->stationaryFrameCount_.size() < this->boxHist_.size()) {
-    this->stationaryFrameCount_.push_back(0);
-  }
+  // // ==================================================================================
+  // // 【动态转静态回退机制】结合位置变化和运动方向一致性判断
+  // // 核心思想：真实运动方向连续，点云抖动方向随机
+  // // 确保 stationaryFrameCount_ 向量大小与轨迹数量一致
+  // while (this->stationaryFrameCount_.size() < this->boxHist_.size()) {
+  //   this->stationaryFrameCount_.push_back(0);
+  // }
   
-  // 遍历所有轨迹，检查是否需要回退为静态
-  for (size_t i = 0; i < this->boxHist_.size(); ++i) {
-    if (this->boxHist_[i].empty()) continue;
+  // // 遍历所有轨迹，检查是否需要回退为静态
+  // for (size_t i = 0; i < this->boxHist_.size(); ++i) {
+  //   if (this->boxHist_[i].empty()) continue;
     
-    // 只对当前被标记为动态的物体进行检查
-    if (this->boxHist_[i][0].is_dynamic) {
-      bool isStationary = false;
-      double posChange = 0.0;
-      double dirConsistency = 1.0;  // 方向一致性，默认为1（一致）
+  //   // 只对当前被标记为动态的物体进行检查
+  //   if (this->boxHist_[i][0].is_dynamic) {
+  //     bool isStationary = false;
+  //     double posChange = 0.0;
+  //     double dirConsistency = 1.0;  // 方向一致性，默认为1（一致）
       
-      // 使用与动静态分类相同的帧间隔（skipFrame_）来计算方向一致性
-      // 这样位移向量更长，方向更稳定，能更好地区分真实运动和抖动
-      int k = 1;
-      size_t requiredFrames = static_cast<size_t>(2 * k + 1);
+  //     // 使用与动静态分类相同的帧间隔（skipFrame_）来计算方向一致性
+  //     // 这样位移向量更长，方向更稳定，能更好地区分真实运动和抖动
+  //     int k = 1;
+  //     size_t requiredFrames = static_cast<size_t>(2 * k + 1);
       
-      if (this->boxHist_[i].size() >= requiredFrames) {
-        // 计算两段间隔为k帧的位移向量
-        // motion1: 帧0 -> 帧k
-        // motion2: 帧k -> 帧2k
-        Eigen::Vector3d motion1(
-            this->boxHist_[i][0].x - this->boxHist_[i][k].x,
-            this->boxHist_[i][0].y - this->boxHist_[i][k].y,
-            this->boxHist_[i][0].z - this->boxHist_[i][k].z
-        );
-        Eigen::Vector3d motion2(
-            this->boxHist_[i][k].x - this->boxHist_[i][2 * k].x,
-            this->boxHist_[i][k].y - this->boxHist_[i][2 * k].y,
-            this->boxHist_[i][k].z - this->boxHist_[i][2 * k].z
-        );
+  //     if (this->boxHist_[i].size() >= requiredFrames) {
+  //       // 计算两段间隔为k帧的位移向量
+  //       // motion1: 帧0 -> 帧k
+  //       // motion2: 帧k -> 帧2k
+  //       Eigen::Vector3d motion1(
+  //           this->boxHist_[i][0].x - this->boxHist_[i][k].x,
+  //           this->boxHist_[i][0].y - this->boxHist_[i][k].y,
+  //           this->boxHist_[i][0].z - this->boxHist_[i][k].z
+  //       );
+  //       Eigen::Vector3d motion2(
+  //           this->boxHist_[i][k].x - this->boxHist_[i][2 * k].x,
+  //           this->boxHist_[i][k].y - this->boxHist_[i][2 * k].y,
+  //           this->boxHist_[i][k].z - this->boxHist_[i][2 * k].z
+  //       );
         
-        double norm1 = motion1.norm();
-        double norm2 = motion2.norm();
-        posChange = norm1;  // 最近k帧的累积位移
+  //       double norm1 = motion1.norm();
+  //       double norm2 = motion2.norm();
+  //       posChange = norm1;  // 最近k帧的累积位移
         
-        // 计算方向一致性（余弦相似度）
-        // dirConsistency 接近 1.0 = 方向一致（真实运动）
-        // dirConsistency 接近 0 或负值 = 方向随机（点云抖动）
-        if (norm1 > 1e-6 && norm2 > 1e-6) {
-          dirConsistency = motion1.dot(motion2) / (norm1 * norm2);
-        }
+  //       // 计算方向一致性（余弦相似度）
+  //       // dirConsistency 接近 1.0 = 方向一致（真实运动）
+  //       // dirConsistency 接近 0 或负值 = 方向随机（点云抖动）
+  //       if (norm1 > 1e-6 && norm2 > 1e-6) {
+  //         dirConsistency = motion1.dot(motion2) / (norm1 * norm2);
+  //       }
         
-        // 将位置变化转换为速度（除以时间间隔）进行阈值比较
-        double impliedVel = posChange / (k * this->dt_);
+  //       // 将位置变化转换为速度（除以时间间隔）进行阈值比较
+  //       double impliedVel = posChange / (k * this->dt_);
         
-        // 判断是否为静止或抖动：
-        // 1. 速度低于阈值 -> 静止
-        // 2. 方向一致性低（<0.5，即夹角>60度）且速度不高 -> 抖动，视为静止
-        bool lowVelocity = (impliedVel < this->staticFallbackVelThresh_);
-        bool isJitter = (dirConsistency < this->motionDirConsistencyThresh_) && 
-                        (impliedVel < this->staticFallbackVelThresh_ * 3.0);  // 抖动判断用更宽松的速度阈值
+  //       // 判断是否为静止或抖动：
+  //       // 1. 速度低于阈值 -> 静止
+  //       // 2. 方向一致性低（<0.5，即夹角>60度）且速度不高 -> 抖动，视为静止
+  //       bool lowVelocity = (impliedVel < this->staticFallbackVelThresh_);
+  //       bool isJitter = (dirConsistency < this->motionDirConsistencyThresh_) && 
+  //                       (impliedVel < this->staticFallbackVelThresh_ * 3.0);  // 抖动判断用更宽松的速度阈值
         
-        isStationary = lowVelocity || isJitter;
+  //       isStationary = lowVelocity || isJitter;
         
-      } else if (this->boxHist_[i].size() >= 2) {
-        // 历史数据不足时，退化为纯速度判断
-        double dx = this->boxHist_[i][0].x - this->boxHist_[i][1].x;
-        double dy = this->boxHist_[i][0].y - this->boxHist_[i][1].y;
-        double dz = this->boxHist_[i][0].z - this->boxHist_[i][1].z;
-        posChange = std::sqrt(dx * dx + dy * dy + dz * dz);
+  //     } else if (this->boxHist_[i].size() >= 2) {
+  //       // 历史数据不足时，退化为纯速度判断
+  //       double dx = this->boxHist_[i][0].x - this->boxHist_[i][1].x;
+  //       double dy = this->boxHist_[i][0].y - this->boxHist_[i][1].y;
+  //       double dz = this->boxHist_[i][0].z - this->boxHist_[i][1].z;
+  //       posChange = std::sqrt(dx * dx + dy * dy + dz * dz);
         
-        double impliedVel = posChange / this->dt_;
-        isStationary = (impliedVel < this->staticFallbackVelThresh_);
-      }
+  //       double impliedVel = posChange / this->dt_;
+  //       isStationary = (impliedVel < this->staticFallbackVelThresh_);
+  //     }
       
-      if (isStationary) {
-        this->stationaryFrameCount_[i]++;
+  //     if (isStationary) {
+  //       this->stationaryFrameCount_[i]++;
         
-        // 如果连续静止帧数达到阈值，回退为静态
-        if (this->stationaryFrameCount_[i] >= this->staticFallbackFrames_) {
-          this->boxHist_[i][0].is_dynamic = false;
-          this->boxHist_[i][0].is_dynamic_candidate = false;
+  //       // 如果连续静止帧数达到阈值，回退为静态
+  //       if (this->stationaryFrameCount_[i] >= this->staticFallbackFrames_) {
+  //         this->boxHist_[i][0].is_dynamic = false;
+  //         this->boxHist_[i][0].is_dynamic_candidate = false;
           
-          // 从动态列表中移除
-          auto it = std::find_if(
-              dynamicBBoxesTemp.begin(), dynamicBBoxesTemp.end(),
-              [&](const onboardDetector::box3D &box) {
-                return std::abs(box.x - this->boxHist_[i][0].x) < 0.01 &&
-                       std::abs(box.y - this->boxHist_[i][0].y) < 0.01 &&
-                       std::abs(box.z - this->boxHist_[i][0].z) < 0.01;
-              });
-          if (it != dynamicBBoxesTemp.end()) {
-            dynamicBBoxesTemp.erase(it);
-          }
+  //         // 从动态列表中移除
+  //         auto it = std::find_if(
+  //             dynamicBBoxesTemp.begin(), dynamicBBoxesTemp.end(),
+  //             [&](const onboardDetector::box3D &box) {
+  //               return std::abs(box.x - this->boxHist_[i][0].x) < 0.01 &&
+  //                      std::abs(box.y - this->boxHist_[i][0].y) < 0.01 &&
+  //                      std::abs(box.z - this->boxHist_[i][0].z) < 0.01;
+  //             });
+  //         if (it != dynamicBBoxesTemp.end()) {
+  //           dynamicBBoxesTemp.erase(it);
+  //         }
 
-          // 【静态恢复机制】将回退为静态的物体区域立即标记为静态体素
-          // 这样可以避免该区域在一段时间内被当作"未知"区域处理
-          if (this->staticClusterFilterEnabled_) {
-            std::vector<onboardDetector::box3D> revertedBoxes;
-            revertedBoxes.push_back(this->boxHist_[i][0]);
-            this->staticFilter_->boostStaticRegions(revertedBoxes);
-          }
+  //         // 【静态恢复机制】将回退为静态的物体区域立即标记为静态体素
+  //         // 这样可以避免该区域在一段时间内被当作"未知"区域处理
+  //         if (this->staticClusterFilterEnabled_) {
+  //           std::vector<onboardDetector::box3D> revertedBoxes;
+  //           revertedBoxes.push_back(this->boxHist_[i][0]);
+  //           this->staticFilter_->boostStaticRegions(revertedBoxes);
+  //         }
 
-          ROS_INFO_THROTTLE(
-              1.0,
-              "%s: Object %zu reverted to static (pos_change=%.3f m, "
-              "dir_consistency=%.2f, stationary for %d frames)",
-              this->hint_.c_str(), i, posChange, dirConsistency, 
-              this->stationaryFrameCount_[i]);
+  //         ROS_INFO_THROTTLE(
+  //             1.0,
+  //             "%s: Object %zu reverted to static (pos_change=%.3f m, "
+  //             "dir_consistency=%.2f, stationary for %d frames)",
+  //             this->hint_.c_str(), i, posChange, dirConsistency, 
+  //             this->stationaryFrameCount_[i]);
 
-          // 重置计数器
-          this->stationaryFrameCount_[i] = 0;
-        }
-      } else {
-        // 如果是真实运动（速度足够且方向一致），重置静止帧计数
-        this->stationaryFrameCount_[i] = 0;
-      }
-    } else {
-      // 非动态物体，重置计数器
-      if (i < this->stationaryFrameCount_.size()) {
-        this->stationaryFrameCount_[i] = 0;
-      }
-    }
-  }
+  //         // 重置计数器
+  //         this->stationaryFrameCount_[i] = 0;
+  //       }
+  //     } else {
+  //       // 如果是真实运动（速度足够且方向一致），重置静止帧计数
+  //       this->stationaryFrameCount_[i] = 0;
+  //     }
+  //   } else {
+  //     // 非动态物体，重置计数器
+  //     if (i < this->stationaryFrameCount_.size()) {
+  //       this->stationaryFrameCount_[i] = 0;
+  //     }
+  //   }
+  // }
   // ==================================================================================
 
   // 直接更新最终的动态障碍物列表（已移除尺寸过滤）
@@ -3222,8 +3239,8 @@ void dynamicDetector::publishRawDynamicPoints() {
 // ===================================================================
 // 获取动态障碍物的服务回调函数。对获取的障碍物按与机器人的距离从小到大排序
 bool dynamicDetector::getDynamicObstacles(
-    onboard_detector::GetDynamicObstacles::Request &req,
-    onboard_detector::GetDynamicObstacles::Response &res) {
+    ldot_detector::GetDynamicObstacles::Request &req,
+    ldot_detector::GetDynamicObstacles::Response &res) {
   
   // 记录服务开始时间
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -3403,8 +3420,8 @@ bool dynamicDetector::getDynamicObstacles(
 // 获取预测轨迹的服务回调函数
 // 返回动态障碍物的长期预测轨迹，支持碰撞检测截断
 bool dynamicDetector::getPredictedTrajectories(
-    onboard_detector::GetPredictedTrajectories::Request &req,
-    onboard_detector::GetPredictedTrajectories::Response &res) {
+    ldot_detector::GetPredictedTrajectories::Request &req,
+    ldot_detector::GetPredictedTrajectories::Response &res) {
 
   // 记录服务开始时间
   auto start_time = std::chrono::high_resolution_clock::now();

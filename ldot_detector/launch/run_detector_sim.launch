@@ -1,0 +1,7 @@
+<launch>
+    <!-- 加载探测器参数 -->
+	<rosparam file="$(find ldot_detector)/cfg/detector_param1.yaml" ns="/ldot_detector" />
+    <!-- 启动激光雷达探测器节点 -->
+	<node pkg="ldot_detector" type="detector_node" name="ldot_detector_node" output="screen" />
+	<node name="rviz_ldot" pkg="rviz" type="rviz" args="-d $(find ldot_detector)/rviz/detector_lv.rviz"/>
+</launch>

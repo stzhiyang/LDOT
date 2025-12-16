@@ -3,7 +3,7 @@
     ------------------
     class function definitions for lidar-based obstacle detector
 */
-#include <onboard_detector/lidarDetector.h>
+#include <ldot_detector/lidarDetector.h>
 namespace onboardDetector{
     lidarDetector::lidarDetector(){
         this->eps_ = 0.5;

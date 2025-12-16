@@ -6,7 +6,7 @@
     ------------------
     DBSCAN 辅助类的函数定义
 */
-#include <onboard_detector/dbscan.h>
+#include <ldot_detector/dbscan.h>
 #include <iostream>
 #include <algorithm>
 
