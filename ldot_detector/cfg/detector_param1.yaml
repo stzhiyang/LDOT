@@ -18,14 +18,14 @@ static_map_warmup_duration: 3.0 # 静态地图预热时长 (秒)，启动后前N
 ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.8   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
 lidar_detection_range: [10.0, 10.0, 3.0]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
-enable_voxel_downsampling: true  # 启用下采样以减少处理时间和延迟
-voxel_base_leaf_size: 0.15       # 增大体素以减少点数，加快处理速度
-voxel_target_point_count: 2000  # 降低目标点数，减少后续处理负担
+enable_voxel_downsampling: false  # 启用下采样以减少处理时间和延迟
+voxel_base_leaf_size: 0.1       # 增大体素以减少点数，加快处理速度
+voxel_target_point_count: 3000  # 降低目标点数，减少后续处理负担
 
 # 静态点与静态簇去除滤波器参数
-static_filter_enabled: false     # 暂时禁用静态点去除以减少延迟
+static_filter_enabled: true     # 暂时禁用静态点去除以减少延迟
 static_cluster_filter_enabled: false # 是否启用静态聚类去除
-static_filter_voxel_size: 0.2    # 静态滤波器体素大小 (米)，比第一个体素大
+static_filter_voxel_size: 0.15    # 静态滤波器体素大小 (米)，比第一个体素大
 static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
 static_filter_time_threshold: 5.0 # 静态点在地图中保留的时间阈值 (秒)
 static_cluster_filter_ratio: 0.6    # 判定为静态聚类的静态点比例阈值
@@ -55,10 +55,10 @@ classification_size_reset_frames: 20            # 尺寸重置帧数，当物体
 classification_start_frame: 10 # 跟踪多少帧后开始进行分类和模型切换
 classification_interval_sec: 1 # 分类检查时间间隔 s
 classify_xy_distance_threshold: 3.0 # box与无人机xy轴距离阈值(米)，小于该值则继承前一帧的分类
-classify_human_threshold: [1.0, 0.8]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
+classify_human_threshold: [1.1, 0.8]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
 classify_vehicle_threshold: [1.5, 0.7] # [x/y >=z, z<0.7*zw, PCA xy_std/z_std > 1.2]
 classify_uav_threshold: [0.8, 1.2] # z/y/z <0.7 ,z>1.2*zw
-fix_size_classification_threshold: 5 # 连续相同分类次数阈值，达到后固定尺寸和分类（仅对人/车/无人机生效）
+fix_size_classification_threshold: 3 # 连续相同分类次数阈值，达到后固定尺寸和分类（仅对人/车/无人机生效）
 # 跟踪、防幽灵轨迹
 size_retain_ratio: 0.7              # 尺寸保持比例阈值 (0.0-1.0)，当前尺寸低于此比例时触发约束
 box_size_smoothing_alpha: 0.4 # 包围框尺寸平滑系数 (0.0 - 1.0), 越小越平滑重叠
@@ -70,10 +70,10 @@ duplicate_track_velocity_similarity_threshold: 0.7 # 重复轨迹检测的速度
 coasting_track_gate_relax_factor: 1.5 # coasting轨迹的关联门限放松倍数（防止轨迹断裂和新轨迹生成）
 
 # 动态/静态分类相关
-frame_skip: 2 # 动态计算时间间隔
+frame_skip: 3 # 动态计算时间间隔
 dynamic_velocity_threshold: 0.1 # 判断为动态障碍物的线速度阈值 (米/秒)
 dynamic_voting_threshold: 0.7 # 动态性投票的阈值, 超过该比例则认为可能是动态
-classification_min_neighbor_distance: 2.0 # 点云匹配距离
+classification_min_neighbor_distance: 1.0 # 点云匹配距离
 # 鲁棒性增强参数 - 解决点云稀疏、遮挡误判、LiDAR抖动问题
 min_reliable_points: 20             # 最小可靠点数，低于此值时自适应提高速度阈值
 point_count_drop_threshold: 0.6     # 点数下降阈值 (0-1)，当前点数/历史平均 < 此值时认为可能遮挡

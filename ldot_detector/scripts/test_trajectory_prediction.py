@@ -26,7 +26,7 @@ class TrajectoryPredictionTester:
         # 参数配置
         self.service_name = rospy.get_param(
             '~service_name', 
-            '/onboard_detector/get_predicted_trajectories'
+            '/ldot_detector/get_predicted_trajectories'
         )
         self.query_range = rospy.get_param('~query_range', 10.0)  # 查询范围（米）
         self.prediction_horizon = rospy.get_param('~prediction_horizon', 1.5)  # 预测时域（秒）
