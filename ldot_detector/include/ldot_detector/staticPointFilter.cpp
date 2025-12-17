@@ -216,7 +216,7 @@ void StaticPointFilter::updateMap(
 
   // 每10帧清理一次地图
   frame_count_++;
-  if (frame_count_ >= 1) {
+  if (frame_count_ >= 10) {
     cleanMap(current_time);
     frame_count_ = 0;
   }
@@ -452,87 +452,6 @@ void StaticPointFilter::cleanMap(double current_time) {
       ++it;
     }
   }
-}
-
-void StaticPointFilter::boostStaticRegions(
-    const std::vector<onboardDetector::box3D> &static_boxes) {
-  if (static_boxes.empty()) {
-    return;
-  }
-
-  double current_time = ros::Time::now().toSec();
-
-  for (const auto &box : static_boxes) {
-    // 计算各轴的体素范围（基于实际尺寸，而非最大尺寸）
-    int x_range = std::ceil(box.x_width / (2.0f * voxel_size_)) + 1;
-    int y_range = std::ceil(box.y_width / (2.0f * voxel_size_)) + 1;
-    int z_range = std::ceil(box.z_width / (2.0f * voxel_size_)) + 1;
-
-    // 预计算旋转参数（如果有yaw旋转）
-    bool has_rotation = std::abs(box.yaw) > 1e-6;
-    float cos_neg_yaw = 1.0f, sin_neg_yaw = 0.0f;
-    if (has_rotation) {
-      cos_neg_yaw = std::cos(-box.yaw);
-      sin_neg_yaw = std::sin(-box.yaw);
-    }
-    float half_x = box.x_width / 2.0f;
-    float half_y = box.y_width / 2.0f;
-    float half_z = box.z_width / 2.0f;
-
-    // 遍历box周围的体素网格
-    for (int dx = -x_range; dx <= x_range; ++dx) {
-      for (int dy = -y_range; dy <= y_range; ++dy) {
-        for (int dz = -z_range; dz <= z_range; ++dz) {
-          // 计算体素中心点相对于box中心的偏移
-          float vx = dx * voxel_size_;
-          float vy = dy * voxel_size_;
-          float vz = dz * voxel_size_;
-
-          // 如果有旋转，转换到box局部坐标系
-          if (has_rotation) {
-            float vx_local = vx * cos_neg_yaw - vy * sin_neg_yaw;
-            float vy_local = vx * sin_neg_yaw + vy * cos_neg_yaw;
-            vx = vx_local;
-            vy = vy_local;
-          }
-
-          // 检查是否在box内（AABB检查）
-          if (std::abs(vx) <= half_x && std::abs(vy) <= half_y && std::abs(vz) <= half_z) {
-            pcl::PointXYZ voxel_center;
-            voxel_center.x = box.x + dx * voxel_size_;
-            voxel_center.y = box.y + dy * voxel_size_;
-            voxel_center.z = box.z + dz * voxel_size_;
-
-            long long key = getVoxelKey(voxel_center);
-            auto it = voxel_map_.find(key);
-
-            if (it != voxel_map_.end()) {
-              // 直接将hit_count提升到阈值以上，使其立即被标记为静态
-              it->second.hit_count = hit_threshold_ + 1;
-            } else {
-              // 如果体素不存在，创建一个新的静态体素
-              VoxelStatus status;
-              status.hit_count = hit_threshold_ + 1;
-              status.last_seen_time = current_time;
-              voxel_map_[key] = status;
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-bool StaticPointFilter::checkCollision(const Eigen::Vector3d &point) {
-  // 将 Eigen::Vector3d 转换为 pcl::PointXYZ 以复用现有的 isPointStatic 逻辑
-  pcl::PointXYZ pcl_point;
-  pcl_point.x = static_cast<float>(point.x());
-  pcl_point.y = static_cast<float>(point.y());
-  pcl_point.z = static_cast<float>(point.z());
-
-  // 复用现有的静态点检测逻辑
-  // 如果点位于静态体素中，则认为发生碰撞
-  return isPointStatic(pcl_point);
 }
 
 bool StaticPointFilter::checkBoxCollision(const Eigen::Vector3d &center,

@@ -568,39 +568,6 @@ void ParamLoader::loadClassificationParams(dynamicDetector *detector) {
                               "force-dynamic check!");
   }
 
-  // 静态回退帧数
-  if (not nh_.getParam(ns_ + "/static_fallback_frames",
-                       detector->staticFallbackFrames_)) {
-    detector->staticFallbackFrames_ = 10;
-    ROS_WARN_STREAM(hint_ << " No static_fallback_frames param. Use default: "
-                             "10");
-  } else {
-    ROS_INFO_STREAM(hint_ << " static_fallback_frames: "
-                          << detector->staticFallbackFrames_);
-  }
-
-  // 静态回退速度阈值
-  if (not nh_.getParam(ns_ + "/static_fallback_vel_threshold",
-                       detector->staticFallbackVelThresh_)) {
-    detector->staticFallbackVelThresh_ = 0.1;
-    ROS_WARN_STREAM(hint_ << " No static_fallback_vel_threshold param. Use "
-                             "default: 0.1 m/s");
-  } else {
-    ROS_INFO_STREAM(hint_ << " static_fallback_vel_threshold: "
-                          << detector->staticFallbackVelThresh_ << " m/s");
-  }
-
-  // 运动方向一致性阈值
-  if (not nh_.getParam(ns_ + "/motion_dir_consistency_threshold",
-                       detector->motionDirConsistencyThresh_)) {
-    detector->motionDirConsistencyThresh_ = 0.5;
-    ROS_WARN_STREAM(hint_ << " No motion_dir_consistency_threshold param. Use "
-                             "default: 0.5");
-  } else {
-    ROS_INFO_STREAM(hint_ << " motion_dir_consistency_threshold: "
-                          << detector->motionDirConsistencyThresh_);
-  }
-
   // 点云匹配距离
   if (not nh_.getParam(ns_ + "/classification_min_neighbor_distance",
                        detector->classificationMinNeighborDist_)) {

@@ -63,3 +63,7 @@ action_gen/
 build/
 install/
 log/
+
+
+#kiro
+.kiro/

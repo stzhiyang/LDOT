@@ -58,16 +58,8 @@ public:
   void
   clearDynamicRegions(const std::vector<onboardDetector::box3D> &dynamic_boxes);
 
-  // 加速恢复静态区域的体素（当动态物体回退为静态时调用）
-  // 主动增加该区域体素的hit_count，使其更快被标记为静态
-  void boostStaticRegions(const std::vector<onboardDetector::box3D> &static_boxes);
-
   // 清理旧体素
   void cleanMap(double current_time);
-
-  // 碰撞检测接口
-  // 检查单个点是否与静态地图碰撞
-  bool checkCollision(const Eigen::Vector3d &point);
 
   // 检查带尺寸的包围框是否与静态地图碰撞
   // center: 包围框中心位置

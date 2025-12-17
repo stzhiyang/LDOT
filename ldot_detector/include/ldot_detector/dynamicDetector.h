@@ -222,11 +222,7 @@ private:
   int forceDynaCheckRange_;                          // 检查强制动态的历史范围
   int dynamicConsistThresh_;                         // 动态一致性检查的帧数阈值
   
-  // 动态转静态回退
-  int staticFallbackFrames_;                         // 连续静止多少帧后回退为静态
-  double staticFallbackVelThresh_;                   // 静止判定的速度阈值
-  double motionDirConsistencyThresh_;                // 运动方向一致性阈值
-  std::vector<int> stationaryFrameCount_;            // 每个轨迹连续静止的帧数计数器
+
   
   // 尺寸管理
   double sizeMergeThresh_;                           // 尺寸合并阈值
