@@ -5,6 +5,9 @@
 */
 #include <cmath>   // for std::isfinite
 #include <numeric> // for std::iota
+#include <chrono>  // for timing
+#include <iomanip> // for std::put_time
+#include <sstream> // for std::stringstream
 #include <ldot_detector/dynamicDetector.h>
 #include <ldot_detector/paramLoader.h>
 
@@ -17,6 +20,7 @@ dynamicDetector::dynamicDetector() {
   this->ns_ = "ldot_detector";
   this->hint_ = "[LDOT]";
   this->isStaticMapReady_ = false;
+  this->lastConversionTime_ = 0.0;
 }
 
 // 带节点句柄的构造函数
@@ -25,6 +29,7 @@ dynamicDetector::dynamicDetector(const ros::NodeHandle &nh) {
   this->hint_ = "[LDOT]";
   this->nh_ = nh;
   this->isStaticMapReady_ = false;
+  this->lastConversionTime_ = 0.0;
   this->initParam();
   this->registerPub();
   this->registerCallback();
@@ -41,6 +46,40 @@ void dynamicDetector::initParam() {
   // 使用 ParamLoader 加载所有参数
   ParamLoader loader(this->nh_, this->ns_, this->hint_);
   loader.loadAllParams(this);
+  
+  // 计时输出配置
+  this->nh_.param(this->ns_ + "/enable_timing_output", this->enableTimingOutput_, false);
+  
+  if (this->enableTimingOutput_) {
+    // 自动生成带时间戳的文件名
+    auto now = std::chrono::system_clock::now();
+    auto now_time_t = std::chrono::system_clock::to_time_t(now);
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()) % 1000;
+    
+    std::stringstream ss;
+    ss << "/home/st/LDOT_ws/src/LDOT/ldot_detector/timing/test_ldot_timing_"
+       << std::put_time(std::localtime(&now_time_t), "%Y%m%d_%H%M%S")
+       << "_" << std::setfill('0') << std::setw(3) << now_ms.count()
+       << ".csv";
+    this->timingFilePath_ = ss.str();
+    
+    // 创建目录（如果不存在）
+    system("mkdir -p /home/st/LDOT_ws/src/LDOT/ldot_detector/timing");
+    
+    this->timingOutputFile_.open(this->timingFilePath_, std::ios::out);
+    if (this->timingOutputFile_.is_open()) {
+      // 写入 CSV 表头
+      this->timingOutputFile_ << "Timestamp,PreprocessTime,DetectionTime,TrackingTime,ClassificationTime,TotalTime" << std::endl;
+      ROS_INFO_STREAM(this->hint_ << " ========================================");
+      ROS_INFO_STREAM(this->hint_ << " Timing output enabled!");
+      ROS_INFO_STREAM(this->hint_ << " Output file: " << this->timingFilePath_);
+      ROS_INFO_STREAM(this->hint_ << " ========================================");
+    } else {
+      ROS_ERROR_STREAM(this->hint_ << " Failed to open timing output file: " << this->timingFilePath_);
+      this->enableTimingOutput_ = false;
+    }
+  }
 }
 
 void dynamicDetector::registerPub() {
@@ -143,29 +182,26 @@ void dynamicDetector::registerCallback() {
 void dynamicDetector::lidarCustomOdomCB(
     const livox_ros_driver2::CustomMsgConstPtr &customMsg,
     const nav_msgs::OdometryConstPtr &odom) {
-  auto start_time = std::chrono::high_resolution_clock::now();
+  auto conversionStart = std::chrono::high_resolution_clock::now();
 
   // 将CustomMsg转换为PointCloud2
   sensor_msgs::PointCloud2 cloudMsg;
   this->convertCustomMsgToPointCloud2(customMsg, cloudMsg);
 
+  auto conversionEnd = std::chrono::high_resolution_clock::now();
+  double conversionMs = std::chrono::duration<double, std::milli>(conversionEnd - conversionStart).count();
+  this->lastConversionTime_ = conversionMs;
+
   // 转换为ConstPtr并调用原有的处理函数
   sensor_msgs::PointCloud2ConstPtr cloudMsgPtr =
       boost::make_shared<sensor_msgs::PointCloud2>(cloudMsg);
   this->lidarOdomCB(cloudMsgPtr, odom);
-
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-      end_time - start_time);
-  ROS_INFO_THROTTLE(1.0, "%s: lidarCustomOdomCB took %.3f ms",
-                    this->hint_.c_str(), duration.count() / 1000.0);
 }
 
 // 将Livox CustomMsg格式转换为PointCloud2格式
 void dynamicDetector::convertCustomMsgToPointCloud2(
     const livox_ros_driver2::CustomMsgConstPtr &customMsg,
     sensor_msgs::PointCloud2 &cloud) {
-  // auto start_time = std::chrono::high_resolution_clock::now();
 
   // 设置PointCloud2的基本信息
   cloud.header = customMsg->header;
@@ -194,29 +230,43 @@ void dynamicDetector::convertCustomMsgToPointCloud2(
     ++iter_y;
     ++iter_z;
   }
-
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration =
-  // std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-  // start_time); ROS_INFO_THROTTLE(1.0, "%s: CustomMsg to PointCloud2
-  // conversion took %.3f ms for %u points",
-  //                   this->hint_.c_str(), duration.count() / 1000.0,
-  //                   customMsg->point_num);
 }
 
 // 里程计回调函数，处理点云和里程计数据
 void dynamicDetector::lidarOdomCB(
     const sensor_msgs::PointCloud2ConstPtr &cloudMsg,
     const nav_msgs::OdometryConstPtr &odom) {
-  // 计时开始
-  auto callbackStart = std::chrono::high_resolution_clock::now();
-
   // 保存最新点云用于可视化（无锁，通过双缓冲保护）
   this->latestCloud_ = cloudMsg;
   this->lastCloudTime_ = cloudMsg->header.stamp; // 记录时间戳
 
+  // ===== 静态地图初始化完成后才开始计时 =====
+  // 先检查静态地图是否就绪（通过预先调用一次检测来判断）
+  // 在预热阶段，只更新静态地图，不进行完整处理
+  if (!this->isStaticMapReady_) {
+    // 预热阶段：只做预处理和静态地图更新
+    this->lidarCloud_ = this->preprocessPointCloud(cloudMsg, odom);
+    
+    // 发布降采样后的点云
+    sensor_msgs::PointCloud2 outputCloud;
+    pcl::toROSMsg(*this->lidarCloud_, outputCloud);
+    outputCloud.header.frame_id = "map";
+    outputCloud.header.stamp = cloudMsg->header.stamp;
+    this->downSamplePointsPub_.publish(outputCloud);
+    
+    // 尝试检测（内部会检查预热状态并更新静态地图）
+    this->runDetection();
+    return;  // 预热期间不计时，直接返回
+  }
+  
+  // ===== 静态地图已就绪，开始完整流程并计时 =====
+  auto callbackStart = std::chrono::high_resolution_clock::now();
+  
   // 点云预处理（范围过滤、坐标变换、地面/天花板过滤、下采样）
+  auto preprocessStart = std::chrono::high_resolution_clock::now();
   this->lidarCloud_ = this->preprocessPointCloud(cloudMsg, odom);
+  auto preprocessEnd = std::chrono::high_resolution_clock::now();
+  double preprocessMs = std::chrono::duration<double, std::milli>(preprocessEnd - preprocessStart).count();
 
   // 发布降采样后的点云
   sensor_msgs::PointCloud2 outputCloud;
@@ -226,27 +276,49 @@ void dynamicDetector::lidarOdomCB(
   this->downSamplePointsPub_.publish(outputCloud);
 
   // 1. 检测
-  bool detectionSuccess = this->runDetection();
-  
-  // 如果检测失败（例如静态地图预热中），跳过后续处理
-  if (!detectionSuccess) {
-    return;
-  }
+  auto detectionStart = std::chrono::high_resolution_clock::now();
+  this->runDetection();
+  auto detectionEnd = std::chrono::high_resolution_clock::now();
+  double detectionMs = std::chrono::duration<double, std::milli>(detectionEnd - detectionStart).count();
   
   // 2. 跟踪
+  auto trackingStart = std::chrono::high_resolution_clock::now();
   this->runTracking();
+  auto trackingEnd = std::chrono::high_resolution_clock::now();
+  double trackingMs = std::chrono::duration<double, std::milli>(trackingEnd - trackingStart).count();
   
   // 3. 分类
+  auto classificationStart = std::chrono::high_resolution_clock::now();
   this->runClassification();
+  auto classificationEnd = std::chrono::high_resolution_clock::now();
+  double classificationMs = std::chrono::duration<double, std::milli>(classificationEnd - classificationStart).count();
   
   // 4. 将处理结果复制到写缓冲区，然后交换缓冲区
   this->copyToWriteBuffer();
   this->swapBuffers();
   
-  // 输出总耗时（从回调开始计时）
+  // 计算总耗时（从回调开始到所有处理完成）
   auto callbackEnd = std::chrono::high_resolution_clock::now();
   double totalMs = std::chrono::duration<double, std::milli>(callbackEnd - callbackStart).count();
-  ROS_INFO_THROTTLE(1.0, "%s: Main process completed in %.1f ms", this->hint_.c_str(), totalMs);
+  
+  // 如果使用 Livox CustomMsg，需要加上格式转换时间
+  if (this->useLivoxCustomMsg_ && this->lastConversionTime_ > 0) {
+    totalMs += this->lastConversionTime_;
+    this->lastConversionTime_ = 0;  // 重置，避免重复计算
+  }
+  
+  // 输出到 CSV 文件（只在静态地图就绪后才写入）
+  if (this->enableTimingOutput_ && this->timingOutputFile_.is_open()) {
+    this->timingOutputFile_ << cloudMsg->header.stamp << "," 
+                            << preprocessMs << "," 
+                            << detectionMs << "," 
+                            << trackingMs << "," 
+                            << classificationMs << "," 
+                            << totalMs << std::endl;
+  }
+  
+  ROS_INFO_THROTTLE(1.0, "%s: Main process completed in %.1f ms (Preprocess: %.1f, Detection: %.1f, Tracking: %.1f, Classification: %.1f)", 
+                    this->hint_.c_str(), totalMs, preprocessMs, detectionMs, trackingMs, classificationMs);
   
   lastProcessTime_ = ros::Time::now();
 }
@@ -273,7 +345,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
     const nav_msgs::OdometryConstPtr &odom) {
   
   // [Performance Timing] 测量函数耗时
-  auto start_time = std::chrono::high_resolution_clock::now();
+  // auto start_time = std::chrono::high_resolution_clock::now();
   
   // --- 1. 更新位姿信息 ---
   Eigen::Matrix4d lidarPoseMatrix;
@@ -383,12 +455,12 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
   }
 
   // [Performance Timing] 输出耗时和点云数量变化
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-      end_time - start_time);
-  ROS_INFO_THROTTLE(1.0, "%s: preprocessPointCloud took %.3f ms, points: %lu -> %lu",
-                    this->hint_.c_str(), duration.count() / 1000.0,
-                    tempCloud->size(), finalCloud->size());
+  // auto end_time = std::chrono::high_resolution_clock::now();
+  // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+  //     end_time - start_time);
+  // ROS_INFO_THROTTLE(1.0, "%s: preprocessPointCloud took %.3f ms, points: %lu -> %lu",
+  //                   this->hint_.c_str(), duration.count() / 1000.0,
+  //                   tempCloud->size(), finalCloud->size());
 
   return finalCloud;
 }
@@ -398,13 +470,13 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
 // ===================================================================
 // 检测
 // ===================================================================
-bool dynamicDetector::runDetection() {
-  auto start_time = std::chrono::high_resolution_clock::now();
+void dynamicDetector::runDetection() {
+  // auto start_time = std::chrono::high_resolution_clock::now();
   // 检查是否有激光雷达点云数据（提前返回避免不必要的处理）
   if (this->lidarCloud_ == NULL) {
     ROS_WARN_THROTTLE(1.0, "%s: No point cloud available for detection",
                       this->hint_.c_str());
-    return false;
+    return;
   }
 
   // 1. 始终更新静态地图，使用当前ROS时间，并传入传感器位置（全局坐标系）
@@ -425,7 +497,7 @@ bool dynamicDetector::runDetection() {
       // 预热阶段：只更新静态地图，不进行检测
       ROS_INFO_THROTTLE(1.0, "%s: Static map warmup phase (%.1f/%.1f s). Only updating static map...",
                         this->hint_.c_str(), elapsedTime, this->staticMapWarmupDuration_);
-      return false;  // 返回false表示预热中，不继续后续处理
+      return;  // 预热中，直接返回
     } else {
       // 预热完成
       this->isStaticMapReady_ = true;
@@ -561,13 +633,11 @@ bool dynamicDetector::runDetection() {
   this->filteredPcClusterStds_ = lidarPcClusterStdsTemp;
   
   // [Performance Timing] 输出耗时
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-      end_time - start_time);
-  ROS_INFO_THROTTLE(1.0, "%s: runDetection took %.3f ms",
-                    this->hint_.c_str(), duration.count() / 1000.0);
-  
-  return true;  // 检测成功
+  // auto end_time = std::chrono::high_resolution_clock::now();
+  // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+  //     end_time - start_time);
+  // ROS_INFO_THROTTLE(1.0, "%s: runDetection took %.3f ms",
+  //                   this->hint_.c_str(), duration.count() / 1000.0);
 }
 
 /*!
@@ -681,48 +751,52 @@ void dynamicDetector::applyDetectionNMS(
       std::vector<Eigen::Vector3d>().swap(pcClusters[idx]);
     }
 
-    // 2. 从合并后的点云重新计算边界框（更准确），使用盒子边界的并集作为最小/最大值
+    // 2. 从合并后的点云重新计算边界框（更准确、更鲁棒）
     if (mergedPtCount == 0) {
       continue;
     }
 
+    // 计算点云质心
+    Eigen::Vector3d mergedCenter = sumPos / static_cast<double>(mergedPc.size());
+    
+    // 对于X和Y轴，使用传统的min/max方法
     double minX = std::numeric_limits<double>::max();
     double maxX = std::numeric_limits<double>::lowest();
     double minY = std::numeric_limits<double>::max();
     double maxY = std::numeric_limits<double>::lowest();
-    double minZ = std::numeric_limits<double>::max();
-    double maxZ = std::numeric_limits<double>::lowest();
-    // 使用原有边界框的边界作为合并后的包围盒边界，避免再次遍历所有点
-    for (int idx : toMerge) {
-      double bminX = bboxes[idx].x - bboxes[idx].x_width / 2.0;
-      double bmaxX = bboxes[idx].x + bboxes[idx].x_width / 2.0;
-      double bminY = bboxes[idx].y - bboxes[idx].y_width / 2.0;
-      double bmaxY = bboxes[idx].y + bboxes[idx].y_width / 2.0;
-      double bminZ = bboxes[idx].z - bboxes[idx].z_width / 2.0;
-      double bmaxZ = bboxes[idx].z + bboxes[idx].z_width / 2.0;
-
-      minX = std::min(minX, bminX);
-      maxX = std::max(maxX, bmaxX);
-      minY = std::min(minY, bminY);
-      maxY = std::max(maxY, bmaxY);
-      minZ = std::min(minZ, bminZ);
-      maxZ = std::max(maxZ, bmaxZ);
+    
+    // 收集所有Z坐标用于鲁棒估计
+    std::vector<double> z_values;
+    z_values.reserve(mergedPc.size());
+    
+    for (const auto& pt : mergedPc) {
+      minX = std::min(minX, pt.x());
+      maxX = std::max(maxX, pt.x());
+      minY = std::min(minY, pt.y());
+      maxY = std::max(maxY, pt.y());
+      z_values.push_back(pt.z());
     }
+    
+    // 对Z轴使用百分位数方法过滤离群点
+    std::sort(z_values.begin(), z_values.end());
+    size_t n = z_values.size();
+    size_t lower_idx = std::max(size_t(1), static_cast<size_t>(n * 0.1));
+    size_t upper_idx = std::min(n - 1, static_cast<size_t>(n * 0.9));
+    double z_min_robust = z_values[lower_idx];
+    double z_max_robust = z_values[upper_idx];
 
-    // 计算新的边界框（位置使用点云质心）
+    // 计算新的边界框
     onboardDetector::box3D mergedBox;
     // 合并得到的边界框没有明确的原始簇 id，设置为 -1 表示未知/合并产生
     mergedBox.id = -1.0;
-    // 计算点云质心
-    Eigen::Vector3d mergedCenter = sumPos / static_cast<double>(mergedPc.size());
-    // box位置使用点云质心
+    // box位置：XY使用点云质心，Z使用鲁棒估计的中心
     mergedBox.x = mergedCenter.x();
     mergedBox.y = mergedCenter.y();
-    mergedBox.z = mergedCenter.z();
-    // 尺寸使用包围盒
+    mergedBox.z = (z_min_robust + z_max_robust) / 2.0;
+    // 尺寸：XY使用包围盒，Z使用鲁棒估计
     mergedBox.x_width = maxX - minX;
     mergedBox.y_width = maxY - minY;
-    mergedBox.z_width = maxZ - minZ;
+    mergedBox.z_width = z_max_robust - z_min_robust;
 
     // 计算点云标准差（PCA特征），使用在合并点云时就累加的sumSq与sumPos
     Eigen::Vector3d mergedStd(0, 0, 0);
@@ -755,7 +829,7 @@ void dynamicDetector::applyDetectionNMS(
 // 跟踪
 // ===================================================================
 void dynamicDetector::runTracking() {
-  auto start_time = std::chrono::high_resolution_clock::now();
+  // auto start_time = std::chrono::high_resolution_clock::now();
 
   // 数据关联线程（预测步骤在 boxAssociation 内部执行）
   std::vector<int> bestMatch;      // 存储当前检测与历史障碍物的匹配索引。
@@ -955,11 +1029,11 @@ void dynamicDetector::runTracking() {
   }
 
   // [Performance Timing] 输出耗时
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-      end_time - start_time);
-  ROS_INFO_THROTTLE(1.0, "%s: runTracking took %.3f ms", this->hint_.c_str(),
-                    duration.count() / 1000.0);
+  // auto end_time = std::chrono::high_resolution_clock::now();
+  // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+  //     end_time - start_time);
+  // ROS_INFO_THROTTLE(1.0, "%s: runTracking took %.3f ms", this->hint_.c_str(),
+  //                   duration.count() / 1000.0);
 }
 
 // ----------------------------------------关联-------------------------------------
@@ -2187,7 +2261,7 @@ bool dynamicDetector::areDuplicateTracks(int idx1, int idx2) {
 // 动静态分类
 // ===================================================================
 void dynamicDetector::runClassification() {
-  auto start_time = std::chrono::high_resolution_clock::now();
+  // auto start_time = std::chrono::high_resolution_clock::now();
 
   // 创建一个临时向量来存储当前帧检测到的动态边界框
   std::vector<onboardDetector::box3D> dynamicBBoxesTemp;
@@ -2472,11 +2546,11 @@ void dynamicDetector::runClassification() {
   }
 
   // [Performance Timing] 输出耗时
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-      end_time - start_time);
-  ROS_INFO_THROTTLE(1.0, "%s: runClassification took %.3f ms",
-                    this->hint_.c_str(), duration.count() / 1000.0);
+  // auto end_time = std::chrono::high_resolution_clock::now();
+  // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+  //     end_time - start_time);
+  // ROS_INFO_THROTTLE(1.0, "%s: runClassification took %.3f ms",
+  //                   this->hint_.c_str(), duration.count() / 1000.0);
 }
 
 
@@ -2532,7 +2606,7 @@ void dynamicDetector::visCB(const ros::TimerEvent &) {
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
       end_time - start_time);
-  ROS_DEBUG_THROTTLE(1.0, "%s: visCB took %.3f ms",
+  ROS_INFO_THROTTLE(1.0, "%s: visCB took %.3f ms",
                     this->hint_.c_str(), duration.count() / 1000.0);
 }
 
@@ -2846,7 +2920,7 @@ void dynamicDetector::publish3dBox(const std::vector<box3D> &boxes,
     line.color.b = b;
     line.color.a = 1.0;
 
-    line.lifetime = ros::Duration(0.2); // Marker的生命周期，设置为3倍dt_以避免闪烁
+    line.lifetime = ros::Duration(0.1); // Marker的生命周期，设置为3倍dt_以避免闪烁
 
     // 设置Marker的姿态，这里表示无旋转
     line.pose.orientation.x = 0.0;
@@ -2858,15 +2932,13 @@ void dynamicDetector::publish3dBox(const std::vector<box3D> &boxes,
     line.pose.position.x = boxes[i].x;
     line.pose.position.y = boxes[i].y;
 
-    // 获取边界框的宽度和长度
+    // 获取边界框的宽度、长度和高度
     double x_width = boxes[i].x_width;
     double y_width = boxes[i].y_width;
+    double z_width = boxes[i].z_width;
 
-    // --- 计算Marker在Z轴上的位置和高度 ---
-    // 这里的计算方式似乎是为了让边界框的底部接触地面（z=0）
-    double top = boxes[i].z + boxes[i].z_width / 2.0; // 计算边界框的最高点Z值
-    double z_width = top / 2.0;     // 将可视化Marker的高度设为最高点的一半
-    line.pose.position.z = z_width; // 将可视化Marker的中心Z坐标设为该值
+    // 直接使用边界框的Z坐标作为可视化中心位置
+    line.pose.position.z = boxes[i].z;
 
     // 定义立方体的8个顶点
     geometry_msgs::Point corner[8];

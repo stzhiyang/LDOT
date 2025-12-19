@@ -102,17 +102,39 @@ namespace onboardDetector{
             Eigen::Vector4f centroid;
             pcl::compute3DCentroid(*cluster.points, centroid);
             cluster.centroid = centroid;
+            
+            // 对于Z轴，使用统计方法过滤离群点以获得更鲁棒的高度估计
+            // 收集所有Z坐标并排序
+            std::vector<float> z_values;
+            z_values.reserve(cluster.points->size());
+            for(const auto& pt : cluster.points->points) {
+                z_values.push_back(pt.z);
+            }
+            std::sort(z_values.begin(), z_values.end());
+            
+            // 使用百分位数方法：去除最高和最低5%的点（对于小聚类至少保留3个点）
+            size_t n = z_values.size();
+            size_t lower_idx = std::max(size_t(1), static_cast<size_t>(n * 0.1));
+            size_t upper_idx = std::min(n - 1, static_cast<size_t>(n * 0.9));
+            
+            float z_min_robust = z_values[lower_idx];
+            float z_max_robust = z_values[upper_idx];
+            
+            // 对于X和Y轴，仍使用传统的min/max方法（因为水平方向通常更可靠）
             pcl::PointXYZ minPt, maxPt;
             pcl::getMinMax3D(*cluster.points, minPt, maxPt);
-            cluster.dimensions = Eigen::Vector3f(maxPt.x - minPt.x, maxPt.y - minPt.y, maxPt.z - minPt.z);
+            
+            cluster.dimensions = Eigen::Vector3f(maxPt.x - minPt.x, maxPt.y - minPt.y, z_max_robust - z_min_robust);
 
             onboardDetector::box3D bbox;
             bbox.x = centroid(0);
             bbox.y = centroid(1);
-            bbox.z = centroid(2);
+            // Z坐标使用鲁棒估计的中心
+            bbox.z = (z_min_robust + z_max_robust) / 2.0f;
             bbox.x_width = maxPt.x - minPt.x;
             bbox.y_width = maxPt.y - minPt.y;
-            bbox.z_width = maxPt.z - minPt.z;
+            // Z高度使用鲁棒估计
+            bbox.z_width = z_max_robust - z_min_robust;
             bbox.id = cluster.cluster_id;
             bboxesTemp.push_back(bbox);
         }

@@ -67,3 +67,6 @@ log/
 
 #kiro
 .kiro/
+
+# 忽略所有 CSV 计时输出文件
+*.csv

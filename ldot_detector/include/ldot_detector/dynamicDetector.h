@@ -322,6 +322,14 @@ private:
   bool isStaticMapReady_;                            // 静态地图是否已准备好
 
   // ===================================================================
+  // 计时输出（CSV 格式）
+  // ===================================================================
+  bool enableTimingOutput_;                          // 是否启用计时输出
+  std::string timingFilePath_;                       // 计时文件路径
+  std::ofstream timingOutputFile_;                   // 计时输出文件流
+  double lastConversionTime_;                        // 上一次格式转换的耗时（毫秒）
+
+  // ===================================================================
   // 线程安全与数据同步 - 双缓冲机制（无锁设计）
   // ===================================================================
   ros::Time lastCloudTime_;                          // 最后一次接收点云的时间戳
@@ -367,7 +375,7 @@ public:
   pcl::PointCloud<pcl::PointXYZ>::Ptr preprocessPointCloud(
       const sensor_msgs::PointCloud2ConstPtr &cloudMsg,
       const nav_msgs::OdometryConstPtr &odom);
-  bool runDetection();                           // 执行检测
+  void runDetection();                           // 执行检测
   void runTracking();                            // 执行跟踪
   void runClassification();                      // 执行分类
 

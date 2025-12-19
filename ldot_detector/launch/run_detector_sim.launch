@@ -1,6 +1,11 @@
 <launch>
     <!-- 加载探测器参数 -->
 	<rosparam file="$(find ldot_detector)/cfg/detector_param1.yaml" ns="/ldot_detector" />
+    
+    <!-- 计时输出参数 -->
+    <arg name="enable_timing_output" default="true" />
+    <param name="/ldot_detector/enable_timing_output" value="$(arg enable_timing_output)" />
+    
     <!-- 启动激光雷达探测器节点 -->
 	<node pkg="ldot_detector" type="detector_node" name="ldot_detector_node" output="screen" />
 	<node name="rviz_ldot" pkg="rviz" type="rviz" args="-d $(find ldot_detector)/rviz/detector_lv.rviz"/>
