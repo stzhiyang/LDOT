@@ -345,7 +345,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
     const nav_msgs::OdometryConstPtr &odom) {
   
   // [Performance Timing] 测量函数耗时
-  // auto start_time = std::chrono::high_resolution_clock::now();
+  auto start_time = std::chrono::high_resolution_clock::now();
   
   // --- 1. 更新位姿信息 ---
   Eigen::Matrix4d lidarPoseMatrix;
@@ -455,12 +455,12 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
   }
 
   // [Performance Timing] 输出耗时和点云数量变化
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-  //     end_time - start_time);
-  // ROS_INFO_THROTTLE(1.0, "%s: preprocessPointCloud took %.3f ms, points: %lu -> %lu",
-  //                   this->hint_.c_str(), duration.count() / 1000.0,
-  //                   tempCloud->size(), finalCloud->size());
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+      end_time - start_time);
+  ROS_INFO_THROTTLE(1.0, "%s: preprocessPointCloud took %.3f ms, points: %lu -> %lu",
+                    this->hint_.c_str(), duration.count() / 1000.0,
+                    tempCloud->size(), finalCloud->size());
 
   return finalCloud;
 }
@@ -780,8 +780,8 @@ void dynamicDetector::applyDetectionNMS(
     // 对Z轴使用百分位数方法过滤离群点
     std::sort(z_values.begin(), z_values.end());
     size_t n = z_values.size();
-    size_t lower_idx = std::max(size_t(1), static_cast<size_t>(n * 0.1));
-    size_t upper_idx = std::min(n - 1, static_cast<size_t>(n * 0.9));
+    size_t lower_idx = std::max(size_t(1), static_cast<size_t>(n * 0.02));
+    size_t upper_idx = std::min(n - 1, static_cast<size_t>(n * 0.98));
     double z_min_robust = z_values[lower_idx];
     double z_max_robust = z_values[upper_idx];
 
@@ -1229,23 +1229,23 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     // 使用匈牙利算法求解最优匹配
     this->hungarianAlgorithm(costMatrix, bestMatch);
 
-    // // 统计并输出关联结果
-    // int numMatched = 0;
-    // int numNewTargets = 0;
-    // for (int i = 0; i < numCurrObjs; ++i) {
-    //   if (bestMatch[i] >= 0) {
-    //     numMatched++;
-    //   } else {
-    //     numNewTargets++;
-    //   }
-    // }
-    // int numLostTargets = numHistObjs - numMatched;
+    // 统计并输出关联结果
+    int numMatched = 0;
+    int numNewTargets = 0;
+    for (int i = 0; i < numCurrObjs; ++i) {
+      if (bestMatch[i] >= 0) {
+        numMatched++;
+      } else {
+        numNewTargets++;
+      }
+    }
+    int numLostTargets = numHistObjs - numMatched;
 
-    // // 简洁的日志输出
-    // ROS_INFO_THROTTLE(
-    //     0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
-    //     this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
-    //     numNewTargets, numLostTargets);
+    // 简洁的日志输出
+    ROS_INFO_THROTTLE(
+        0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
+        this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
+        numNewTargets, numLostTargets);
   }
 }
 
@@ -1266,7 +1266,7 @@ double dynamicDetector::computeMahalanobisDistance3D(
 
   // 添加正则化项，防止过拟合导致的协方差过小
   Eigen::Matrix3d covRegularized =
-      covariance + 1e-4 * Eigen::Matrix3d::Identity();
+      covariance + 1e-2 * Eigen::Matrix3d::Identity();
 
   Eigen::Matrix3d covInv = covRegularized.inverse();
   double mahalDist = posDiff.transpose() * covInv * posDiff;
@@ -2515,7 +2515,7 @@ void dynamicDetector::runClassification() {
 
   // 【动态反哺机制】清理已确认动态物体历史轨迹区域的体素
   // 【修复】只有连续多帧确认为动态的物体才触发体素清除，防止短暂误判导致静态标记丢失
-  if (this->staticClusterFilterEnabled_) {
+  if (this->staticFilterEnabled_ || this->staticClusterFilterEnabled_) {
     // 确保 confirmedDynamicFrames_ 向量大小与轨迹数量一致
     while (this->confirmedDynamicFrames_.size() < this->boxHist_.size()) {
       this->confirmedDynamicFrames_.push_back(0);
@@ -2940,33 +2940,33 @@ void dynamicDetector::publish3dBox(const std::vector<box3D> &boxes,
     // 直接使用边界框的Z坐标作为可视化中心位置
     line.pose.position.z = boxes[i].z;
 
-    // 定义立方体的8个顶点
+    // 定义立方体的8个顶点（相对于box中心的偏移）
     geometry_msgs::Point corner[8];
     corner[0].x = -x_width / 2.0;
     corner[0].y = -y_width / 2.0;
-    corner[0].z = -z_width;
+    corner[0].z = -z_width / 2.0;
     corner[1].x = -x_width / 2.0;
     corner[1].y = y_width / 2.0;
-    corner[1].z = -z_width;
+    corner[1].z = -z_width / 2.0;
     corner[2].x = x_width / 2.0;
     corner[2].y = y_width / 2.0;
-    corner[2].z = -z_width;
+    corner[2].z = -z_width / 2.0;
     corner[3].x = x_width / 2.0;
     corner[3].y = -y_width / 2.0;
-    corner[3].z = -z_width;
+    corner[3].z = -z_width / 2.0;
 
     corner[4].x = -x_width / 2.0;
     corner[4].y = -y_width / 2.0;
-    corner[4].z = z_width;
+    corner[4].z = z_width / 2.0;
     corner[5].x = -x_width / 2.0;
     corner[5].y = y_width / 2.0;
-    corner[5].z = z_width;
+    corner[5].z = z_width / 2.0;
     corner[6].x = x_width / 2.0;
     corner[6].y = y_width / 2.0;
-    corner[6].z = z_width;
+    corner[6].z = z_width / 2.0;
     corner[7].x = x_width / 2.0;
     corner[7].y = -y_width / 2.0;
-    corner[7].z = z_width;
+    corner[7].z = z_width / 2.0;
 
     // 定义连接8个顶点的12条边
     int edgeIdx[12][2] = {

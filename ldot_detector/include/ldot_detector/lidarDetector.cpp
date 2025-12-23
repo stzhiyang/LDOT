@@ -114,8 +114,8 @@ namespace onboardDetector{
             
             // 使用百分位数方法：去除最高和最低5%的点（对于小聚类至少保留3个点）
             size_t n = z_values.size();
-            size_t lower_idx = std::max(size_t(1), static_cast<size_t>(n * 0.1));
-            size_t upper_idx = std::min(n - 1, static_cast<size_t>(n * 0.9));
+            size_t lower_idx = std::max(size_t(1), static_cast<size_t>(n * 0.02));
+            size_t upper_idx = std::min(n - 1, static_cast<size_t>(n * 0.98));
             
             float z_min_robust = z_values[lower_idx];
             float z_max_robust = z_values[upper_idx];

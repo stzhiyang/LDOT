@@ -1,6 +1,6 @@
 <launch>
     <!-- 加载探测器参数 -->
-	<rosparam file="$(find ldot_detector)/cfg/detector_param1.yaml" ns="/ldot_detector" />
+	<rosparam file="$(find ldot_detector)/cfg/detector_param_sim.yaml" ns="/ldot_detector" />
     
     <!-- 计时输出参数 -->
     <arg name="enable_timing_output" default="true" />
