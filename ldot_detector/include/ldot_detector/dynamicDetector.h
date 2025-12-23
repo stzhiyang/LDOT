@@ -279,6 +279,11 @@ private:
   Eigen::Vector3d positionLidar_;    // 激光雷达当前位置（世界坐标系）
   Eigen::Matrix3d orientationLidar_; // 激光雷达当前姿态（世界坐标系）
   Eigen::Vector3d localLidarRange_;  // 激光雷达局部检测范围（X、Y方向）
+  
+  // 运动补偿相关
+  bool enableMotionCompensation_;    // 是否启用运动补偿
+  int odomHistorySize_;              // 里程计历史队列大小
+  std::deque<nav_msgs::Odometry> odomHistory_;  // 里程计历史记录
 
   // ===================================================================
   // 点云处理数据
@@ -378,6 +383,15 @@ public:
   void runDetection();                           // 执行检测
   void runTracking();                            // 执行跟踪
   void runClassification();                      // 执行分类
+  
+  // 运动补偿相关函数
+  void updateOdomHistory(const nav_msgs::OdometryConstPtr &odom);
+  bool interpolatePose(double timestamp, Eigen::Vector3d &position, 
+                       Eigen::Quaterniond &orientation);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr applyMotionCompensation(
+      const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
+      const livox_ros_driver2::CustomMsgConstPtr &customMsg,
+      const nav_msgs::OdometryConstPtr &frameEndOdom);
 
   // ===================================================================
   // 检测模块

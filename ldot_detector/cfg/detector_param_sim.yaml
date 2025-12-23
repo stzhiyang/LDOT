@@ -14,6 +14,10 @@ body_to_lidar:  [1.0,  0.0,  0.0, -0.005,
 time_step: 0.1 # 系统运行的时间步长 (秒), 约等于 30Hz，点云频率
 static_map_warmup_duration: 5.0 # 静态地图预热时长 (秒)，启动后前N秒只积累静态地图，不进行动态检测
 
+# 运动补偿参数
+enable_motion_compensation: true  # 是否启用运动补偿（建议开启，特别是无人机运动场景）
+odom_history_size: 50  # 里程计历史队列大小（帧数）
+
 # 点云过滤参数
 ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.8   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云

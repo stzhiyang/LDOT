@@ -110,6 +110,22 @@ void ParamLoader::loadSystemParams(dynamicDetector *detector) {
   } else {
     ROS_INFO_STREAM(hint_ << " static_map_warmup_duration: " << detector->staticMapWarmupDuration_ << "s");
   }
+  
+  // 运动补偿参数
+  if (not nh_.getParam(ns_ + "/enable_motion_compensation", detector->enableMotionCompensation_)) {
+    detector->enableMotionCompensation_ = false;
+    ROS_WARN_STREAM(hint_ << " No enable_motion_compensation param. Use default: false");
+  } else {
+    ROS_INFO_STREAM(hint_ << " enable_motion_compensation: " 
+                          << (detector->enableMotionCompensation_ ? "true" : "false"));
+  }
+  
+  if (not nh_.getParam(ns_ + "/odom_history_size", detector->odomHistorySize_)) {
+    detector->odomHistorySize_ = 50;
+    ROS_WARN_STREAM(hint_ << " No odom_history_size param. Use default: 50");
+  } else {
+    ROS_INFO_STREAM(hint_ << " odom_history_size: " << detector->odomHistorySize_);
+  }
 }
 
 // ==================== Point Cloud Filter Parameters ====================
