@@ -160,6 +160,12 @@ private:
   double lidarDBEpsilon_;                // 搜索半径
   bool lidarDBUseAdaptive_;              // 是否启用自适应DBSCAN
   double lidarDBDistanceScale_;          // 距离缩放因子
+  
+  // 质心补偿参数
+  bool enableCentroidCompensation_;      // 是否启用质心补偿
+  double centroidCompensationRatio_;     // 补偿比例系数
+  double centroidCompMinDistance_;       // 最小补偿距离
+  double centroidCompMaxDistance_;       // 最大补偿距离
 
   // ===================================================================
   // 静态点滤波参数

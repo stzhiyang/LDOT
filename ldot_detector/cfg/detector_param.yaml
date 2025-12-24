@@ -42,6 +42,13 @@ lidar_DBSCAN_epsilon: 0.2    # 激光雷达DBSCAN邻域搜索半径 (米)，不�
 lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (true: 启用, false: 使用固定epsilon)
 lidar_DBSCAN_distance_scale: 0.02  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
 max_object_size: [3.0, 3.0, 1.8] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
+
+# 质心补偿参数 - 解决雷达只能检测到物体朝向雷达一面导致的位置误差
+enable_centroid_compensation: true   # 是否启用质心补偿（建议开启）
+centroid_compensation_ratio: 0.5     # 补偿比例系数 (0.0-1.0)，0.5表示补偿物体尺寸的一半
+centroid_compensation_min_distance: 2.0  # 质心补偿的最小距离阈值(米)，近距离物体不补偿
+centroid_compensation_max_distance: 15.0 # 质心补偿的最大距离阈值(米)，远距离物体不补偿
+
 # 帧内去重(NMS)参数 - 解决同一物体产生多个检测框的问题
 enable_detection_nms: true        # 是否启用检测去重（强烈建议开启）
 detection_nms_iou_threshold: 0.4  # NMS的IoU阈值，IoU > 该值的检测框会被合并 (0.2-0.5)

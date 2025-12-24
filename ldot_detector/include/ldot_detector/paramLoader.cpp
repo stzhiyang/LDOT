@@ -218,6 +218,47 @@ void ParamLoader::loadDBSCANParams(dynamicDetector *detector) {
     ROS_INFO_STREAM(hint_ << " lidar_DBSCAN_distance_scale: "
                           << detector->lidarDBDistanceScale_);
   }
+  
+  // 质心补偿参数
+  if (not nh_.getParam(ns_ + "/enable_centroid_compensation",
+                       detector->enableCentroidCompensation_)) {
+    detector->enableCentroidCompensation_ = false;
+    ROS_WARN_STREAM(hint_ << " No enable_centroid_compensation param. Use "
+                             "default: false");
+  } else {
+    ROS_INFO_STREAM(hint_ << " enable_centroid_compensation: "
+                          << (detector->enableCentroidCompensation_ ? "true" : "false"));
+  }
+  
+  if (not nh_.getParam(ns_ + "/centroid_compensation_ratio",
+                       detector->centroidCompensationRatio_)) {
+    detector->centroidCompensationRatio_ = 0.5;
+    ROS_WARN_STREAM(hint_ << " No centroid_compensation_ratio param. Use "
+                             "default: 0.5");
+  } else {
+    ROS_INFO_STREAM(hint_ << " centroid_compensation_ratio: "
+                          << detector->centroidCompensationRatio_);
+  }
+  
+  if (not nh_.getParam(ns_ + "/centroid_compensation_min_distance",
+                       detector->centroidCompMinDistance_)) {
+    detector->centroidCompMinDistance_ = 2.0;
+    ROS_WARN_STREAM(hint_ << " No centroid_compensation_min_distance param. Use "
+                             "default: 2.0m");
+  } else {
+    ROS_INFO_STREAM(hint_ << " centroid_compensation_min_distance: "
+                          << detector->centroidCompMinDistance_ << "m");
+  }
+  
+  if (not nh_.getParam(ns_ + "/centroid_compensation_max_distance",
+                       detector->centroidCompMaxDistance_)) {
+    detector->centroidCompMaxDistance_ = 15.0;
+    ROS_WARN_STREAM(hint_ << " No centroid_compensation_max_distance param. Use "
+                             "default: 15.0m");
+  } else {
+    ROS_INFO_STREAM(hint_ << " centroid_compensation_max_distance: "
+                          << detector->centroidCompMaxDistance_ << "m");
+  }
 }
 
 // ==================== Voxel Downsampling Parameters ====================
@@ -1115,6 +1156,14 @@ void ParamLoader::loadTrajectoryPredictionParams(dynamicDetector *detector) {
   detector->lidarDetector_->setParams(
       detector->lidarDBEpsilon_, detector->lidarDBMinPoints_,
       detector->lidarDBUseAdaptive_, detector->lidarDBDistanceScale_);
+  
+  // 设置质心补偿参数
+  detector->lidarDetector_->setCentroidCompensationParams(
+      detector->enableCentroidCompensation_,
+      detector->centroidCompensationRatio_,
+      detector->centroidCompMinDistance_,
+      detector->centroidCompMaxDistance_);
+  
   ROS_INFO_STREAM(hint_ << " Lidar detector initialized");
 }
 

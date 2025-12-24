@@ -12,6 +12,12 @@ namespace onboardDetector{
         this->distanceScale_ = 0.05;
         this->cloud_ = pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>());
         this->sensorPosition_ = Eigen::Vector3d::Zero();
+        
+        // 初始化质心补偿参数
+        this->enableCentroidCompensation_ = false;
+        this->compensationRatio_ = 0.5;
+        this->minCompDistance_ = 2.0;
+        this->maxCompDistance_ = 15.0;
     }
 
     void lidarDetector::setParams(double eps, int minPts, bool useAdaptive, double distScale){
@@ -27,6 +33,13 @@ namespace onboardDetector{
 
     void lidarDetector::setSensorPosition(const Eigen::Vector3d& position){
         this->sensorPosition_ = position;
+    }
+
+    void lidarDetector::setCentroidCompensationParams(bool enable, double ratio, double minDist, double maxDist){
+        this->enableCentroidCompensation_ = enable;
+        this->compensationRatio_ = ratio;
+        this->minCompDistance_ = minDist;
+        this->maxCompDistance_ = maxDist;
     }
 
     /*
@@ -136,6 +149,36 @@ namespace onboardDetector{
             // Z高度使用鲁棒估计
             bbox.z_width = z_max_robust - z_min_robust;
             bbox.id = cluster.cluster_id;
+            
+            // ===== 质心补偿：解决雷达只能检测到物体朝向雷达一面的问题 =====
+            if (this->enableCentroidCompensation_) {
+                // 计算物体位置和雷达到物体的向量
+                Eigen::Vector3d objectPos(centroid(0), centroid(1), centroid(2));
+                Eigen::Vector3d radarToObject = objectPos - this->sensorPosition_;
+                double distance = radarToObject.norm();
+                
+                // 只对特定距离范围内的物体进行补偿
+                if (distance >= this->minCompDistance_ && distance <= this->maxCompDistance_) {
+                    // 归一化方向向量
+                    Eigen::Vector3d direction = radarToObject.normalized();
+                    
+                    // 使用较大的水平尺寸作为补偿基准（保守估计）
+                    double sizeInDirection = std::max(bbox.x_width, bbox.y_width);
+                    
+                    // 计算补偿距离 = 物体尺寸 × 补偿比例
+                    double compensationDist = sizeInDirection * this->compensationRatio_;
+                    
+                    // 应用补偿（只补偿XY平面，Z轴保持不变）
+                    centroid(0) += static_cast<float>(direction.x() * compensationDist);
+                    centroid(1) += static_cast<float>(direction.y() * compensationDist);
+                    
+                    // 更新bbox中心位置
+                    bbox.x = centroid(0);
+                    bbox.y = centroid(1);
+                }
+            }
+            // ===== 质心补偿结束 =====
+            
             bboxesTemp.push_back(bbox);
         }
         this->bboxes_ = bboxesTemp;

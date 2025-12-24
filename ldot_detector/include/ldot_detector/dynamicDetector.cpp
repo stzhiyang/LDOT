@@ -363,7 +363,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
     const nav_msgs::OdometryConstPtr &odom) {
   
   // [Performance Timing] 测量函数耗时
-  auto start_time = std::chrono::high_resolution_clock::now();
+  // auto start_time = std::chrono::high_resolution_clock::now();
   
   // --- 1. 更新位姿信息 ---
   Eigen::Matrix4d lidarPoseMatrix;
@@ -504,12 +504,12 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
   }
 
   // [Performance Timing] 输出耗时和点云数量变化
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-      end_time - start_time);
-  ROS_INFO_THROTTLE(1.0, "%s: preprocessPointCloud took %.3f ms, points: %lu -> %lu",
-                    this->hint_.c_str(), duration.count() / 1000.0,
-                    tempCloud->size(), finalCloud->size());
+  // auto end_time = std::chrono::high_resolution_clock::now();
+  // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+  //     end_time - start_time);
+  // ROS_INFO_THROTTLE(1.0, "%s: preprocessPointCloud took %.3f ms, points: %lu -> %lu",
+  //                   this->hint_.c_str(), duration.count() / 1000.0,
+  //                   tempCloud->size(), finalCloud->size());
 
   return finalCloud;
 }
@@ -546,17 +546,29 @@ bool dynamicDetector::interpolatePose(double timestamp,
     return false;
   }
   
+  // 检查时间戳范围
+  double t_start = this->odomHistory_.front().header.stamp.toSec();
+  double t_end = this->odomHistory_.back().header.stamp.toSec();
+  
+  if (timestamp < t_start || timestamp > t_end) {
+    return false;
+  }
+  
   // 查找时间戳所在的区间
   size_t idx = 0;
+  bool found = false;
   for (size_t i = 0; i < this->odomHistory_.size() - 1; ++i) {
     double t0 = this->odomHistory_[i].header.stamp.toSec();
     double t1 = this->odomHistory_[i + 1].header.stamp.toSec();
     
     if (timestamp >= t0 && timestamp <= t1) {
       idx = i;
+      found = true;
       break;
     }
   }
+  
+  if (!found) return false;
   
   // 获取前后两帧的位姿
   const nav_msgs::Odometry &odom0 = this->odomHistory_[idx];
@@ -637,20 +649,19 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::applyMotionCompensation(
     return tempCloud;
   }
   
-  // 帧末尾时间戳和位姿
-  double frameEndTime = frameEndOdom->header.stamp.toSec();
-  Eigen::Vector3d frameEndPos(frameEndOdom->pose.pose.position.x,
+  // 帧起始时间戳和位姿 (注意：传入的odom与CustomMsg同步，CustomMsg时间戳为帧起始时间)
+  double frameStartTime = frameEndOdom->header.stamp.toSec();
+  Eigen::Vector3d frameStartPos(frameEndOdom->pose.pose.position.x,
                               frameEndOdom->pose.pose.position.y,
                               frameEndOdom->pose.pose.position.z);
-  Eigen::Quaterniond frameEndQuat(frameEndOdom->pose.pose.orientation.w,
+  Eigen::Quaterniond frameStartQuat(frameEndOdom->pose.pose.orientation.w,
                                   frameEndOdom->pose.pose.orientation.x,
                                   frameEndOdom->pose.pose.orientation.y,
                                   frameEndOdom->pose.pose.orientation.z);
-  Eigen::Matrix3d frameEndRot = frameEndQuat.toRotationMatrix();
   
-  // 激光雷达到机体的变换
-  Eigen::Matrix3d lidar2BodyRot = this->body2Lidar_.block<3, 3>(0, 0).transpose();
-  Eigen::Vector3d lidar2BodyTrans = -lidar2BodyRot * this->body2Lidar_.block<3, 1>(0, 3);
+  // 激光雷达到机体的变换 (直接使用body2Lidar_, 它是T_body_lidar)
+  Eigen::Matrix3d lidar2BodyRot = this->body2Lidar_.block<3, 3>(0, 0);
+  Eigen::Vector3d lidar2BodyTrans = this->body2Lidar_.block<3, 1>(0, 3);
   
   // 预分配空间
   compensatedCloud->points.reserve(customMsg->point_num);
@@ -664,16 +675,16 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::applyMotionCompensation(
     
     // 点的采集时间（相对时间，单位：纳秒）
     double pointRelativeTime = pt.offset_time * 1e-9; // 转换为秒
-    double pointAbsTime = frameEndTime - pointRelativeTime;
+    double pointAbsTime = frameStartTime + pointRelativeTime;
     
     // 插值获取该点采集时刻的位姿
     Eigen::Vector3d pointPose;
     Eigen::Quaterniond pointQuat;
     
     if (!this->interpolatePose(pointAbsTime, pointPose, pointQuat)) {
-      // 插值失败，使用帧末尾位姿（退化处理）
-      pointPose = frameEndPos;
-      pointQuat = frameEndQuat;
+      // 插值失败，使用当前帧位姿（退化处理）
+      pointPose = frameStartPos;
+      pointQuat = frameStartQuat;
       fail_count++;
     } else {
       success_count++;
@@ -690,17 +701,11 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::applyMotionCompensation(
     // 转换到该时刻世界坐标系
     Eigen::Vector3d ptWorld = pointRot * ptBody + pointPose;
     
-    // 【关键修复】运动补偿：将点转换到帧末尾世界坐标系
-    // 之前错误地转回激光雷达坐标系，导致后续坐标变换重复应用
-    // 现在直接输出世界坐标系下的点，保持与帧末尾位姿一致
-    Eigen::Vector3d ptCompensatedBody = frameEndRot.transpose() * (ptWorld - frameEndPos);
-    Eigen::Vector3d ptCompensatedWorld = frameEndRot * ptCompensatedBody + frameEndPos;
-    
     // 添加到补偿后的点云（世界坐标系）
     pcl::PointXYZ compensatedPt;
-    compensatedPt.x = ptCompensatedWorld.x();
-    compensatedPt.y = ptCompensatedWorld.y();
-    compensatedPt.z = ptCompensatedWorld.z();
+    compensatedPt.x = ptWorld.x();
+    compensatedPt.y = ptWorld.y();
+    compensatedPt.z = ptWorld.z();
     compensatedCloud->points.push_back(compensatedPt);
   }
   
@@ -850,6 +855,14 @@ void dynamicDetector::runDetection() {
       clusterCenter += pt;
     }
     if (!pcCluster.empty()) clusterCenter /= static_cast<double>(pcCluster.size());
+    
+    // ===== 质心补偿：使bbox的质心与点云质心保持一致 =====
+    // 注意：lidarBBox已经在lidarDBSCAN()或applyDetectionNMS()中补偿过
+    // 这里将点云质心也更新为bbox的中心位置，保持一致性
+    clusterCenter.x() = lidarBBox.x;
+    clusterCenter.y() = lidarBBox.y;
+    clusterCenter.z() = lidarBBox.z;
+    // ===== 质心同步结束 =====
 
     // 计算点云簇的标准差（如果applyDetectionNMS已经计算过，保留其值）
     Eigen::Vector3d clusterStd(0, 0, 0);
@@ -1038,14 +1051,41 @@ void dynamicDetector::applyDetectionNMS(
     onboardDetector::box3D mergedBox;
     // 合并得到的边界框没有明确的原始簇 id，设置为 -1 表示未知/合并产生
     mergedBox.id = -1.0;
-    // box位置：XY使用点云质心，Z使用鲁棒估计的中心
-    mergedBox.x = mergedCenter.x();
-    mergedBox.y = mergedCenter.y();
-    mergedBox.z = (z_min_robust + z_max_robust) / 2.0;
     // 尺寸：XY使用包围盒，Z使用鲁棒估计
     mergedBox.x_width = maxX - minX;
     mergedBox.y_width = maxY - minY;
     mergedBox.z_width = z_max_robust - z_min_robust;
+    
+    // box位置：XY使用点云质心（需要补偿），Z使用鲁棒估计的中心
+    mergedBox.x = mergedCenter.x();
+    mergedBox.y = mergedCenter.y();
+    mergedBox.z = (z_min_robust + z_max_robust) / 2.0;
+    
+    // ===== NMS质心补偿：对合并后的检测框也进行质心补偿 =====
+    if (this->enableCentroidCompensation_) {
+      Eigen::Vector3d objectPos(mergedBox.x, mergedBox.y, mergedBox.z);
+      Eigen::Vector3d radarToObject = objectPos - this->positionLidar_;
+      double distance = radarToObject.norm();
+      
+      if (distance >= this->centroidCompMinDistance_ && distance <= this->centroidCompMaxDistance_) {
+        Eigen::Vector3d direction = radarToObject.normalized();
+        
+        // 使用较大的水平尺寸作为补偿基准
+        double sizeInDirection = std::max(mergedBox.x_width, mergedBox.y_width);
+        
+        // 计算补偿距离
+        double compensationDist = sizeInDirection * this->centroidCompensationRatio_;
+        
+        // 应用补偿（只补偿XY平面）
+        mergedBox.x += direction.x() * compensationDist;
+        mergedBox.y += direction.y() * compensationDist;
+        
+        // 同步更新质心（用于后续特征计算）
+        mergedCenter.x() = mergedBox.x;
+        mergedCenter.y() = mergedBox.y;
+      }
+    }
+    // ===== NMS质心补偿结束 =====
 
     // 计算点云标准差（PCA特征），使用在合并点云时就累加的sumSq与sumPos
     Eigen::Vector3d mergedStd(0, 0, 0);
@@ -1478,23 +1518,23 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     // 使用匈牙利算法求解最优匹配
     this->hungarianAlgorithm(costMatrix, bestMatch);
 
-    // 统计并输出关联结果
-    int numMatched = 0;
-    int numNewTargets = 0;
-    for (int i = 0; i < numCurrObjs; ++i) {
-      if (bestMatch[i] >= 0) {
-        numMatched++;
-      } else {
-        numNewTargets++;
-      }
-    }
-    int numLostTargets = numHistObjs - numMatched;
+    // // 统计并输出关联结果
+    // int numMatched = 0;
+    // int numNewTargets = 0;
+    // for (int i = 0; i < numCurrObjs; ++i) {
+    //   if (bestMatch[i] >= 0) {
+    //     numMatched++;
+    //   } else {
+    //     numNewTargets++;
+    //   }
+    // }
+    // int numLostTargets = numHistObjs - numMatched;
 
-    // 简洁的日志输出
-    ROS_INFO_THROTTLE(
-        0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
-        this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
-        numNewTargets, numLostTargets);
+    // // 简洁的日志输出
+    // ROS_INFO_THROTTLE(
+    //     0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
+    //     this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
+    //     numNewTargets, numLostTargets);
   }
 }
 
@@ -2762,37 +2802,37 @@ void dynamicDetector::runClassification() {
   // 直接更新最终的动态障碍物列表（已移除尺寸过滤）
   this->dynamicBBoxes_ = dynamicBBoxesTemp;
 
-  // // 【动态反哺机制】清理已确认动态物体历史轨迹区域的体素
-  // // 【修复】只有连续多帧确认为动态的物体才触发体素清除，防止短暂误判导致静态标记丢失
-  // if (this->staticFilterEnabled_ || this->staticClusterFilterEnabled_) {
-  //   // 确保 confirmedDynamicFrames_ 向量大小与轨迹数量一致
-  //   while (this->confirmedDynamicFrames_.size() < this->boxHist_.size()) {
-  //     this->confirmedDynamicFrames_.push_back(0);
-  //   }
+  // 【动态反哺机制】清理已确认动态物体历史轨迹区域的体素
+  // 【修复】只有连续多帧确认为动态的物体才触发体素清除，防止短暂误判导致静态标记丢失
+  if (this->staticFilterEnabled_ || this->staticClusterFilterEnabled_) {
+    // 确保 confirmedDynamicFrames_ 向量大小与轨迹数量一致
+    while (this->confirmedDynamicFrames_.size() < this->boxHist_.size()) {
+      this->confirmedDynamicFrames_.push_back(0);
+    }
     
-  //   // 收集需要清除体素的动态物体（连续动态帧数达到阈值）
-  //   std::vector<onboardDetector::box3D> boxesToClear;
-  //   for (size_t i = 0; i < this->boxHist_.size(); ++i) {
-  //     if (!this->boxHist_[i].empty() && this->boxHist_[i][0].is_dynamic) {
-  //       // 增加连续动态帧数计数
-  //       this->confirmedDynamicFrames_[i]++;
-  //       // 只有连续动态帧数达到阈值才触发体素清除
-  //       if (this->confirmedDynamicFrames_[i] >= this->voxelClearDynamicFrames_) {
-  //         boxesToClear.push_back(this->boxHist_[i][0]);
-  //       }
-  //     } else {
-  //       // 如果当前帧不是动态，重置计数器
-  //       if (i < this->confirmedDynamicFrames_.size()) {
-  //         this->confirmedDynamicFrames_[i] = 0;
-  //       }
-  //     }
-  //   }
+    // 收集需要清除体素的动态物体（连续动态帧数达到阈值）
+    std::vector<onboardDetector::box3D> boxesToClear;
+    for (size_t i = 0; i < this->boxHist_.size(); ++i) {
+      if (!this->boxHist_[i].empty() && this->boxHist_[i][0].is_dynamic) {
+        // 增加连续动态帧数计数
+        this->confirmedDynamicFrames_[i]++;
+        // 只有连续动态帧数达到阈值才触发体素清除
+        if (this->confirmedDynamicFrames_[i] >= this->voxelClearDynamicFrames_) {
+          boxesToClear.push_back(this->boxHist_[i][0]);
+        }
+      } else {
+        // 如果当前帧不是动态，重置计数器
+        if (i < this->confirmedDynamicFrames_.size()) {
+          this->confirmedDynamicFrames_[i] = 0;
+        }
+      }
+    }
     
-  //   // 只对达到阈值的物体执行体素清除
-  //   if (!boxesToClear.empty()) {
-  //     this->staticFilter_->clearDynamicRegions(boxesToClear);
-  //   }
-  // }
+    // 只对达到阈值的物体执行体素清除
+    if (!boxesToClear.empty()) {
+      this->staticFilter_->clearDynamicRegions(boxesToClear);
+    }
+  }
 
   // [Performance Timing] 输出耗时
   // auto end_time = std::chrono::high_resolution_clock::now();

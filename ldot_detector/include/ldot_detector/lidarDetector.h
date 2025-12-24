@@ -55,6 +55,12 @@ namespace onboardDetector{
         // 传感器位置（全局坐标系），用于自适应DBSCAN
         Eigen::Vector3d sensorPosition_;
         
+        // 质心补偿参数
+        bool enableCentroidCompensation_;   // 是否启用质心补偿
+        double compensationRatio_;          // 补偿比例系数 (0.0-1.0)
+        double minCompDistance_;            // 最小补偿距离（米）
+        double maxCompDistance_;            // 最大补偿距离（米）
+        
     public:
         // 构造函数
         lidarDetector();
@@ -67,6 +73,9 @@ namespace onboardDetector{
 
         // 设置传感器位置（全局坐标系），用于自适应DBSCAN
         void setSensorPosition(const Eigen::Vector3d& position);
+
+        // 设置质心补偿参数
+        void setCentroidCompensationParams(bool enable, double ratio, double minDist, double maxDist);
 
         // 对点云执行DBSCAN聚类
         void lidarDBSCAN();
