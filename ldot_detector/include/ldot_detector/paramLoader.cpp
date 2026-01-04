@@ -19,7 +19,6 @@ void ParamLoader::loadAllParams(dynamicDetector *detector) {
   ROS_INFO_STREAM(hint_ << " ========== Loading Parameters ==========");
 
   loadTopicParams(detector);
-  loadTransformParams(detector);
   loadSystemParams(detector);
   loadFilterParams(detector);
   loadDBSCANParams(detector);
@@ -41,18 +40,7 @@ void ParamLoader::loadAllParams(dynamicDetector *detector) {
 void ParamLoader::loadTopicParams(dynamicDetector *detector) {
   ROS_INFO_STREAM(hint_ << " --- ROS Topic Parameters ---");
 
-  // 是否使用 Livox CustomMsg 格式
-  if (not nh_.getParam(ns_ + "/use_livox_custom_msg",
-                       detector->useLivoxCustomMsg_)) {
-    detector->useLivoxCustomMsg_ = false;
-    ROS_WARN_STREAM(hint_ << " No use_livox_custom_msg param. Use default: "
-                             "false (PointCloud2)");
-  } else {
-    ROS_INFO_STREAM(hint_ << " use_livox_custom_msg: "
-                          << (detector->useLivoxCustomMsg_ ? "true" : "false"));
-  }
-
-  // 激光雷达点云话题
+  // 激光雷达点云话题（FAST-LIO输出的标准PointCloud2格式）
   if (not nh_.getParam(ns_ + "/lidar_pointcloud_topic",
                        detector->lidarTopicName_)) {
     detector->lidarTopicName_ = "/cloud_registered";
@@ -70,24 +58,6 @@ void ParamLoader::loadTopicParams(dynamicDetector *detector) {
                              "/CERLAB/quadcopter/odom");
   } else {
     ROS_INFO_STREAM(hint_ << " odom_topic: " << detector->odomTopicName_);
-  }
-}
-
-// ==================== Transform Parameters (Extrinsics) ====================
-void ParamLoader::loadTransformParams(dynamicDetector *detector) {
-  ROS_INFO_STREAM(hint_ << " --- Transform Parameters ---");
-
-  std::vector<double> body2LidarVec(16);
-  if (not nh_.getParam(ns_ + "/body_to_lidar", body2LidarVec)) {
-    ROS_ERROR_STREAM(hint_ << " body_to_lidar matrix not found! Please check "
-                              "your config file.");
-  } else {
-    for (int i = 0; i < 4; ++i) {
-      for (int j = 0; j < 4; ++j) {
-        detector->body2Lidar_(i, j) = body2LidarVec[i * 4 + j];
-      }
-    }
-    ROS_INFO_STREAM(hint_ << " body_to_lidar matrix loaded successfully");
   }
 }
 
@@ -109,22 +79,6 @@ void ParamLoader::loadSystemParams(dynamicDetector *detector) {
     ROS_WARN_STREAM(hint_ << " No static_map_warmup_duration param. Use default: 3.0s");
   } else {
     ROS_INFO_STREAM(hint_ << " static_map_warmup_duration: " << detector->staticMapWarmupDuration_ << "s");
-  }
-  
-  // 运动补偿参数
-  if (not nh_.getParam(ns_ + "/enable_motion_compensation", detector->enableMotionCompensation_)) {
-    detector->enableMotionCompensation_ = false;
-    ROS_WARN_STREAM(hint_ << " No enable_motion_compensation param. Use default: false");
-  } else {
-    ROS_INFO_STREAM(hint_ << " enable_motion_compensation: " 
-                          << (detector->enableMotionCompensation_ ? "true" : "false"));
-  }
-  
-  if (not nh_.getParam(ns_ + "/odom_history_size", detector->odomHistorySize_)) {
-    detector->odomHistorySize_ = 50;
-    ROS_WARN_STREAM(hint_ << " No odom_history_size param. Use default: 50");
-  } else {
-    ROS_INFO_STREAM(hint_ << " odom_history_size: " << detector->odomHistorySize_);
   }
 }
 

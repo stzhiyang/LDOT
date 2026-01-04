@@ -205,7 +205,7 @@ void StaticPointFilter::updateMap(
     bool should_increment = true;
     if (dist < 4.0) {
       // 基于当前计数的模运算，确保不同体素有不同的累积节奏
-      should_increment = (status.hit_count % 2 == 0);
+      should_increment = (status.hit_count % 1 == 0);
     }
 
     // 增加体素格子命中计数，但进行截断以避免溢出

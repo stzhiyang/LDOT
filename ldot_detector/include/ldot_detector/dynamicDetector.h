@@ -10,10 +10,6 @@
 #include <Eigen/StdVector>
 #include <atomic>
 #include <boost/math/distributions/chi_squared.hpp> // 用于根据置信度计算卡方分布阈值
-#include <livox_ros_driver2/CustomMsg.h>
-#include <message_filters/subscriber.h>
-#include <message_filters/sync_policies/approximate_time.h>
-#include <message_filters/synchronizer.h>
 #include <nav_msgs/Odometry.h>
 #include <ldot_detector/GetDynamicObstacles.h>
 #include <ldot_detector/GetPredictedTrajectories.h>
@@ -54,8 +50,8 @@ struct TrajectoryPoint {
 struct SharedData {
   // 原始点云和位姿数据（用于可视化原始点云）
   sensor_msgs::PointCloud2 latestCloud;      // 原始点云消息
-  Eigen::Vector3d positionLidar;             // 激光雷达位置
-  Eigen::Matrix3d orientationLidar;          // 激光雷达姿态
+  Eigen::Vector3d position;                  // 机体位置（全局坐标系）
+  Eigen::Matrix3d orientation;               // 机体姿态（全局坐标系）
   bool hasCloud = false;                     // 是否有有效点云
   
   // 检测结果
@@ -91,16 +87,16 @@ private:
   std::string hint_;                     // 日志输出前缀
   ros::NodeHandle nh_;                   // ROS节点句柄
 
-  // 订阅器与同步器
-  std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> lidarCloudSub_;
-  std::shared_ptr<message_filters::Subscriber<livox_ros_driver2::CustomMsg>> lidarCustomMsgSub_;
-  std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odomSub_;
+  // 独立订阅器
+  ros::Subscriber lidarCloudSub_;
+  ros::Subscriber odomSub_;
   
-  typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry> lidarOdomSync;
-  std::shared_ptr<message_filters::Synchronizer<lidarOdomSync>> lidarOdomSync_;
+  // M-detector 风格的缓冲区队列同步
+  std::deque<nav_msgs::OdometryConstPtr> buffer_odoms_;  // 完整里程计消息队列
+  std::deque<sensor_msgs::PointCloud2ConstPtr> buffer_clouds_;        // 标准点云队列
+  std::deque<double> buffer_cloud_stamps_;            // 点云时间戳队列
   
-  typedef message_filters::sync_policies::ApproximateTime<livox_ros_driver2::CustomMsg, nav_msgs::Odometry> lidarCustomOdomSync;
-  std::shared_ptr<message_filters::Synchronizer<lidarCustomOdomSync>> lidarCustomOdomSync_;
+  ros::Timer processTimer_;    // 处理定时器（替代里程计触发）
 
   // 定时器
   ros::Timer visTimer_;                  // 可视化发布定时器（独立线程）
@@ -131,12 +127,8 @@ private:
   // 系统配置参数
   // ===================================================================
   // ROS话题配置
-  bool useLivoxCustomMsg_;                 // 是否使用Livox CustomMsg格式
   std::string lidarTopicName_;             // 激光雷达点云话题
   std::string odomTopicName_;              // 里程计话题
-  
-  // 坐标变换
-  Eigen::Matrix4d body2Lidar_;             // 机体坐标系到激光雷达坐标系的变换矩阵
   
   // 系统时间参数
   double dt_;                              // 系统运行时间步长
@@ -282,14 +274,7 @@ private:
   // ===================================================================
   Eigen::Vector3d position_;         // 机器人当前位置（世界坐标系）
   Eigen::Matrix3d orientation_;      // 机器人当前姿态（世界坐标系）
-  Eigen::Vector3d positionLidar_;    // 激光雷达当前位置（世界坐标系）
-  Eigen::Matrix3d orientationLidar_; // 激光雷达当前姿态（世界坐标系）
   Eigen::Vector3d localLidarRange_;  // 激光雷达局部检测范围（X、Y方向）
-  
-  // 运动补偿相关
-  bool enableMotionCompensation_;    // 是否启用运动补偿
-  int odomHistorySize_;              // 里程计历史队列大小
-  std::deque<nav_msgs::Odometry> odomHistory_;  // 里程计历史记录
 
   // ===================================================================
   // 点云处理数据
@@ -368,8 +353,6 @@ public:
   // 传感器数据回调
   void lidarOdomCB(const sensor_msgs::PointCloud2ConstPtr &cloudMsg,
                    const nav_msgs::OdometryConstPtr &odom);
-  void lidarCustomOdomCB(const livox_ros_driver2::CustomMsgConstPtr &customMsg,
-                         const nav_msgs::OdometryConstPtr &odom);
   
   // 可视化定时器回调
   void visCB(const ros::TimerEvent &);
@@ -390,14 +373,10 @@ public:
   void runTracking();                            // 执行跟踪
   void runClassification();                      // 执行分类
   
-  // 运动补偿相关函数
-  void updateOdomHistory(const nav_msgs::OdometryConstPtr &odom);
-  bool interpolatePose(double timestamp, Eigen::Vector3d &position, 
-                       Eigen::Quaterniond &orientation);
-  pcl::PointCloud<pcl::PointXYZ>::Ptr applyMotionCompensation(
-      const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
-      const livox_ros_driver2::CustomMsgConstPtr &customMsg,
-      const nav_msgs::OdometryConstPtr &frameEndOdom);
+  // M-detector 风格的缓冲区回调函数
+  void odomBufferCB(const nav_msgs::OdometryConstPtr &odom);
+  void cloudBufferCB(const sensor_msgs::PointCloud2ConstPtr &cloudMsg);
+  void processTimerCB(const ros::TimerEvent &e);
 
   // ===================================================================
   // 检测模块
@@ -475,37 +454,7 @@ public:
   // ===================================================================
   // 工具函数
   // ===================================================================
-  void getLidarPose(const nav_msgs::OdometryConstPtr &odom,
-                   Eigen::Matrix4d &lidarPoseMatrix);
-  void convertCustomMsgToPointCloud2(const livox_ros_driver2::CustomMsgConstPtr &customMsg,
-                                    sensor_msgs::PointCloud2 &cloud);
 };
-
-/*!
- * \brief 根据里程计信息计算激光雷达位姿矩阵（使用Odometry消息）
- * \param odom 机器人里程计信息
- * \param lidarPoseMatrix 输出参数，激光雷达的位姿矩阵
- */
-inline void
-dynamicDetector::getLidarPose(const nav_msgs::OdometryConstPtr &odom,
-                              Eigen::Matrix4d &lidarPoseMatrix) {
-  Eigen::Quaterniond quat;
-  quat = Eigen::Quaterniond(
-      odom->pose.pose.orientation.w, odom->pose.pose.orientation.x,
-      odom->pose.pose.orientation.y, odom->pose.pose.orientation.z);
-  Eigen::Matrix3d rot = quat.toRotationMatrix();
-
-  // convert body pose to camera pose
-  Eigen::Matrix4d map2body;
-  map2body.setZero();
-  map2body.block<3, 3>(0, 0) = rot;
-  map2body(0, 3) = odom->pose.pose.position.x;
-  map2body(1, 3) = odom->pose.pose.position.y;
-  map2body(2, 3) = odom->pose.pose.position.z;
-  map2body(3, 3) = 1.0;
-
-  lidarPoseMatrix = map2body * this->body2Lidar_;
-}
 
 } // namespace onboardDetector
 

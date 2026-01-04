@@ -1,0 +1,339 @@
+% 定义文档类型为article（文章），字体14pt，纸张A4
+\documentclass[14pt,a4paper]{article}
+% 使用UTF-8编码，支持中文等多种字符
+\usepackage[utf8]{inputenc}
+% 导入algorithm包，用于排版算法
+\usepackage{algorithm}
+% 导入algpseudocode包，用于排版伪代码
+\usepackage{algpseudocode}
+% 导入amsmath包，用于复杂的数学公式
+\usepackage{amsmath}
+% 导入geometry包，用于设置页面布局
+\usepackage{geometry}
+% 设置页边距为1英寸
+\geometry{margin=1in}
+
+% ========== 文档正文开始 ==========
+\begin{document}
+
+% ========== 数学符号说明 ==========
+% 本文档中使用的主要数学符号定义：
+%   - $\mathcal{B}$ 斜体，一般当做大类集合，比如边界框集合
+%   - $\mathbf{box}$ 正体，独立个体，比如单个边界框
+%   - $\emptyset$ 表示空集合
+%   - $\in$ 表示属于
+%   - $\forall$ 表示对所有
+%   - $|S|$ 表示集合S的基数（大小或元素个数）
+%   - $\gets$ 符号表示赋值
+
+\begin{algorithm}
+% 设置算法的标题/名称
+\caption{Tracking (Multiple Model Kalman Filtering)}
+% 开始伪代码环境，[1]表示从第1行开始编号
+\begin{algorithmic}[1]
+
+\State \textbf{Input:} $\mathcal{B}$ (Filtered bounding boxes from detection), $\mathbf{BoxH}$ (Bounding box history), 
+                        $\mathbf{PCH}$ (Point cloud history), $\mathbf{MaxSizeH}$ (Max size history)
+\State \textbf{Output:} Updated $\mathbf{BoxH}$, $\mathbf{PCH}$, Kalman filter states, and tracking association results
+
+% ===== 第1步：数据关联（预测与匹配）=====
+\State \textit{// 1. Data association - predict and match current detections to historical tracks}
+\State $bestMatch \gets \emptyset$
+\State \Call{BoxAssociation}{$bestMatch$}
+\Comment{Execute Hungarian algorithm based on Mahalanobis distance}
+
+% ===== 第2步：物体分类与尺寸管理（针对匹配成功的旧轨迹）=====
+\State \textit{// 2. Object classification and size management for matched tracks}
+\If{$|bestMatch| > 0$}
+    \For{$i = 0$ to $|bestMatch| - 1$}
+        % 如果第i个当前检测匹配到历史轨迹
+        \If{$bestMatch[i] \geq 0$}
+            \State $histIndex \gets bestMatch[i]$
+            
+            % 边界检查
+            \If{\textbf{not} ValidIndex($histIndex$, $\mathbf{BoxH}$, $\mathbf{MaxSizeH}$)}
+                \State \textbf{continue}
+            \EndIf
+            
+            % 2.1 稳健的历史尺寸更新
+            \State $currSize \gets$ $(filteredBBox[i].width_x, filteredBBox[i].width_y, filteredBBox[i].width_z)$
+            \State $maxHistSize \gets \mathbf{MaxSizeH}[histIndex]$
+            
+            % 检查合并（尺寸突增 + 点数突增）
+            \State $isMerge \gets \textbf{false}$
+            \If{$|\mathbf{BoxH}[histIndex]| > 1$}
+                \State $sizeRatio \gets \max(currSize / maxHistSize)$
+                \State $pointRatio \gets |filteredPCCluster[i]| / |\mathbf{PCH}[histIndex][0]|$
+                \If{$sizeRatio > sizeMergeThresh$ \textbf{and} $pointRatio > pointCountMergeThresh$}
+                    \State $isMerge \gets \textbf{true}$
+                \EndIf
+            \EndIf
+            
+            % 检查尺寸分离/重置（尺寸持续小于最大值）
+            \State $isReset \gets \textbf{false}$
+            \If{$currSize < 0.8 \times maxHistSize$ (element-wise)}
+                \State $smallSizeCounter[histIndex] \gets smallSizeCounter[histIndex] + 1$
+            \Else
+                \State $smallSizeCounter[histIndex] \gets 0$
+            \EndIf
+            
+            \If{$smallSizeCounter[histIndex] > sizeResetFrames$}
+                \State $isReset \gets \textbf{true}$
+                \State $\mathbf{MaxSizeH}[histIndex] \gets currSize$
+                \State $smallSizeCounter[histIndex] \gets 0$
+            \EndIf
+            
+            % 更新最大尺寸（如果未合并且未重置）
+            \If{\textbf{not} $isMerge$ \textbf{and} \textbf{not} $isReset$}
+                \State $\mathbf{MaxSizeH}[histIndex] \gets \max(\mathbf{MaxSizeH}[histIndex], currSize)$
+            \EndIf
+            
+            % 2.2 分类判断与更新
+            \State $needClassify \gets \textbf{false}$
+            \State Ensure $lastClassifyTime$ and $stableClassificationCount$ are resized
+            
+            % 首次分类条件
+            \If{$|\mathbf{BoxH}[histIndex]| == classificationStartFrame$}
+                \State $needClassify \gets \textbf{true}$
+                \State $lastClassifyTime[histIndex] \gets$ current ROS time
+            % 后续分类条件（时间间隔）
+            \ElsIf{$|\mathbf{BoxH}[histIndex]| > classificationStartFrame$}
+                \State $timeSinceLast \gets$ current time $- lastClassifyTime[histIndex]$
+                \If{$timeSinceLast \geq classificationIntervalSec$}
+                    \State $needClassify \gets \textbf{true}$
+                    \State $lastClassifyTime[histIndex] \gets$ current ROS time
+                \EndIf
+            \EndIf
+            
+            % 检查分类锁定状态
+            \State $classificationLocked \gets \mathbf{BoxH}[histIndex][0].fix\_size$
+            
+            % 执行分类或继承历史分类
+            \If{$needClassify$ \textbf{and} \textbf{not} $classificationLocked$}
+                % 保存分类前状态用于比较
+                \State $prevClassification \gets$ (is\_human, is\_che, is\_uav from $\mathbf{BoxH}[histIndex][0]$)
+                
+                % 执行分类
+                \State $centroid \gets filteredPCClusterCenter[i]$
+                \State \Call{ClassifyBox}{$filteredBBox[i]$, $centroid$, $\mathbf{MaxSizeH}[histIndex]$, $histIndex$}
+                
+                % 比较分类是否改变
+                \State $currClassification \gets$ (is\_human, is\_che, is\_uav from $filteredBBox[i]$)
+                \State $sameClassification \gets (currClassification == prevClassification)$
+                
+                % 更新稳定分类计数
+                \If{$sameClassification$}
+                    \State $stableClassificationCount[histIndex] \gets stableClassificationCount[histIndex] + 1$
+                    \If{$stableClassificationCount[histIndex] \geq fixSizeClassificationThreshold$}
+                        \State $filteredBBox[i].fix\_size \gets \textbf{true}$
+                    \EndIf
+                \Else
+                    \State $stableClassificationCount[histIndex] \gets 0$
+                    \State $filteredBBox[i].fix\_size \gets \textbf{false}$
+                \EndIf
+                
+                % 切换卡尔曼滤波模型
+                \State \Call{SwitchKalmanModel}{$histIndex$, $filteredBBox[i]$}
+                
+            \Else
+                % 继承历史分类结果和fix\_size标志
+                \State $filteredBBox[i].is\_human \gets \mathbf{BoxH}[histIndex][0].is\_human$
+                \State $filteredBBox[i].is\_che \gets \mathbf{BoxH}[histIndex][0].is\_che$
+                \State $filteredBBox[i].is\_uav \gets \mathbf{BoxH}[histIndex][0].is\_uav$
+                \State $filteredBBox[i].is\_else \gets \mathbf{BoxH}[histIndex][0].is\_else$
+                \State $filteredBBox[i].fix\_size \gets \mathbf{BoxH}[histIndex][0].fix\_size$
+            \EndIf
+            
+        \EndIf
+    \EndFor
+\EndIf
+
+% ===== 第3步：卡尔曼滤波与轨迹更新 =====
+\State \textit{// 3. Kalman filtering and trajectory history update}
+\If{$|filteredBBox| > 0$}
+    \If{$|bestMatch| > 0$}
+        % 执行卡尔曼滤波器更新和历史记录更新
+        \State \Call{KalmanFilterAndUpdateHist}{$bestMatch$}
+        \Comment{Update Kalman filters and maintain box/PC histories}
+        
+        % ===== 第4步：移除重复轨迹（幽灵轨迹消除）=====
+        \State \textit{// 4. Remove duplicate tracks (ghost trajectory elimination)}
+        \State \Call{RemoveDuplicateTracks}{}
+        
+    \EndIf
+\Else
+    % 如果当前帧没有检测结果，清空所有历史记录
+    \State \textit{// No detections in current frame - clear all history}
+    \State $\mathbf{BoxH} \gets \emptyset$
+    \State $\mathbf{PCH} \gets \emptyset$
+    \State $\mathbf{PCCenterH} \gets \emptyset$
+    \State $\mathbf{PCStdH} \gets \emptyset$
+    \State $\mathbf{MaxSizeH} \gets \emptyset$
+    \State $smallSizeCounter \gets \emptyset$
+    \State $kalmanFilters \gets \emptyset$
+    \State $stableClassificationCount \gets \emptyset$
+    \State $lastClassifyTime \gets \emptyset$
+\EndIf
+
+% ========== 算法结束，跟踪管道完成 ==========
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+% ========== 辅助函数伪代码 ==========
+
+\section*{Auxiliary Functions (辅助函数伪代码)}
+
+\begin{algorithm}
+\caption{BoxAssociation - Data Association using Hungarian Algorithm}
+\begin{algorithmic}[1]
+
+\State \textbf{Input:} Current detections $\mathcal{B}_{curr}$, Historical tracks $\mathbf{BoxH}$, Kalman filters $\mathbf{F}$
+\State \textbf{Output:} $bestMatch$ (Association result for each current detection)
+
+\If{$|\mathbf{BoxH}| == 0$}
+    \State \textit{// First detection - initialize all tracks}
+    \For{$i = 0$ to $|\mathcal{B}_{curr}| - 1$}
+        \State Initialize history vectors for track $i$: $boxHist$, $pcHist$, etc.
+        \State Initialize Kalman filter for track $i$: $\mathbf{F}[i]$
+        \State $bestMatch[i] \gets -1$ (New track)
+    \EndFor
+\Else
+    \State \textit{// Subsequent detections - perform association}
+    \State $n \gets |\mathcal{B}_{curr}|$ (number of current detections)
+    \State $m \gets |\mathbf{BoxH}|$ (number of historical tracks)
+    
+    % 预测历史轨迹的当前位置
+    \For{$j = 0$ to $m - 1$}
+        \State \Call{PredictTrackPosition}{$\mathbf{F}[j]$, $\mathbf{BoxH}[j]$}
+        \Comment{Predict using motion model}
+    \EndFor
+    
+    % 构建代价矩阵
+    \State $costMatrix \gets m \times n$ matrix initialized to $\infty$
+    \For{$i = 0$ to $n - 1$}
+        \For{$j = 0$ to $m - 1$}
+            % 计算当前检测 $i$ 与历史轨迹 $j$ 之间的距离
+            \State $mahalDist \gets$ Mahalanobis distance between $\mathcal{B}_{curr}[i]$ and predicted $\mathbf{BoxH}[j]$
+            \State $sizeDiff \gets$ Size difference: $\| bboxSize[i] - \mathbf{BoxH}[j][0].size \|$
+            \State $stdDiff \gets$ Std difference: $\| stdDev[i] - \mathbf{BoxH}[j][0].std \|$
+            
+            % 组合代价（加权）
+            \State $costMatrix[j][i] \gets w_1 \cdot mahalDist + w_2 \cdot sizeDiff + w_3 \cdot stdDiff$
+        \EndFor
+    \EndFor
+    
+    % 应用匈牙利算法求解最优分配
+    \State $assignment \gets$ \Call{HungarianAlgorithm}{$costMatrix$}
+    
+    % 应用关联门限（拒绝不可靠的匹配）
+    \State $matchingThreshold \gets$ pre-defined threshold (e.g., 5.0)
+    \For{$i = 0$ to $n - 1$}
+        \State $j \gets assignment[i]$
+        \If{$j \geq 0$ \textbf{and} $costMatrix[j][i] < matchingThreshold$}
+            \State $bestMatch[i] \gets j$ (Successful match)
+        \Else
+            \State $bestMatch[i] \gets -1$ (New detection - no match)
+        \EndIf
+    \EndFor
+    
+    % 处理未配对的历史轨迹（可能消失的目标）
+    \For{$j = 0$ to $m - 1$}
+        \If{No current detection matched to track $j$}
+            \State Increment missing frame counter for track $j$
+            \If{missing frame counter $>$ max allowed frames}
+                \State Mark track $j$ for removal
+            \EndIf
+        \EndIf
+    \EndFor
+    
+\EndIf
+
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{KalmanFilterAndUpdateHist - Update Filters and Maintain Histories}
+\begin{algorithmic}[1]
+
+\State \textbf{Input:} $bestMatch$ (Association results), Current detections $\mathcal{B}_{curr}$, Current PCs $\mathcal{PC}_{curr}$
+\State \textbf{Output:} Updated Kalman filters, Updated histories
+
+\For{$i = 0$ to $|bestMatch| - 1$}
+    \If{$bestMatch[i] >= 0$}
+        \State $histIndex \gets bestMatch[i]$
+        
+        % 根据fix\_size标志选择是否更新尺寸
+        \State $useFixedSize \gets filteredBBox[i].fix\_size$
+        
+        % 准备测量值
+        \State $measurement \gets$ (position, size, velocity estimation from $\mathcal{B}_{curr}[i]$)
+        \If{$useFixedSize$}
+            \State Set size component of measurement to historical max size
+        \EndIf
+        
+        % 根据物体分类选择对应的Kalman滤波器模型
+        \State $model \gets$ Select model based on (is\_human, is\_che, is\_uav)
+        \State $\mathbf{F}[histIndex] \gets$ Get filter with model
+        
+        % 卡尔曼滤波：预测 - 更新步骤
+        \State \Call{PredictStep}{$\mathbf{F}[histIndex]$, $measurement$}
+        \State \Call{UpdateStep}{$\mathbf{F}[histIndex]$, $measurement$}
+        
+        % 提取滤波后的状态
+        \State $filteredState \gets$ \Call{GetFilteredState}{$\mathbf{F}[histIndex]$}
+        
+        % 更新历史记录（保持固定大小的环形缓冲区）
+        \State $\mathbf{BoxH}[histIndex]$.push\_front($filteredState$)
+        \State $\mathbf{PCH}[histIndex]$.push\_front($\mathcal{PC}_{curr}[i]$)
+        
+        % 维持最大历史长度
+        \While{$|\mathbf{BoxH}[histIndex]| > maxHistoryLength$}
+            \State $\mathbf{BoxH}[histIndex]$.pop\_back()
+            \State $\mathbf{PCH}[histIndex]$.pop\_back()
+        \EndWhile
+        
+    \Else
+        \State \textit{// New detection - create new track}
+        \State Initialize new Kalman filter with initial state from $\mathcal{B}_{curr}[i]$
+        \State Initialize new history: $\mathbf{BoxH}$.push\_back()
+        \State Initialize new PC history: $\mathbf{PCH}$.push\_back()
+        \State Initialize size history: $\mathbf{MaxSizeH}$.push\_back()
+        \State Initialize classification counters
+        
+    \EndIf
+\EndFor
+
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{RemoveDuplicateTracks - Eliminate Ghost Trajectories}
+\begin{algorithmic}[1]
+
+\State \textbf{Input:} Bounding box history $\mathbf{BoxH}$, Point cloud history $\mathbf{PCH}$
+\State \textbf{Output:} Updated histories with duplicate/ghost tracks removed
+
+\For{$i = 0$ to $|\mathbf{BoxH}| - 1$}
+    \For{$j = i + 1$ to $|\mathbf{BoxH}| - 1$}
+        \State $dist \gets$ \textbf{distance}(center of $\mathbf{BoxH}[i][0]$, center of $\mathbf{BoxH}[j][0]$)
+        \State $iouScore \gets$ \textbf{computeIoU}($\mathbf{BoxH}[i][0]$, $\mathbf{BoxH}[j][0]$)
+        
+        % 如果两个轨迹太接近且IoU高，认为是重复轨迹
+        \If{$dist < duplicateDistThreshold$ \textbf{and} $iouScore > duplicateIoUThreshold$}
+            \State \textit{// Merge or remove duplicate}
+            \If{$|\mathbf{BoxH}[i]| > |\mathbf{BoxH}[j]|$}
+                \State Keep track $i$, remove track $j$
+            \Else
+                \State Keep track $j$, remove track $i$
+            \EndIf
+        \EndIf
+        
+    \EndFor
+\EndFor
+
+\end{algorithmic}
+\end{algorithm}
+
+\end{document}

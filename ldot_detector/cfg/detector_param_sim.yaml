@@ -1,30 +1,18 @@
-# 点云格式: true: 使用Livox CustomMsg格式, false: 使用标准PointCloud2格式 (默认)
-use_livox_custom_msg: true
-
 # ROS 主题
-lidar_pointcloud_topic: /livox_lidar      # 激光雷达点云主题/livox_lidar/cloud_registered
+lidar_pointcloud_topic: /cloud_registered      # 激光雷达点云主题/livox_lidar/cloud_registered
 odom_topic: /Odometry        # 里程计主题 /mavros/local_position/odom
-
-body_to_lidar:  [1.0,  0.0,  0.0, -0.005,
-                0.0,  1.0,  0.0,  0.0,
-                0.0,  0.0,  1.0,  0.06,
-                0.0,  0.0,  0.0,  1.0]
 
 # 系统参数
 time_step: 0.1 # 系统运行的时间步长 (秒), 约等于 30Hz，点云频率
 static_map_warmup_duration: 5.0 # 静态地图预热时长 (秒)，启动后前N秒只积累静态地图，不进行动态检测
 
-# 运动补偿参数
-enable_motion_compensation: true  # 是否启用运动补偿（建议开启，特别是无人机运动场景）
-odom_history_size: 50  # 里程计历史队列大小（帧数）
-
 # 点云过滤参数
 ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
-roof_height: 2.8   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
-lidar_detection_range: [12.0, 12.0, 3.0]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
+roof_height: 2.5   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
+lidar_detection_range: [12.0, 12.0, 2.5]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
 enable_voxel_downsampling: true  # 启用下采样以减少处理时间和延迟
 voxel_base_leaf_size: 0.1       # 增大体素以减少点数，加快处理速度
-voxel_target_point_count: 2200  # 降低目标点数，减少后续处理负担
+voxel_target_point_count: 3000  # 降低目标点数，减少后续处理负担
 
 # 静态点与静态簇去除滤波器参数
 static_filter_enabled: true     # 暂时禁用静态点去除以减少延迟
@@ -40,12 +28,12 @@ static_filter_min_neighbor_votes: 3      # 最小邻域投票数（6邻域中至
 lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数
 lidar_DBSCAN_epsilon: 0.2    # 激光雷达DBSCAN邻域搜索半径 (米)，不能小于最大体素大小
 lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (true: 启用, false: 使用固定epsilon)
-lidar_DBSCAN_distance_scale: 0.02  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
+lidar_DBSCAN_distance_scale: 0.03  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
 max_object_size: [3.0, 3.0, 1.8] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
 
 # 质心补偿参数 - 解决雷达只能检测到物体朝向雷达一面导致的位置误差
-enable_centroid_compensation: true   # 是否启用质心补偿（建议开启）
-centroid_compensation_ratio: 0.2     # 补偿比例系数 (0.0-1.0)，0.5表示补偿物体尺寸的一半
+enable_centroid_compensation: false   # 是否启用质心补偿（建议开启）
+centroid_compensation_ratio: 0.1     # 补偿比例系数 (0.0-1.0)，0.5表示补偿物体尺寸的一半
 centroid_compensation_min_distance: 5.0  # 质心补偿的最小距离阈值(米)，近距离物体不补偿
 centroid_compensation_max_distance: 15.0 # 质心补偿的最大距离阈值(米)，远距离物体不补偿
 

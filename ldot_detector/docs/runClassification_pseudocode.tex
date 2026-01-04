@@ -1,0 +1,309 @@
+% 定义文档类型为article（文章），字体14pt，纸张A4
+\documentclass[14pt,a4paper]{article}
+% 使用UTF-8编码，支持中文等多种字符
+\usepackage[utf8]{inputenc}
+% 导入algorithm包，用于排版算法
+\usepackage{algorithm}
+% 导入algpseudocode包，用于排版伪代码
+\usepackage{algpseudocode}
+% 导入amsmath包，用于复杂的数学公式
+\usepackage{amsmath}
+% 导入geometry包，用于设置页面布局
+\usepackage{geometry}
+% 设置页边距为1英寸
+\geometry{margin=1in}
+
+% ========== 文档正文开始 ==========
+\begin{document}
+
+% ========== 数学符号说明 ==========
+% 本文档中使用的主要数学符号定义：
+%   - $\mathbf{Box}$ 正体，边界框
+%   - $\mathbf{PC}$ 正体，点云
+%   - $\mathbf{V}$ 正体，速度向量
+%   - $\emptyset$ 表示空集合
+%   - $\in$ 表示属于
+%   - $\forall$ 表示对所有
+%   - $|S|$ 表示集合S的基数（大小或元素个数）
+%   - $\gets$ 符号表示赋值
+%   - $\|\mathbf{v}\|$ 表示向量v的范数（长度）
+
+\begin{algorithm}
+% 设置算法的标题/名称
+\caption{Dynamic/Static Classification}
+% 开始伪代码环境，[1]表示从第1行开始编号
+\begin{algorithmic}[1]
+
+\State \textbf{Input:} $\mathbf{BoxH}$ (Bounding box history), $\mathbf{PCCH}$ (Point cloud clusters history), 
+                        $\mathbf{Pos}_L$ (LiDAR position), $\mathbf{Filters}$ (Kalman filters)
+\State \textbf{Output:} $\mathbf{DynamicBoxes}$ (Dynamic bounding boxes with is\_dynamic flag set)
+
+\State $\mathbf{DynamicBoxes}_{temp} \gets \emptyset$
+
+% 确保辅助历史向量大小一致
+\State Ensure $pointCountHist$ and $previousDynamicState$ are resized to match $|\mathbf{BoxH}|$
+
+% ===== 遍历所有被跟踪的目标 =====
+\For{$i = 0$ to $|\mathbf{PCCH}| - 1$}
+    
+    % ===== 第1步：确定帧间隔 =====
+    \State \textit{// 1. Determine frame gap for comparison}
+    \If{$|\mathbf{PCCH}[i]| < skipFrame + 1$}
+        \State $curFrameGap \gets |\mathbf{PCCH}[i]| - 1$ \Comment{Use available history}
+    \Else
+        \State $curFrameGap \gets skipFrame$ \Comment{Use parameter-defined gap}
+    \EndIf
+    
+    % ===== 第2步：强制动态判定（历史一致性） =====
+    \State \textit{// 2. Force dynamic if consistently dynamic in recent history}
+    \State $dynaFrames \gets 0$
+    \If{$|\mathbf{BoxH}[i]| > forceDynaCheckRange$}
+        \For{$j = 1$ to $forceDynaCheckRange$}
+            \If{$\mathbf{BoxH}[i][j].is\_dynamic == \textbf{true}$}
+                \State $dynaFrames \gets dynaFrames + 1$
+            \EndIf
+        \EndFor
+    \EndIf
+    
+    \If{$dynaFrames \geq forceDynaFrames$}
+        \State $\mathbf{BoxH}[i][0].is\_dynamic \gets \textbf{true}$
+        \State $\mathbf{DynamicBoxes}_{temp}$.append($\mathbf{BoxH}[i][0]$)
+        \State \textbf{continue} \Comment{Skip to next object}
+    \EndIf
+    
+    % ===== 第3步：获取当前和历史点云 =====
+    \State \textit{// 3. Get current and historical point clouds}
+    \State $\mathbf{PC}_{curr} \gets \mathbf{PCCH}[i][0]$ \Comment{Current frame}
+    \State $\mathbf{PC}_{prev} \gets \mathbf{PCCH}[i][curFrameGap]$ \Comment{Historical frame}
+    
+    % ===== 第4步：自适应速度阈值（鲁棒性增强1）=====
+    \State \textit{// 4. Adaptive velocity threshold based on point count and distance}
+    \State $currPointCount \gets |\mathbf{PC}_{curr}|$
+    \State Update $pointCountHist[i]$ with $currPointCount$ (maintain size $\leq$ 10)
+    
+    % 计算物体到传感器的距离
+    \State $objDist \gets \sqrt{(\mathbf{BoxH}[i][0].x - \mathbf{Pos}_L.x)^2 + (\mathbf{BoxH}[i][0].y - \mathbf{Pos}_L.y)^2}$
+    
+    % 自适应速度阈值：点数少或距离远时提高阈值
+    \State $adaptiveVelThresh \gets dynaVelThresh$
+    \If{$currPointCount < minReliablePoints$ \textbf{and} $currPointCount > 0$}
+        \State $pointFactor \gets 1.0 + (1.0 - currPointCount / minReliablePoints)$
+        \State $adaptiveVelThresh \gets adaptiveVelThresh \times \min(pointFactor, 1.5)$
+    \EndIf
+    \State $distFactor \gets 1.0 + \min(objDist / 25.0, 0.5)$
+    \State $adaptiveVelThresh \gets adaptiveVelThresh \times distFactor$
+    
+\algstore{myalg2}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\begin{algorithmic}[1]
+\algrestore{myalg2}
+    
+    % ===== 第5步：遮挡检测（鲁棒性增强2）=====
+    \State \textit{// 5. Occlusion detection based on point count drop}
+    \State $possibleOcclusion \gets \textbf{false}$
+    \If{$|pointCountHist[i]| \geq 2$}
+        \State $avgPointCount \gets \frac{1}{|pointCountHist[i]| - 1} \sum_{k=1}^{|pointCountHist[i]| - 1} pointCountHist[i][k]$
+        \If{$avgPointCount > 0$ \textbf{and} $currPointCount < avgPointCount \times pointCountDropThresh$}
+            \State $possibleOcclusion \gets \textbf{true}$
+        \EndIf
+    \EndIf
+    
+    % ===== 第6步：计算速度向量 =====
+    \State \textit{// 6. Compute velocity vectors}
+    % 边界框整体速度（中心点位移）
+    \State $\mathbf{V}_{box} \gets \frac{\mathbf{BoxH}[i][0].center - \mathbf{BoxH}[i][curFrameGap].center}{dt \times curFrameGap}$
+    
+    % 卡尔曼滤波器估计的速度
+    \State $state \gets \mathbf{Filters}[i]$.getState()
+    \State $dim \gets |state|$
+    \If{$dim == 6$}
+        \State $\mathbf{V}_{kf} \gets (state[3], state[4], state[5])$ \Comment{3D CV model}
+    \ElsIf{$dim == 7$}
+        \If{$\mathbf{BoxH}[i][0].is\_che == \textbf{true}$}
+            \State $\mathbf{V}_{kf} \gets (state[3] \times \cos(state[5]), state[3] \times \sin(state[5]), 0)$ \Comment{CTRA}
+        \Else
+            \State $\mathbf{V}_{kf} \gets (state[3], state[4], 0)$ \Comment{Human CA}
+        \EndIf
+    \ElsIf{$dim == 9$}
+        \State $\mathbf{V}_{kf} \gets (state[3], state[4], state[5])$ \Comment{3D CA model}
+    \Else
+        \State $\mathbf{V}_{kf} \gets (\mathbf{BoxH}[i][0].Vx, \mathbf{BoxH}[i][0].Vy, \mathbf{BoxH}[i][0].Vz)$ \Comment{Fallback}
+    \EndIf
+    
+    % ===== 第7步：点级投票机制 =====
+    \State \textit{// 7. Point-level voting for dynamic classification}
+    \State $numPoints \gets |\mathbf{PC}_{curr}|$
+    \State $votes \gets 0$
+    
+    \For{$j = 0$ to $|\mathbf{PC}_{curr}| - 1$}
+        % 查找当前点在历史点云中的最近邻
+        \State $minDist \gets classificationMinNeighborDist$
+        \State $nearestVect \gets \mathbf{0}$
+        \For{$k = 0$ to $|\mathbf{PC}_{prev}| - 1$}
+            \State $dist \gets \|\mathbf{PC}_{curr}[j] - \mathbf{PC}_{prev}[k]\|$
+            \If{$dist < minDist$}
+                \State $minDist \gets dist$
+                \State $nearestVect \gets \mathbf{PC}_{curr}[j] - \mathbf{PC}_{prev}[k]$
+            \EndIf
+        \EndFor
+        
+        % 计算点的速度
+        \State $\mathbf{V}_{cur} \gets nearestVect / (dt \times curFrameGap)$
+        
+        % 对于人物/车辆，忽略Z轴速度；对于无人机/其他，保留3D速度
+        \If{\textbf{not} ($\mathbf{BoxH}[i][0].is\_uav$ \textbf{or} $\mathbf{BoxH}[i][0].is\_else$)}
+            \State $\mathbf{V}_{cur}[2] \gets 0$
+        \EndIf
+        
+        % 计算点速度与边界框速度的余弦相似度
+        \State $velSim \gets \frac{\mathbf{V}_{cur} \cdot \mathbf{V}_{box}}{\|\mathbf{V}_{cur}\| \times \|\mathbf{V}_{box}\|}$
+        
+        % 速度方向相反且尺寸稳定，认为是噪声，不计入总点数
+        \If{$isSizeStable$ \textbf{and} $velSim < 0$}
+            \State $numPoints \gets numPoints - 1$
+        \Else
+            % 点速度超过阈值，投动态票
+            \If{$\|\mathbf{V}_{cur}\| > dynaVelThresh$}
+                \State $votes \gets votes + 1$
+            \EndIf
+        \EndIf
+    \EndFor
+    
+\algstore{myalg3}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\begin{algorithmic}[1]
+\algrestore{myalg3}
+    
+    % ===== 第8步：投票率与速度判定 =====
+    \State \textit{// 8. Vote ratio and velocity-based decision}
+    \State $voteRatio \gets \begin{cases}
+        votes / numPoints & \text{if } numPoints > 0 \\
+        0 & \text{otherwise}
+    \end{cases}$
+    \State $velNorm \gets \|\mathbf{V}_{kf}\|$
+    
+    % ===== 第9步：遮挡自适应与滞后机制（鲁棒性增强3）=====
+    \State \textit{// 9. Adaptive thresholds with hysteresis and occlusion handling}
+    \State $adaptiveVoteThresh \gets dynaVoteThresh$
+    \State $finalAdaptiveVelThresh \gets adaptiveVelThresh$
+    
+    % 遮挡时提高判定阈值，减少误判
+    \If{$possibleOcclusion == \textbf{true}$}
+        \State $adaptiveVoteThresh \gets \min(0.95, dynaVoteThresh + 0.15)$
+        \State $finalAdaptiveVelThresh \gets adaptiveVelThresh \times 1.5$
+    \EndIf
+    
+    % 滞后机制：防止频繁抖动（动态物体用较低阈值，静态物体用正常阈值）
+    \State $wasDynamic \gets previousDynamicState[i]$
+    \State $effectiveVelThresh \gets \begin{cases}
+        finalAdaptiveVelThresh \times hysteresisLower & \text{if } wasDynamic \\
+        finalAdaptiveVelThresh & \text{otherwise}
+    \end{cases}$
+    
+    % 动态候选判定：投票率 && 速度双重条件
+    \State $is\_dynamic\_candidate \gets (voteRatio \geq adaptiveVoteThresh)$ \textbf{and} 
+                                      $(velNorm \geq effectiveVelThresh)$
+    
+    % 更新滞后状态
+    \State $previousDynamicState[i] \gets is\_dynamic\_candidate$ \textbf{or} $\mathbf{BoxH}[i][0].is\_dynamic$
+    
+    % ===== 第10步：动态一致性检查 =====
+    \State \textit{// 10. Dynamic consistency check over multiple frames}
+    \If{$is\_dynamic\_candidate == \textbf{true}$}
+        \State $\mathbf{BoxH}[i][0].is\_dynamic\_candidate \gets \textbf{true}$
+        
+        % 检查过去几帧是否一直是动态候选
+        \State $dynaConsistCount \gets 0$
+        \If{$|\mathbf{BoxH}[i]| \geq dynamicConsistThresh$}
+            \For{$j = 0$ to $dynamicConsistThresh - 1$}
+                \If{$\mathbf{BoxH}[i][j].is\_dynamic\_candidate$ \textbf{or} $\mathbf{BoxH}[i][j].is\_dynamic$}
+                    \State $dynaConsistCount \gets dynaConsistCount + 1$
+                \EndIf
+            \EndFor
+        \EndIf
+        
+        % 连续多帧满足条件，正式标记为动态
+        \If{$dynaConsistCount == dynamicConsistThresh$}
+            \State $\mathbf{BoxH}[i][0].is\_dynamic \gets \textbf{true}$
+            \State $\mathbf{DynamicBoxes}_{temp}$.append($\mathbf{BoxH}[i][0]$)
+        \EndIf
+    \EndIf
+    
+\EndFor
+
+% ===== 第11步：更新最终输出 =====
+\State \textit{// 11. Update final dynamic obstacles list}
+\State $\mathbf{DynamicBoxes} \gets \mathbf{DynamicBoxes}_{temp}$
+
+% ========== 算法结束，分类管道完成 ==========
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+% ========== 算法说明 ==========
+\section*{Algorithm Overview (算法概览)}
+
+\subsection*{核心思想 (Core Idea)}
+通过点级投票机制和卡尔曼滤波器速度估计，判断跟踪目标是动态还是静态物体。
+
+\subsection*{三大鲁棒性增强机制}
+
+\subsubsection*{1. 自适应速度阈值 (Adaptive Velocity Threshold)}
+\begin{itemize}
+    \item \textbf{点数因子}：点云稀疏时（点数少）提高速度阈值（最多1.5倍），减少远距离小目标的误判
+    \item \textbf{距离因子}：物体距离传感器越远，提高速度阈值（每5米增加20\%，最多1.5倍）
+    \item \textbf{公式}：$adaptiveVelThresh = dynaVelThresh \times pointFactor \times distFactor$
+\end{itemize}
+
+\subsubsection*{2. 遮挡检测 (Occlusion Detection)}
+\begin{itemize}
+    \item 通过监测点数历史，检测点数突降（低于历史平均的阈值比例）
+    \item 遮挡状态下，提高投票阈值（+15\%）和速度阈值（×1.5），防止误判
+    \item 原理：遮挡导致点云不完整，容易产生错误的速度估计
+\end{itemize}
+
+\subsubsection*{3. 滞后机制 (Hysteresis Mechanism)}
+\begin{itemize}
+    \item 对已经是动态的物体使用较低阈值（更难变回静态）
+    \item 对静态物体使用正常阈值
+    \item 目的：防止LiDAR抖动导致动态/静态频繁切换
+    \item \textbf{公式}：
+    \begin{equation*}
+    effectiveVelThresh = 
+    \begin{cases}
+    adaptiveVelThresh \times hysteresisLower & \text{if object was dynamic} \\
+    adaptiveVelThresh & \text{if object was static}
+    \end{cases}
+    \end{equation*}
+\end{itemize}
+
+\subsection*{判定流程 (Decision Process)}
+
+\begin{enumerate}
+    \item \textbf{强制动态}：如果目标在最近N帧中有M帧被判定为动态，直接标记为动态
+    \item \textbf{点级投票}：对点云中每个点，通过与历史点云的最近邻匹配计算速度
+    \item \textbf{双重条件}：同时满足投票率阈值和卡尔曼速度阈值
+    \item \textbf{一致性检查}：连续多帧都满足条件才正式标记为动态
+\end{enumerate}
+
+\subsection*{关键参数 (Key Parameters)}
+
+\begin{itemize}
+    \item $dynaVelThresh$: 基础动态速度阈值
+    \item $dynaVoteThresh$: 动态投票率阈值
+    \item $skipFrame$: 用于速度计算的帧间隔
+    \item $forceDynaFrames$: 强制动态判定所需的历史帧数
+    \item $dynamicConsistThresh$: 一致性检查的帧数
+    \item $minReliablePoints$: 可靠点数阈值（用于自适应）
+    \item $pointCountDropThresh$: 点数下降阈值（遮挡检测）
+    \item $hysteresisLower$: 滞后机制的阈值降低系数
+\end{itemize}
+
+\end{document}
