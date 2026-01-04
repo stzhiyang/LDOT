@@ -178,7 +178,6 @@ void dynamicDetector::odomBufferCB(const nav_msgs::OdometryConstPtr &odom) {
 // 标准点云回调：将数据存入缓冲区队列
 void dynamicDetector::cloudBufferCB(const sensor_msgs::PointCloud2ConstPtr &cloudMsg) {
   this->buffer_clouds_.push_back(cloudMsg);
-  this->buffer_cloud_stamps_.push_back(cloudMsg->header.stamp.toSec());
 }
 
 // 处理定时器回调：从缓冲区取队首数据配对处理
@@ -195,10 +194,6 @@ void dynamicDetector::processTimerCB(const ros::TimerEvent &e) {
   nav_msgs::OdometryConstPtr curOdom = this->buffer_odoms_.front();
   this->buffer_odoms_.pop_front();
   
-  // 弹出点云时间戳
-  this->buffer_cloud_stamps_.pop_front();
-  
-  // 标准 PointCloud2 格式
   sensor_msgs::PointCloud2ConstPtr curCloud = this->buffer_clouds_.front();
   this->buffer_clouds_.pop_front();
   this->lidarOdomCB(curCloud, curOdom);
@@ -359,52 +354,104 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
     }
   }
 
-  // --- 5. 自适应Voxel Grid下采样 ---
-  pcl::PointCloud<pcl::PointXYZ>::Ptr finalCloud;
+  // --- 5. 基于距离的自适应降采样 ---
+  // 策略：近处降采样激进，远处降采样保守，接近最大检测范围时不降采样
+  pcl::PointCloud<pcl::PointXYZ>::Ptr finalCloud(
+      new pcl::PointCloud<pcl::PointXYZ>());
 
-  if (this->enableVoxelDownsampling_ &&
-      static_cast<int>(groundRoofFilterCloud->size()) >
-          this->voxelTargetPointCount_) {
-    // 初始化
-    pcl::PointCloud<pcl::PointXYZ>::Ptr voxelFilteredCloud(
-        new pcl::PointCloud<pcl::PointXYZ>());
-    float adaptiveLeafSize = this->voxelBaseLeafSize_;
-    int iteration = 0;
-    const int maxIterations = 10;      // 防止无限循环
-    const float toleranceRatio = 1.2f; // 允许20%的容差范围
-
-    pcl::PointCloud<pcl::PointXYZ>::Ptr currentCloud = groundRoofFilterCloud;
-
-    // 迭代调整体素大小，直到点数接近目标值
-    while (
-        static_cast<int>(currentCloud->size()) >
-            static_cast<int>(this->voxelTargetPointCount_ * toleranceRatio) &&
-        iteration < maxIterations) {
-
-      pcl::VoxelGrid<pcl::PointXYZ> voxelFilter;
-      voxelFilter.setInputCloud(currentCloud);
-      voxelFilter.setLeafSize(adaptiveLeafSize, adaptiveLeafSize,
-                              adaptiveLeafSize);
-      voxelFilter.filter(*voxelFilteredCloud);
-
-      // 检查是否达到目标
-      if (static_cast<int>(voxelFilteredCloud->size()) <=
-          this->voxelTargetPointCount_) {
-        break; // 达到目标，退出循环
+  if (this->enableVoxelDownsampling_) {
+    // 计算最大检测距离（使用XY平面的最大范围）
+    double maxRange = std::max(this->localLidarRange_.x(), this->localLidarRange_.y());
+    
+    // 定义距离分段阈值（相对于最大检测范围的比例）
+    // 0 ~ 30%: 近距离区域，激进降采样
+    // 30% ~ 70%: 中距离区域，中等降采样
+    // 70% ~ 90%: 远距离区域，轻度降采样
+    // 90% ~ 100%: 边缘区域，不降采样
+    const double nearRatio = 0.3;      // 近距离区域边界
+    const double midRatio = 0.5;       // 中距离区域边界
+    const double farRatio = 0.8;       // 远距离区域边界（超过此比例不降采样）
+    
+    // 各区域的体素大小倍率（相对于基础体素大小）
+    const float nearLeafScale = 1.5f;  
+    const float midLeafScale = 1.2f;   
+    const float farLeafScale = 1.0f;  
+    
+    // 按距离分组点云
+    pcl::PointCloud<pcl::PointXYZ>::Ptr nearCloud(new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::PointCloud<pcl::PointXYZ>::Ptr midCloud(new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::PointCloud<pcl::PointXYZ>::Ptr farCloud(new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::PointCloud<pcl::PointXYZ>::Ptr edgeCloud(new pcl::PointCloud<pcl::PointXYZ>());
+    
+    // 预分配内存
+    size_t totalPoints = groundRoofFilterCloud->size();
+    nearCloud->reserve(totalPoints / 4);
+    midCloud->reserve(totalPoints / 3);
+    farCloud->reserve(totalPoints / 3);
+    edgeCloud->reserve(totalPoints / 10);
+    
+    // 按距离分类点云
+    for (const pcl::PointXYZ &pt : groundRoofFilterCloud->points) {
+      // 计算点到机体的水平距离
+      double dx = pt.x - this->position_(0);
+      double dy = pt.y - this->position_(1);
+      double dist = std::sqrt(dx * dx + dy * dy);
+      double distRatio = dist / maxRange;
+      
+      if (distRatio < nearRatio) {
+        nearCloud->push_back(pt);
+      } else if (distRatio < midRatio) {
+        midCloud->push_back(pt);
+      } else if (distRatio < farRatio) {
+        farCloud->push_back(pt);
+      } else {
+        // 边缘区域：不降采样，直接保留
+        edgeCloud->push_back(pt);
       }
-
-      // 更新参数准备下一次迭代
-      currentCloud = voxelFilteredCloud;
-      adaptiveLeafSize *= 1.2f; // 增大体素20%
-      ++iteration;
-
-      // 准备下一次迭代的输出云
-      voxelFilteredCloud.reset(new pcl::PointCloud<pcl::PointXYZ>());
     }
-
-    finalCloud = currentCloud;
+    
+    // 对各区域分别进行降采样
+    pcl::VoxelGrid<pcl::PointXYZ> voxelFilter;
+    
+    // 近距离区域降采样
+    if (!nearCloud->empty()) {
+      pcl::PointCloud<pcl::PointXYZ>::Ptr nearFiltered(new pcl::PointCloud<pcl::PointXYZ>());
+      float nearLeafSize = this->voxelBaseLeafSize_ * nearLeafScale;
+      voxelFilter.setInputCloud(nearCloud);
+      voxelFilter.setLeafSize(nearLeafSize, nearLeafSize, nearLeafSize);
+      voxelFilter.filter(*nearFiltered);
+      *finalCloud += *nearFiltered;
+    }
+    
+    // 中距离区域降采样
+    if (!midCloud->empty()) {
+      pcl::PointCloud<pcl::PointXYZ>::Ptr midFiltered(new pcl::PointCloud<pcl::PointXYZ>());
+      float midLeafSize = this->voxelBaseLeafSize_ * midLeafScale;
+      voxelFilter.setInputCloud(midCloud);
+      voxelFilter.setLeafSize(midLeafSize, midLeafSize, midLeafSize);
+      voxelFilter.filter(*midFiltered);
+      *finalCloud += *midFiltered;
+    }
+    
+    // 远距离区域降采样
+    if (!farCloud->empty()) {
+      pcl::PointCloud<pcl::PointXYZ>::Ptr farFiltered(new pcl::PointCloud<pcl::PointXYZ>());
+      float farLeafSize = this->voxelBaseLeafSize_ * farLeafScale;
+      voxelFilter.setInputCloud(farCloud);
+      voxelFilter.setLeafSize(farLeafSize, farLeafSize, farLeafSize);
+      voxelFilter.filter(*farFiltered);
+      *finalCloud += *farFiltered;
+    }
+    
+    // 边缘区域不降采样，直接添加
+    if (!edgeCloud->empty()) {
+      *finalCloud += *edgeCloud;
+    }
+    
+    ROS_DEBUG_THROTTLE(1.0, "%s: Distance-based downsampling - Near: %lu, Mid: %lu, Far: %lu, Edge(no ds): %lu -> Total: %lu",
+                       this->hint_.c_str(), nearCloud->size(), midCloud->size(), 
+                       farCloud->size(), edgeCloud->size(), finalCloud->size());
   } else {
-    // 不启用下采样或点数未超过阈值
     finalCloud = groundRoofFilterCloud;
   }
 
@@ -525,14 +572,14 @@ void dynamicDetector::runDetection() {
 
   // 在生成特征之前进行帧内去重(NMS)以减少不必要计算
   if (this->enableDetectionNMS_ && tmpPcClusters.size() > 1) {
-    size_t beforeNMS = lidarBBoxesFiltered.size();
+    // size_t beforeNMS = lidarBBoxesFiltered.size();
     this->applyDetectionNMS(lidarBBoxesFiltered, tmpPcClusters,
                             tmpPcClusterCenters, tmpPcClusterStds);
-    size_t afterNMS = lidarBBoxesFiltered.size();
-    if (beforeNMS != afterNMS) {
-      ROS_INFO_THROTTLE(1.0, "%s: Detection NMS (pre-feature): %lu -> %lu boxes",
-                        this->hint_.c_str(), beforeNMS, afterNMS);
-    }
+    // size_t afterNMS = lidarBBoxesFiltered.size();
+    // if (beforeNMS != afterNMS) {
+    //   ROS_INFO_THROTTLE(1.0, "%s: Detection NMS (pre-feature): %lu -> %lu boxes",
+    //                     this->hint_.c_str(), beforeNMS, afterNMS);
+    // }
   }
 
   // 清空成员变量，准备存储新的检测结果
@@ -1215,23 +1262,23 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     // 使用匈牙利算法求解最优匹配
     this->hungarianAlgorithm(costMatrix, bestMatch);
 
-    // // 统计并输出关联结果
-    // int numMatched = 0;
-    // int numNewTargets = 0;
-    // for (int i = 0; i < numCurrObjs; ++i) {
-    //   if (bestMatch[i] >= 0) {
-    //     numMatched++;
-    //   } else {
-    //     numNewTargets++;
-    //   }
-    // }
-    // int numLostTargets = numHistObjs - numMatched;
+    // 统计并输出关联结果
+    int numMatched = 0;
+    int numNewTargets = 0;
+    for (int i = 0; i < numCurrObjs; ++i) {
+      if (bestMatch[i] >= 0) {
+        numMatched++;
+      } else {
+        numNewTargets++;
+      }
+    }
+    int numLostTargets = numHistObjs - numMatched;
 
-    // // 简洁的日志输出
-    // ROS_INFO_THROTTLE(
-    //     0.5, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
-    //     this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
-    //     numNewTargets, numLostTargets);
+    // 简洁的日志输出
+    ROS_INFO_THROTTLE(
+        1, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
+        this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
+        numNewTargets, numLostTargets);
   }
 }
 
@@ -1673,7 +1720,6 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   std::vector<int> smallSizeCounterTemp;
   std::vector<std::shared_ptr<KalmanFilterBase>> filtersTemp;
   std::vector<int> trackMissedFramesTemp;
-  std::vector<int> confirmedDynamicFramesTemp; // 连续动态帧数计数器
   std::vector<int> stableClassificationCountTemp; // 连续相同分类计数器（用于fix_size）
   std::vector<ros::Time> lastClassifyTimeTemp;    // 上次分类时间戳
 
@@ -1684,9 +1730,6 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   }
   if (this->smallSizeCounter_.size() != histSize) {
     this->smallSizeCounter_.resize(histSize, 0);
-  }
-  if (this->confirmedDynamicFrames_.size() != histSize) {
-    this->confirmedDynamicFrames_.resize(histSize, 0);
   }
   if (this->stableClassificationCount_.size() != histSize) {
     this->stableClassificationCount_.resize(histSize, 0);
@@ -1731,7 +1774,6 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       pcStdHistTemp.push_back(this->pcStdHist_[h_idx]);
       maxHistorySizesTemp.push_back(this->maxHistorySizes_[h_idx]);
       smallSizeCounterTemp.push_back(this->smallSizeCounter_[h_idx]);
-      confirmedDynamicFramesTemp.push_back(this->confirmedDynamicFrames_[h_idx]);
       stableClassificationCountTemp.push_back(this->stableClassificationCount_[h_idx]);
       lastClassifyTimeTemp.push_back(this->lastClassifyTime_[h_idx]);
       filtersTemp.push_back(this->filters_[h_idx]);
@@ -1850,7 +1892,6 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
           Eigen::Vector3d(currDetectedBBox.x_width, currDetectedBBox.y_width,
                           currDetectedBBox.z_width)); // 初始化最大尺寸
       smallSizeCounterTemp.push_back(0);
-      confirmedDynamicFramesTemp.push_back(0);
       stableClassificationCountTemp.push_back(0);
       lastClassifyTimeTemp.push_back(ros::Time(0));
 
@@ -1925,7 +1966,6 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
         pcStdHistTemp.push_back(this->pcStdHist_[j]);
         maxHistorySizesTemp.push_back(this->maxHistorySizes_[j]);
         smallSizeCounterTemp.push_back(this->smallSizeCounter_[j]);
-        confirmedDynamicFramesTemp.push_back(this->confirmedDynamicFrames_[j]);
         stableClassificationCountTemp.push_back(this->stableClassificationCount_[j]);
         lastClassifyTimeTemp.push_back(this->lastClassifyTime_[j]);
         filtersTemp.push_back(this->filters_[j]);
@@ -2064,7 +2104,6 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   this->filters_ = filtersTemp;
   this->trackedBBoxes_ = trackedBBoxesTemp;
   this->trackMissedFrames_ = trackMissedFramesTemp;
-  this->confirmedDynamicFrames_ = confirmedDynamicFramesTemp;
   this->stableClassificationCount_ = stableClassificationCountTemp;
   this->lastClassifyTime_ = lastClassifyTimeTemp;
 }
@@ -2150,15 +2189,6 @@ void dynamicDetector::removeDuplicateTracks() {
       this->pcStdHist_.erase(this->pcStdHist_.begin() + i);
       this->maxHistorySizes_.erase(this->maxHistorySizes_.begin() + i);
       this->smallSizeCounter_.erase(this->smallSizeCounter_.begin() + i);
-      if (i < static_cast<int>(this->confirmedDynamicFrames_.size())) {
-        this->confirmedDynamicFrames_.erase(this->confirmedDynamicFrames_.begin() + i);
-      }
-      if (i < static_cast<int>(this->pointCountHist_.size())) {
-        this->pointCountHist_.erase(this->pointCountHist_.begin() + i);
-      }
-      if (i < static_cast<int>(this->previousDynamicState_.size())) {
-        this->previousDynamicState_.erase(this->previousDynamicState_.begin() + i);
-      }
       if (i < static_cast<int>(this->stableClassificationCount_.size())) {
         this->stableClassificationCount_.erase(this->stableClassificationCount_.begin() + i);
       }
@@ -2251,34 +2281,20 @@ void dynamicDetector::runClassification() {
 
   // 创建一个临时向量来存储当前帧检测到的动态边界框
   std::vector<onboardDetector::box3D> dynamicBBoxesTemp;
-  
-  // 确保点数历史记录向量大小与轨迹数量一致
-  while (this->pointCountHist_.size() < this->pcHist_.size()) {
-    this->pointCountHist_.push_back(std::deque<int>());
-  }
-  // 确保滞后状态向量大小与轨迹数量一致
-  while (this->previousDynamicState_.size() < this->pcHist_.size()) {
-    this->previousDynamicState_.push_back(false);
-  }
 
   // 遍历所有被跟踪目标的点云/边界框历史。
   // 默认只判断xy平面的动态性，但对于无人机（is_uav）和其他3D类（is_else），保留z轴速度用于3D动态判别
   for (size_t i = 0; i < this->pcHist_.size(); ++i) {
-    // ===================================================================================
-    // 情况一：历史记录长度不足以进行分类
-    // 确定用于比较的当前帧与历史帧之间的时间间隔（帧数）
-    int curFrameGap;
-    if (int(this->pcHist_[i].size()) < this->skipFrame_ + 1) {
-      // 如果历史记录不够长，就用现有的最远一帧进行比较
-      curFrameGap = this->pcHist_[i].size() - 1;
-    } else {
-      // 否则，使用参数设定的帧间隔
-      curFrameGap = this->skipFrame_;
+    // 使用最新的两帧进行比较（当前帧和上一帧）
+    // 如果历史记录不足2帧，跳过该轨迹的动静态判断
+    if (this->pcHist_[i].size() < 2) {
+      continue;
     }
-    // ===================================================================================
+    int curFrameGap = 1;
 
     // ==================================================================================
-    // 情况二：强制动态（如果一个障碍物在过去一段时间内被频繁分类为动态，则强制认定其为动态）
+    // 强制动态（如果一个障碍物在过去一段时间内被频繁分类为动态，则强制认定其为动态）
+    // 但需要额外检查当前速度，防止静态物体因历史误判而被持续标记为动态
     int dynaFrames = 0;
     if (int(this->boxHist_[i].size()) > this->forceDynaCheckRange_) {
       for (int j = 1; j < this->forceDynaCheckRange_ + 1; ++j) {
@@ -2288,79 +2304,9 @@ void dynamicDetector::runClassification() {
       }
     }
 
-    if (dynaFrames >= this->forceDynaFrames_) {
-      this->boxHist_[i][0].is_dynamic = true;
-      dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
-      continue;
-    }
-    // ===================================================================================
-
-    // 获取当前帧和历史计算帧的点云
-    std::vector<Eigen::Vector3d> currPc = this->pcHist_[i][0];
-    std::vector<Eigen::Vector3d> prevPc = this->pcHist_[i][curFrameGap];
-    
-    // ===================================================================================
-    // 【鲁棒性增强1】点云稀疏自适应 - 根据点数和距离动态调整速度阈值
-    // ===================================================================================
-    int currPointCount = static_cast<int>(currPc.size());
-    // 更新点数历史
-    this->pointCountHist_[i].push_front(currPointCount);
-    if (this->pointCountHist_[i].size() > 10) {
-      this->pointCountHist_[i].pop_back();
-    }
-    
-    // 计算物体到机体的距离（在全局坐标系下）
-    double dx = this->boxHist_[i][0].x - this->position_.x();
-    double dy = this->boxHist_[i][0].y - this->position_.y();
-    double objDist = std::sqrt(dx * dx + dy * dy);
-    
-    // 自适应速度阈值：点数少或距离远时提高阈值，减少误判
-    double adaptiveVelThresh = this->dynaVelThresh_;
-    // 点数因子：点数少于阈值时提高阈值（最多1.5倍），即聚类点云数量的两倍
-    if (currPointCount < this->minReliablePoints_ && currPointCount > 0) {
-      double pointFactor = 1.0 + (1.0 - static_cast<double>(currPointCount) / this->minReliablePoints_);
-      adaptiveVelThresh *= std::min(pointFactor, 1.5);
-    }
-    // 距离因子：距离远时提高阈值（每5米增加20%，最多1.5倍）
-    double distFactor = 1.0 + std::min(objDist / 25.0, 0.5);
-    adaptiveVelThresh *= distFactor;
-    
-    // ===================================================================================
-    // 【鲁棒性增强2】遮挡检测 - 检测点数突变，标记为可能遮挡
-    // ===================================================================================
-    bool possibleOcclusion = false;
-    if (this->pointCountHist_[i].size() >= 2) {
-      // 计算历史平均点数（排除当前帧）
-      double avgPointCount = 0.0;
-      for (size_t k = 1; k < this->pointCountHist_[i].size(); ++k) {
-        avgPointCount += this->pointCountHist_[i][k];
-      }
-      avgPointCount /= (this->pointCountHist_[i].size() - 1);
-      
-      // 如果当前点数下降超过阈值，标记为可能遮挡
-      if (avgPointCount > 0 && currPointCount < avgPointCount * this->pointCountDropThreshold_) {
-        possibleOcclusion = true;
-      }
-    }
-
-    // 初始化速度向量
-    Eigen::Vector3d Vcur(0., 0., 0.); // 单个点的速度
-    Eigen::Vector3d Vbox(0., 0., 0.); // 整个边界框的平均速度
-    Eigen::Vector3d Vkf(0., 0., 0.);  // 卡尔曼滤波器估计的速度
-
-    int numPoints = currPc.size(); // 点云中的总点数，用于计算投票率
-    int votes = 0;                 // “动态”票数
-
-    // 计算边界框中心点的速度
-    Vbox(0) = (this->boxHist_[i][0].x - this->boxHist_[i][curFrameGap].x) /
-              (this->dt_ * curFrameGap);
-    Vbox(1) = (this->boxHist_[i][0].y - this->boxHist_[i][curFrameGap].y) /
-              (this->dt_ * curFrameGap);
-    Vbox(2) = (this->boxHist_[i][0].z - this->boxHist_[i][curFrameGap].z) /
-              (this->dt_ * curFrameGap);
-
-    // 获取卡尔曼滤波器估计的速度，根据不同模型维度进行计算
-    // 边界检查
+    // 获取卡尔曼滤波器估计的速度（提前计算，用于强制动态的速度检查）
+    // 根据不同模型维度进行计算，默认考虑三轴速度
+    Eigen::Vector3d Vkf(0., 0., 0.);
     if (i >= this->filters_.size() || !this->filters_[i]) {
       continue;
     }
@@ -2398,10 +2344,70 @@ void dynamicDetector::runClassification() {
       Vkf(1) = this->boxHist_[i][0].Vy;
       Vkf(2) = this->boxHist_[i][0].Vz; // use historical vz if available
     }
+    // 获取卡尔曼滤波器估计的速度大小
+    double velNorm = Vkf.norm();
 
-    // 检查尺寸稳定性（解决遮挡导致的误判问题）
-    // 由于已经把静态簇过滤了，不需要这个尺寸稳定性检测了
-    bool isSizeStable = true;
+    // 强制动态判定（历史动态惯性机制）
+    // 条件1：历史帧数条件 + 当前速度仍然足够快（原有逻辑）
+    // 条件2：历史动态比例极高（>80%）时，即使当前低速也保持动态状态（防止低速/转弯误判）
+    //        但需要额外检查：如果连续多帧速度都很低，则允许转为静态
+    bool forceDynamic = false;
+    
+    // 计算历史动态比例
+    double dynaRatio = (this->forceDynaCheckRange_ > 0) ? 
+                       double(dynaFrames) / double(this->forceDynaCheckRange_) : 0.0;
+    
+    if (dynaFrames >= this->forceDynaFrames_ && velNorm >= this->dynaVelThresh_ * 0.5) {
+      // 原有逻辑：历史动态帧数足够 + 当前速度足够
+      forceDynamic = true;
+    } else if (dynaRatio >= 0.7 && dynaFrames >= this->dynamicConsistThresh_) {
+      // 新增逻辑：历史动态比例极高（>80%），即使当前低速也保持动态
+      // 这解决了动态物体低速或原地转弯时被误判为静态的问题
+      // 但需要检查是否真的停下来了（连续低速帧数）
+      int lowSpeedFrames = 0;
+      const int maxLowSpeedFrames = this->forceDynaCheckRange_;  // 连续低速超过10帧才允许转为静态
+      for (int j = 0; j < std::min(maxLowSpeedFrames, int(this->boxHist_[i].size())); ++j) {
+        // 计算历史帧的速度
+        double histVel = std::sqrt(
+            this->boxHist_[i][j].Vx * this->boxHist_[i][j].Vx +
+            this->boxHist_[i][j].Vy * this->boxHist_[i][j].Vy);
+        if (histVel < this->dynaVelThresh_ * 0.3) {
+          lowSpeedFrames++;
+        } else {
+          break;  // 一旦有高速帧就停止计数
+        }
+      }
+      // 只有连续低速帧数未达到阈值时才保持动态
+      if (lowSpeedFrames < (maxLowSpeedFrames + 1)) {
+        forceDynamic = true;
+      }
+    }
+    
+    if (forceDynamic) {
+      this->boxHist_[i][0].is_dynamic = true;
+      dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
+      continue;
+    }
+    // ===================================================================================
+
+    // 获取当前帧和历史计算帧的点云
+    std::vector<Eigen::Vector3d> currPc = this->pcHist_[i][0];
+    std::vector<Eigen::Vector3d> prevPc = this->pcHist_[i][curFrameGap];
+
+    // 初始化速度向量
+    Eigen::Vector3d Vcur(0., 0., 0.); // 单个点的速度
+    Eigen::Vector3d Vbox(0., 0., 0.); // 整个边界框的平均速度
+
+    int numPoints = currPc.size(); // 点云中的总点数，用于计算投票率
+    int votes = 0;                 // “动态”票数
+
+    // 计算边界框中心点的速度
+    Vbox(0) = (this->boxHist_[i][0].x - this->boxHist_[i][curFrameGap].x) /
+              (this->dt_ * curFrameGap);
+    Vbox(1) = (this->boxHist_[i][0].y - this->boxHist_[i][curFrameGap].y) /
+              (this->dt_ * curFrameGap);
+    Vbox(2) = (this->boxHist_[i][0].z - this->boxHist_[i][curFrameGap].z) /
+              (this->dt_ * curFrameGap);
 
     // 遍历当前点云中的每一个点，通过与历史点云比较来“投票”
     for (size_t j = 0; j < currPc.size(); ++j) {
@@ -2427,7 +2433,7 @@ void dynamicDetector::runClassification() {
 
       // 如果速度方向相反，且尺寸稳定，则认为该点是噪声或匹配错误，不计入总点数
       // 如果尺寸不稳定（可能因遮挡导致质心偏移），则不进行此过滤，保留所有点作为分母
-      if (isSizeStable && velSim < 0) {
+      if (velSim < 0) {
         --numPoints;
       } else {
         // 如果点的速度超过动态阈值，则投一票“动态”
@@ -2440,36 +2446,10 @@ void dynamicDetector::runClassification() {
     // --- 根据投票结果和速度阈值判断是否为动态 ---
     // 计算动态票的比例
     double voteRatio = (numPoints > 0) ? double(votes) / double(numPoints) : 0;
-    // 获取卡尔曼滤波器估计的速度大小
-    double velNorm = Vkf.norm();
-    
-    // ===================================================================================
-    // 【鲁棒性增强3】抖动过滤与滞后机制
-    // ===================================================================================
-    // 如果检测到可能遮挡，提高投票阈值和速度阈值要求
-    // 遮挡会导致点云不完整，容易产生误判，需要更严格的判断条件
-    double adaptiveVoteThresh = this->dynaVoteThresh_;
-    double finalAdaptiveVelThresh = adaptiveVelThresh;
-    if (possibleOcclusion) {
-      // 提高投票阈值（增加15%，最高0.95）
-      adaptiveVoteThresh = std::min(0.95, this->dynaVoteThresh_ + 0.15);
-      // 提高速度阈值（增加30%）
-      finalAdaptiveVelThresh = adaptiveVelThresh * 1.5;
-    }
-    
-    // 滞后机制：已经是动态的物体用较低阈值，静态物体用较高阈值
-    // 防止LiDAR抖动导致静态物体在动态/静态之间频繁切换
-    bool wasDynamic = this->previousDynamicState_[i];
-    double effectiveVelThresh = wasDynamic ? 
-        (finalAdaptiveVelThresh * this->hysteresisLower_) :  // 动态->静态：用较低阈值（更难变静态）
-        finalAdaptiveVelThresh;                               // 静态->动态：用正常阈值
     
     // 动态判定条件：点云投票率足够高 && 卡尔曼滤波器估计的线速度足够快
     bool is_dynamic_candidate =
-        (voteRatio >= adaptiveVoteThresh && velNorm >= effectiveVelThresh);
-    
-    // 更新滞后状态
-    this->previousDynamicState_[i] = is_dynamic_candidate || this->boxHist_[i][0].is_dynamic;
+        (voteRatio >= this->dynaVoteThresh_ && velNorm >= this->dynaVelThresh_);
 
     if (is_dynamic_candidate) {
       // 如果满足条件，首先标记为“动态候选”
@@ -2498,38 +2478,6 @@ void dynamicDetector::runClassification() {
 
   // 直接更新最终的动态障碍物列表（已移除尺寸过滤）
   this->dynamicBBoxes_ = dynamicBBoxesTemp;
-
-  // 【动态反哺机制】清理已确认动态物体历史轨迹区域的体素
-  // 【修复】只有连续多帧确认为动态的物体才触发体素清除，防止短暂误判导致静态标记丢失
-  // if (this->staticFilterEnabled_ || this->staticClusterFilterEnabled_) {
-  //   // 确保 confirmedDynamicFrames_ 向量大小与轨迹数量一致
-  //   while (this->confirmedDynamicFrames_.size() < this->boxHist_.size()) {
-  //     this->confirmedDynamicFrames_.push_back(0);
-  //   }
-    
-  //   // 收集需要清除体素的动态物体（连续动态帧数达到阈值）
-  //   std::vector<onboardDetector::box3D> boxesToClear;
-  //   for (size_t i = 0; i < this->boxHist_.size(); ++i) {
-  //     if (!this->boxHist_[i].empty() && this->boxHist_[i][0].is_dynamic) {
-  //       // 增加连续动态帧数计数
-  //       this->confirmedDynamicFrames_[i]++;
-  //       // 只有连续动态帧数达到阈值才触发体素清除
-  //       if (this->confirmedDynamicFrames_[i] >= this->voxelClearDynamicFrames_) {
-  //         boxesToClear.push_back(this->boxHist_[i][0]);
-  //       }
-  //     } else {
-  //       // 如果当前帧不是动态，重置计数器
-  //       if (i < this->confirmedDynamicFrames_.size()) {
-  //         this->confirmedDynamicFrames_[i] = 0;
-  //       }
-  //     }
-  //   }
-    
-  //   // 只对达到阈值的物体执行体素清除
-  //   if (!boxesToClear.empty()) {
-  //     this->staticFilter_->clearDynamicRegions(boxesToClear);
-  //   }
-  // }
 
   // [Performance Timing] 输出耗时
   // auto end_time = std::chrono::high_resolution_clock::now();

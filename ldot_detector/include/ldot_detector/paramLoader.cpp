@@ -26,7 +26,6 @@ void ParamLoader::loadAllParams(dynamicDetector *detector) {
   loadStaticFilterParams(detector);
   loadTrackingParams(detector);
   loadClassificationParams(detector);
-  loadRobustnessParams(detector);
   loadSizeConstraintParams(detector);
   loadNMSParams(detector);
   loadObjectClassifyParams(detector);
@@ -511,14 +510,6 @@ void ParamLoader::loadClassificationParams(dynamicDetector *detector) {
                           << detector->classificationIntervalSec_ << "s");
   }
 
-  // 帧跳过数
-  if (not nh_.getParam(ns_ + "/frame_skip", detector->skipFrame_)) {
-    detector->skipFrame_ = 5;
-    ROS_WARN_STREAM(hint_ << " No frame_skip param. Use default: 5");
-  } else {
-    ROS_INFO_STREAM(hint_ << " frame_skip: " << detector->skipFrame_);
-  }
-
   // 动态速度阈值
   if (not nh_.getParam(ns_ + "/dynamic_velocity_threshold",
                        detector->dynaVelThresh_)) {
@@ -621,53 +612,6 @@ void ParamLoader::loadClassificationParams(dynamicDetector *detector) {
   } else {
     ROS_INFO_STREAM(hint_ << " classification_size_reset_frames: "
                           << detector->sizeResetFrames_);
-  }
-
-  // 体素清除动态帧数
-  if (not nh_.getParam(ns_ + "/voxel_clear_dynamic_frames",
-                       detector->voxelClearDynamicFrames_)) {
-    detector->voxelClearDynamicFrames_ = 5;
-    ROS_WARN_STREAM(hint_ << " No voxel_clear_dynamic_frames param. Use "
-                             "default: 5");
-  } else {
-    ROS_INFO_STREAM(hint_ << " voxel_clear_dynamic_frames: "
-                          << detector->voxelClearDynamicFrames_);
-  }
-}
-
-
-// ==================== Robustness Enhancement Parameters ====================
-void ParamLoader::loadRobustnessParams(dynamicDetector *detector) {
-  ROS_INFO_STREAM(hint_ << " --- Robustness Enhancement Parameters ---");
-
-  // 最小可靠点数
-  if (not nh_.getParam(ns_ + "/min_reliable_points",
-                       detector->minReliablePoints_)) {
-    detector->minReliablePoints_ = 20;
-    ROS_WARN_STREAM(hint_ << " No min_reliable_points param. Use default: 20");
-  } else {
-    ROS_INFO_STREAM(hint_ << " min_reliable_points: "
-                          << detector->minReliablePoints_);
-  }
-
-  // 点数下降阈值
-  if (not nh_.getParam(ns_ + "/point_count_drop_threshold",
-                       detector->pointCountDropThreshold_)) {
-    detector->pointCountDropThreshold_ = 0.5;
-    ROS_WARN_STREAM(hint_ << " No point_count_drop_threshold param. Use "
-                             "default: 0.5");
-  } else {
-    ROS_INFO_STREAM(hint_ << " point_count_drop_threshold: "
-                          << detector->pointCountDropThreshold_);
-  }
-
-  // 滞后系数
-  if (not nh_.getParam(ns_ + "/hysteresis_lower", detector->hysteresisLower_)) {
-    detector->hysteresisLower_ = 0.7;
-    ROS_WARN_STREAM(hint_ << " No hysteresis_lower param. Use default: 0.7");
-  } else {
-    ROS_INFO_STREAM(hint_ << " hysteresis_lower: "
-                          << detector->hysteresisLower_);
   }
 }
 

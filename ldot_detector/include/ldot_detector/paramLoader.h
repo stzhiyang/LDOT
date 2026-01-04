@@ -72,9 +72,6 @@ private:
   // 加载动态/静态分类参数
   void loadClassificationParams(dynamicDetector *detector);
 
-  // 加载鲁棒性增强参数
-  void loadRobustnessParams(dynamicDetector *detector);
-
   // 加载尺寸约束参数
   void loadSizeConstraintParams(dynamicDetector *detector);
 

@@ -142,7 +142,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: RGB8
       Decay Time: 0
-      Enabled: false
+      Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -157,7 +157,7 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: false
+      Value: true
     - Class: rviz/MarkerArray
       Enabled: false
       Marker Topic: /ldot_detector/filtered_bboxes
@@ -243,7 +243,7 @@ Visualization Manager:
       Marker Topic: /ldot_detector/dynamic_bboxes
       Name: Dynamic Obstacles BBoxes
       Namespaces:
-        {}
+        box3D: true
       Queue Size: 100
       Value: true
     - Class: rviz/MarkerArray
@@ -251,7 +251,9 @@ Visualization Manager:
       Marker Topic: /ldot_detector/dynamic_trajectories
       Name: Dynamic Trajectory
       Namespaces:
-        {}
+        dynamic_trajectory_labels: true
+        dynamic_trajectory_lines: true
+        dynamic_velocity_arrows: true
       Queue Size: 100
       Value: true
     - Class: rviz/MarkerArray
