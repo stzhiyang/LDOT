@@ -52,11 +52,13 @@ struct TrajectoryPoint {
 // 处理线程写入 writeBuffer，可视化/服务线程读取 readBuffer
 // ===================================================================
 struct SharedData {
-  // 原始点云和位姿数据（用于可视化原始点云）
-  sensor_msgs::PointCloud2 latestCloud;      // 原始点云消息
+  // 位姿数据
   Eigen::Vector3d positionLidar;             // 激光雷达位置
   Eigen::Matrix3d orientationLidar;          // 激光雷达姿态
   bool hasCloud = false;                     // 是否有有效点云
+  
+  // 点云数据
+  pcl::PointCloud<pcl::PointXYZ>::Ptr latestCloud;  // 最新的世界坐标系点云
   
   // 检测结果
   std::vector<onboardDetector::box3D> filteredBBoxes;
@@ -101,6 +103,9 @@ private:
   
   typedef message_filters::sync_policies::ApproximateTime<livox_ros_driver2::CustomMsg, nav_msgs::Odometry> lidarCustomOdomSync;
   std::shared_ptr<message_filters::Synchronizer<lidarCustomOdomSync>> lidarCustomOdomSync_;
+  
+  // 高频里程计独立订阅器（用于运动补偿插值，不参与同步）
+  ros::Subscriber highFreqOdomSub_;
 
   // 定时器
   ros::Timer visTimer_;                  // 可视化发布定时器（独立线程）
@@ -113,7 +118,7 @@ private:
   ros::Publisher dynamicPointsPub_;      // 动态点云
   ros::Publisher rawDynamicPointsPub_;   // 原始动态点云
   ros::Publisher downSamplePointsPub_;   // 降采样后的点云
-  ros::Publisher rawLidarPointsPub_;     // 原始激光雷达点云
+  ros::Publisher rawLidarPointsPub_;     // 原始激光雷达点云（世界坐标系）
   ros::Publisher historyTrajPub_;        // 历史轨迹
   ros::Publisher dynamicTrajPub_;        // 动态轨迹
 
@@ -133,7 +138,8 @@ private:
   // ROS话题配置
   bool useLivoxCustomMsg_;                 // 是否使用Livox CustomMsg格式
   std::string lidarTopicName_;             // 激光雷达点云话题
-  std::string odomTopicName_;              // 里程计话题
+  std::string odomTopicName_;              // 里程计话题（用于同步）
+  std::string highFreqOdomTopicName_;      // 高频里程计话题（用于运动补偿插值）
   
   // 坐标变换
   Eigen::Matrix4d body2Lidar_;             // 机体坐标系到激光雷达坐标系的变换矩阵
@@ -287,15 +293,14 @@ private:
   Eigen::Vector3d localLidarRange_;  // 激光雷达局部检测范围（X、Y方向）
   
   // 运动补偿相关
-  bool enableMotionCompensation_;    // 是否启用运动补偿
   int odomHistorySize_;              // 里程计历史队列大小
   std::deque<nav_msgs::Odometry> odomHistory_;  // 里程计历史记录
 
   // ===================================================================
   // 点云处理数据
   // ===================================================================
-  sensor_msgs::PointCloud2ConstPtr latestCloud_;           // 最新的原始激光雷达消息（用于可视化）
-  pcl::PointCloud<pcl::PointXYZ>::Ptr lidarCloud_ = NULL; // 处理后的激光雷达点云
+  pcl::PointCloud<pcl::PointXYZ>::Ptr lidarCloud_ = NULL;   // 预处理后的激光雷达点云
+  pcl::PointCloud<pcl::PointXYZ>::Ptr latestCloud_ = NULL;  // 最新的世界坐标系点云（用于可视化）
 
   // ===================================================================
   // 检测结果
@@ -338,7 +343,6 @@ private:
   bool enableTimingOutput_;                          // 是否启用计时输出
   std::string timingFilePath_;                       // 计时文件路径
   std::ofstream timingOutputFile_;                   // 计时输出文件流
-  double lastConversionTime_;                        // 上一次格式转换的耗时（毫秒）
 
   // ===================================================================
   // 线程安全与数据同步 - 双缓冲机制（无锁设计）
@@ -383,9 +387,26 @@ public:
   // ===================================================================
   // 主处理流程
   // ===================================================================
-  pcl::PointCloud<pcl::PointXYZ>::Ptr preprocessPointCloud(
+  // 统一处理入口：预处理 + 检测 + 跟踪 + 分类
+  void processWorldCloud(pcl::PointCloud<pcl::PointXYZ>::Ptr worldCloud,
+                         const nav_msgs::OdometryConstPtr &odom,
+                         const ros::Time &cloudStamp);
+  
+  // 点云格式转换与坐标变换（输出世界坐标系 PCL 点云）
+  pcl::PointCloud<pcl::PointXYZ>::Ptr transformLivoxToWorld(
+      const livox_ros_driver2::CustomMsgConstPtr &customMsg,
+      const nav_msgs::OdometryConstPtr &odom);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr transformCloud2ToWorld(
       const sensor_msgs::PointCloud2ConstPtr &cloudMsg,
       const nav_msgs::OdometryConstPtr &odom);
+  
+  // 统一预处理（输入：世界坐标系点云）
+  pcl::PointCloud<pcl::PointXYZ>::Ptr preprocessWorldCloud(
+      pcl::PointCloud<pcl::PointXYZ>::Ptr worldCloud);
+  
+  // 更新位姿信息
+  void updatePose(const nav_msgs::OdometryConstPtr &odom);
+  
   void runDetection();                           // 执行检测
   void runTracking();                            // 执行跟踪
   void runClassification();                      // 执行分类
@@ -394,10 +415,6 @@ public:
   void updateOdomHistory(const nav_msgs::OdometryConstPtr &odom);
   bool interpolatePose(double timestamp, Eigen::Vector3d &position, 
                        Eigen::Quaterniond &orientation);
-  pcl::PointCloud<pcl::PointXYZ>::Ptr applyMotionCompensation(
-      const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
-      const livox_ros_driver2::CustomMsgConstPtr &customMsg,
-      const nav_msgs::OdometryConstPtr &frameEndOdom);
 
   // ===================================================================
   // 检测模块
@@ -477,8 +494,6 @@ public:
   // ===================================================================
   void getLidarPose(const nav_msgs::OdometryConstPtr &odom,
                    Eigen::Matrix4d &lidarPoseMatrix);
-  void convertCustomMsgToPointCloud2(const livox_ros_driver2::CustomMsgConstPtr &customMsg,
-                                    sensor_msgs::PointCloud2 &cloud);
 };
 
 /*!

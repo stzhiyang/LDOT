@@ -27,7 +27,6 @@ void ParamLoader::loadAllParams(dynamicDetector *detector) {
   loadStaticFilterParams(detector);
   loadTrackingParams(detector);
   loadClassificationParams(detector);
-  loadRobustnessParams(detector);
   loadSizeConstraintParams(detector);
   loadNMSParams(detector);
   loadObjectClassifyParams(detector);
@@ -63,13 +62,21 @@ void ParamLoader::loadTopicParams(dynamicDetector *detector) {
                           << detector->lidarTopicName_);
   }
 
-  // 里程计话题
+  // 里程计话题（用于同步）
   if (not nh_.getParam(ns_ + "/odom_topic", detector->odomTopicName_)) {
     detector->odomTopicName_ = "/CERLAB/quadcopter/odom";
     ROS_WARN_STREAM(hint_ << " No odom_topic param. Use default: "
                              "/CERLAB/quadcopter/odom");
   } else {
     ROS_INFO_STREAM(hint_ << " odom_topic: " << detector->odomTopicName_);
+  }
+  
+  // 高频里程计话题（用于运动补偿插值，独立订阅）
+  if (not nh_.getParam(ns_ + "/high_freq_odom_topic", detector->highFreqOdomTopicName_)) {
+    detector->highFreqOdomTopicName_ = "";  // 默认为空，表示不使用高频里程计
+    ROS_WARN_STREAM(hint_ << " No high_freq_odom_topic param. Motion compensation will use sync odom only.");
+  } else {
+    ROS_INFO_STREAM(hint_ << " high_freq_odom_topic: " << detector->highFreqOdomTopicName_);
   }
 }
 
@@ -111,15 +118,7 @@ void ParamLoader::loadSystemParams(dynamicDetector *detector) {
     ROS_INFO_STREAM(hint_ << " static_map_warmup_duration: " << detector->staticMapWarmupDuration_ << "s");
   }
   
-  // 运动补偿参数
-  if (not nh_.getParam(ns_ + "/enable_motion_compensation", detector->enableMotionCompensation_)) {
-    detector->enableMotionCompensation_ = false;
-    ROS_WARN_STREAM(hint_ << " No enable_motion_compensation param. Use default: false");
-  } else {
-    ROS_INFO_STREAM(hint_ << " enable_motion_compensation: " 
-                          << (detector->enableMotionCompensation_ ? "true" : "false"));
-  }
-  
+  // 运动补偿里程计历史队列大小
   if (not nh_.getParam(ns_ + "/odom_history_size", detector->odomHistorySize_)) {
     detector->odomHistorySize_ = 50;
     ROS_WARN_STREAM(hint_ << " No odom_history_size param. Use default: 50");
@@ -667,53 +666,6 @@ void ParamLoader::loadClassificationParams(dynamicDetector *detector) {
   } else {
     ROS_INFO_STREAM(hint_ << " classification_size_reset_frames: "
                           << detector->sizeResetFrames_);
-  }
-
-  // 体素清除动态帧数
-  if (not nh_.getParam(ns_ + "/voxel_clear_dynamic_frames",
-                       detector->voxelClearDynamicFrames_)) {
-    detector->voxelClearDynamicFrames_ = 5;
-    ROS_WARN_STREAM(hint_ << " No voxel_clear_dynamic_frames param. Use "
-                             "default: 5");
-  } else {
-    ROS_INFO_STREAM(hint_ << " voxel_clear_dynamic_frames: "
-                          << detector->voxelClearDynamicFrames_);
-  }
-}
-
-
-// ==================== Robustness Enhancement Parameters ====================
-void ParamLoader::loadRobustnessParams(dynamicDetector *detector) {
-  ROS_INFO_STREAM(hint_ << " --- Robustness Enhancement Parameters ---");
-
-  // 最小可靠点数
-  if (not nh_.getParam(ns_ + "/min_reliable_points",
-                       detector->minReliablePoints_)) {
-    detector->minReliablePoints_ = 20;
-    ROS_WARN_STREAM(hint_ << " No min_reliable_points param. Use default: 20");
-  } else {
-    ROS_INFO_STREAM(hint_ << " min_reliable_points: "
-                          << detector->minReliablePoints_);
-  }
-
-  // 点数下降阈值
-  if (not nh_.getParam(ns_ + "/point_count_drop_threshold",
-                       detector->pointCountDropThreshold_)) {
-    detector->pointCountDropThreshold_ = 0.5;
-    ROS_WARN_STREAM(hint_ << " No point_count_drop_threshold param. Use "
-                             "default: 0.5");
-  } else {
-    ROS_INFO_STREAM(hint_ << " point_count_drop_threshold: "
-                          << detector->pointCountDropThreshold_);
-  }
-
-  // 滞后系数
-  if (not nh_.getParam(ns_ + "/hysteresis_lower", detector->hysteresisLower_)) {
-    detector->hysteresisLower_ = 0.7;
-    ROS_WARN_STREAM(hint_ << " No hysteresis_lower param. Use default: 0.7");
-  } else {
-    ROS_INFO_STREAM(hint_ << " hysteresis_lower: "
-                          << detector->hysteresisLower_);
   }
 }
 

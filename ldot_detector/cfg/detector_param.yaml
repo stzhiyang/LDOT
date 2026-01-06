@@ -3,7 +3,8 @@ use_livox_custom_msg: true
 
 # ROS 主题
 lidar_pointcloud_topic: /livox/lidar      # 激光雷达点云主题/livox_lidar/cloud_registered
-odom_topic: /Odometry        # 里程计主题 /mavros/local_position/odom
+odom_topic: /Odometry        # 里程计主题（用于同步），与点云同步触发处理
+high_freq_odom_topic: /imu_odom  # 高频里程计主题（用于运动补偿插值），如 IMU 预积分位姿，独立订阅不参与同步
 
 body_to_lidar:  [1.0,  0.0,  0.0, -0.011,
                 0.0,  1.0,  0.0,  -0.02329,
@@ -14,8 +15,7 @@ body_to_lidar:  [1.0,  0.0,  0.0, -0.011,
 time_step: 0.1 # 系统运行的时间步长 (秒), 约等于 30Hz，点云频率
 static_map_warmup_duration: 5.0 # 静态地图预热时长 (秒)，启动后前N秒只积累静态地图，不进行动态检测
 
-# 运动补偿参数
-enable_motion_compensation: true  # 是否启用运动补偿（建议开启，特别是无人机运动场景）
+# 运动补偿参数（运动补偿始终启用）
 odom_history_size: 50  # 里程计历史队列大小（帧数）
 
 # 点云过滤参数

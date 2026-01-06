@@ -3,7 +3,8 @@ use_livox_custom_msg: true
 
 # ROS 主题
 lidar_pointcloud_topic: /livox_lidar      # 激光雷达点云主题/livox_lidar/cloud_registered
-odom_topic: /Odometry        # 里程计主题 /mavros/local_position/odom
+odom_topic: /Odometry        # 里程计主题（用于同步），与点云同步触发处理
+high_freq_odom_topic: /Odom_high_freq     # 高频里程计主题（用于运动补偿插值），仿真环境通常不需要，留空则使用同步里程计
 
 body_to_lidar:  [1.0,  0.0,  0.0, -0.005,
                 0.0,  1.0,  0.0,  0.0,
@@ -14,17 +15,16 @@ body_to_lidar:  [1.0,  0.0,  0.0, -0.005,
 time_step: 0.1 # 系统运行的时间步长 (秒), 约等于 30Hz，点云频率
 static_map_warmup_duration: 5.0 # 静态地图预热时长 (秒)，启动后前N秒只积累静态地图，不进行动态检测
 
-# 运动补偿参数
-enable_motion_compensation: true  # 是否启用运动补偿（建议开启，特别是无人机运动场景）
-odom_history_size: 50  # 里程计历史队列大小（帧数）
+# 运动补偿参数（运动补偿始终启用）
+odom_history_size: 500  # 里程计历史队列大小（帧数）
 
 # 点云过滤参数
 ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.8   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
-lidar_detection_range: [12.0, 12.0, 3.0]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
+lidar_detection_range: [10.0, 10.0, 3.0]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
 enable_voxel_downsampling: true  # 启用下采样以减少处理时间和延迟
 voxel_base_leaf_size: 0.1       # 增大体素以减少点数，加快处理速度
-voxel_target_point_count: 2200  # 降低目标点数，减少后续处理负担
+voxel_target_point_count: 3500  # 降低目标点数，减少后续处理负担
 
 # 静态点与静态簇去除滤波器参数
 static_filter_enabled: true     # 暂时禁用静态点去除以减少延迟
@@ -85,10 +85,6 @@ frame_skip: 1 # 动态计算时间间隔
 dynamic_velocity_threshold: 0.1 # 判断为动态障碍物的线速度阈值 (米/秒)
 dynamic_voting_threshold: 0.8 # 动态性投票的阈值, 超过该比例则认为可能是动态
 classification_min_neighbor_distance: 1.0 # 点云匹配距离
-# 鲁棒性增强参数 - 解决点云稀疏、遮挡误判、LiDAR抖动问题
-min_reliable_points: 20             # 最小可靠点数，低于此值时自适应提高速度阈值
-point_count_drop_threshold: 0.7     # 点数下降阈值 (0-1)，当前点数/历史平均 < 此值时认为可能遮挡
-hysteresis_lower: 0.5               # 滞后系数 (0-1)，动态物体变静态时速度阈值乘以此系数（防止抖动），最好不改
 # 动态条件一，最近的check_range帧范围内有K帧被投票为动态候选，才被最终分类为动态
 frames_force_dynamic_check_range: 7 # 强制判断为动态障碍物前，历史轨迹的最小长度
 frames_force_dynamic: 5 # 满足前面的条件下，连续k帧被投票为动态候选的障碍物则强制为动态
