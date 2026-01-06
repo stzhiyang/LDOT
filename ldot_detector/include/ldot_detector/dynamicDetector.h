@@ -224,7 +224,6 @@ private:
   // 动态/静态分类参数
   // ===================================================================
   // 基础分类参数
-  int skipFrame_;                                    // 点云比较时跳过的帧数
   double dynaVelThresh_;                             // 判定为动态的速度阈值
   double dynaVoteThresh_;                            // 判定为动态的投票比例阈值
   double classificationMinNeighborDist_;             // 点云匹配距离
@@ -240,16 +239,6 @@ private:
   double sizeMergeThresh_;                           // 尺寸合并阈值
   double pointCountMergeThresh_;                     // 点数合并阈值
   int sizeResetFrames_;                              // 尺寸重置帧数
-  
-  // 鲁棒性增强
-  int minReliablePoints_;                            // 最小可靠点数
-  double pointCountDropThreshold_;                   // 点数下降阈值（遮挡检测）
-  double hysteresisLower_;                           // 滞后系数
-  std::vector<bool> previousDynamicState_;           // 每个轨迹的前一帧动态状态
-  std::vector<std::deque<int>> pointCountHist_;      // 每个轨迹的历史点数
-  
-  // 静态体素地图误判修复
-  int voxelClearDynamicFrames_;                      // 触发体素清除所需的连续动态帧数
 
   // ===================================================================
   // 物体分类参数
@@ -328,7 +317,6 @@ private:
   std::vector<Eigen::Vector3d> maxHistorySizes_;                      // 历史最大尺寸
   std::vector<int> smallSizeCounter_;                                 // 小尺寸计数器
   std::vector<std::shared_ptr<KalmanFilterBase>> filters_;            // 卡尔曼滤波器
-  std::vector<int> confirmedDynamicFrames_;                           // 连续动态帧数计数器
 
   // ===================================================================
   // 静态地图初始化

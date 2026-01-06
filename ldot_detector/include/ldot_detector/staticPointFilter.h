@@ -54,10 +54,6 @@ public:
                  const std::vector<onboardDetector::box3D> &protected_boxes =
                      std::vector<onboardDetector::box3D>());
 
-  // 清理动态物体历史轨迹区域的体素（动态反哺机制）
-  void
-  clearDynamicRegions(const std::vector<onboardDetector::box3D> &dynamic_boxes);
-
   // 清理旧体素
   void cleanMap(double current_time);
 

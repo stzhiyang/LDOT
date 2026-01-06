@@ -556,14 +556,6 @@ void ParamLoader::loadClassificationParams(dynamicDetector *detector) {
                           << detector->classificationIntervalSec_ << "s");
   }
 
-  // 帧跳过数
-  if (not nh_.getParam(ns_ + "/frame_skip", detector->skipFrame_)) {
-    detector->skipFrame_ = 5;
-    ROS_WARN_STREAM(hint_ << " No frame_skip param. Use default: 5");
-  } else {
-    ROS_INFO_STREAM(hint_ << " frame_skip: " << detector->skipFrame_);
-  }
-
   // 动态速度阈值
   if (not nh_.getParam(ns_ + "/dynamic_velocity_threshold",
                        detector->dynaVelThresh_)) {
