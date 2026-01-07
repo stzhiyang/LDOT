@@ -2357,7 +2357,7 @@ void dynamicDetector::runClassification() {
     double dynaRatio = (this->forceDynaCheckRange_ > 0) ? 
                        double(dynaFrames) / double(this->forceDynaCheckRange_) : 0.0;
     
-    if (dynaFrames >= this->forceDynaFrames_ && velNorm >= this->dynaVelThresh_ * 0.5) {
+    if (dynaFrames >= this->forceDynaFrames_ && velNorm >= this->dynaVelThresh_) {
       // 原有逻辑：历史动态帧数足够 + 当前速度足够
       forceDynamic = true;
     } else if (dynaRatio >= 0.7 && dynaFrames >= this->dynamicConsistThresh_) {
@@ -2366,20 +2366,21 @@ void dynamicDetector::runClassification() {
       // 但需要检查是否真的停下来了（连续低速帧数）
       int lowSpeedFrames = 0;
       const int maxLowSpeedFrames = this->forceDynaCheckRange_;  // 连续低速超过10帧才允许转为静态
+      forceDynamic = true;
       for (int j = 0; j < std::min(maxLowSpeedFrames, int(this->boxHist_[i].size())); ++j) {
         // 计算历史帧的速度
         double histVel = std::sqrt(
             this->boxHist_[i][j].Vx * this->boxHist_[i][j].Vx +
             this->boxHist_[i][j].Vy * this->boxHist_[i][j].Vy);
-        if (histVel < this->dynaVelThresh_ * 0.3) {
+        if (histVel < this->dynaVelThresh_ * 0.5) {
           lowSpeedFrames++;
+          // 只有连续低速帧数未达到阈值时才保持动态
+          if (lowSpeedFrames > maxLowSpeedFrames) {
+            forceDynamic = false;
+          }
         } else {
           break;  // 一旦有高速帧就停止计数
         }
-      }
-      // 只有连续低速帧数未达到阈值时才保持动态
-      if (lowSpeedFrames < (maxLowSpeedFrames + 1)) {
-        forceDynamic = true;
       }
     }
     
