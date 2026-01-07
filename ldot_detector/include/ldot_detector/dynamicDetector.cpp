@@ -2587,12 +2587,14 @@ void dynamicDetector::visFilteredPoints(const SharedData& buffer) {
 
 // 3. 发布过滤后的边界框（青色）
 void dynamicDetector::visFilteredBBoxes(const SharedData& buffer) {
-  this->publish3dBox(buffer.filteredBBoxes, this->filteredBBoxesPub_, 0, 1, 1);
+  ros::Time stamp = (buffer.timestamp.toSec() > 0) ? buffer.timestamp : ros::Time::now();
+  this->publish3dBox(buffer.filteredBBoxes, this->filteredBBoxesPub_, 0, 1, 1, stamp);
 }
 
 // 4. 发布跟踪的边界框（黄色）
 void dynamicDetector::visTrackedBBoxes(const SharedData& buffer) {
-  this->publish3dBox(buffer.trackedBBoxes, this->trackedBBoxesPub_, 1, 1, 0);
+  ros::Time stamp = (buffer.timestamp.toSec() > 0) ? buffer.timestamp : ros::Time::now();
+  this->publish3dBox(buffer.trackedBBoxes, this->trackedBBoxesPub_, 1, 1, 0, stamp);
 }
 
 // 5. 发布历史轨迹
@@ -2639,7 +2641,8 @@ void dynamicDetector::visHistoryTraj(const SharedData& buffer) {
 
 // 6. 发布动态边界框（蓝色）
 void dynamicDetector::visDynamicBBoxes(const SharedData& buffer) {
-  this->publish3dBox(buffer.dynamicBBoxes, this->dynamicBBoxesPub_, 0, 0, 1);
+  ros::Time stamp = (buffer.timestamp.toSec() > 0) ? buffer.timestamp : ros::Time::now();
+  this->publish3dBox(buffer.dynamicBBoxes, this->dynamicBBoxesPub_, 0, 0, 1, stamp);
 }
 
 // 7. 发布动态点云
@@ -2658,7 +2661,8 @@ void dynamicDetector::visDynamicPoints(const SharedData& buffer) {
       }
     }
   }
-  this->publishPoints(dynamicPc, this->dynamicPointsPub_);
+  ros::Time stamp = (buffer.timestamp.toSec() > 0) ? buffer.timestamp : ros::Time::now();
+  this->publishPoints(dynamicPc, this->dynamicPointsPub_, stamp);
 }
 
 // 8. 发布原始动态点云（从双缓冲读取，无锁）
@@ -2685,7 +2689,8 @@ void dynamicDetector::visRawDynamicPoints(const SharedData& buffer) {
       }
     }
     if (!dynamicEigenPoints.empty()) {
-      this->publishPoints(dynamicEigenPoints, this->rawDynamicPointsPub_);
+      ros::Time stamp = (buffer.timestamp.toSec() > 0) ? buffer.timestamp : ros::Time::now();
+      this->publishPoints(dynamicEigenPoints, this->rawDynamicPointsPub_, stamp);
     }
   } catch (...) {
     ROS_ERROR_THROTTLE(5.0, "%s: Error in visRawDynamicPoints", this->hint_.c_str());
@@ -2789,7 +2794,8 @@ void dynamicDetector::visDynamicTraj(const SharedData& buffer) {
 
 // 发布点云
 void dynamicDetector::publishPoints(const std::vector<Eigen::Vector3d> &points,
-                                    const ros::Publisher &publisher) {
+                                    const ros::Publisher &publisher,
+                                    const ros::Time &stamp) {
   pcl::PointXYZ pt;
   pcl::PointCloud<pcl::PointXYZ> cloud;
   for (size_t i = 0; i < points.size(); ++i) {
@@ -2805,28 +2811,24 @@ void dynamicDetector::publishPoints(const std::vector<Eigen::Vector3d> &points,
 
   sensor_msgs::PointCloud2 cloudMsg;
   pcl::toROSMsg(cloud, cloudMsg);
-  // 使用传感器数据的时间戳，确保与Gazebo同步
-  cloudMsg.header.stamp = (this->lastCloudTime_.toSec() > 0) ? this->lastCloudTime_ : ros::Time::now();
+  // 使用传入的时间戳
+  cloudMsg.header.stamp = stamp;
   publisher.publish(cloudMsg);
 }
 
 // 发布3D边界框
 void dynamicDetector::publish3dBox(const std::vector<box3D> &boxes,
                                    const ros::Publisher &publisher, double r,
-                                   double g, double b) {
+                                   double g, double b, const ros::Time &stamp) {
   // 创建一个MarkerArray消息，用于批量发布多个Marker
   visualization_msgs::MarkerArray markers;
-  
-  // 使用传感器数据的时间戳，确保与Gazebo同步
-  // 如果没有有效的时间戳，则使用当前时间
-  ros::Time stamp = (this->lastCloudTime_.toSec() > 0) ? this->lastCloudTime_ : ros::Time::now();
 
   // 遍历所有传入的边界框
   for (size_t i = 0; i < boxes.size(); i++) {
     // 为每个边界框创建一个LINE_LIST类型的Marker
     visualization_msgs::Marker line;
     line.header.frame_id = "map"; // 设置Marker的坐标系为"map"
-    line.header.stamp = stamp;    // 使用传感器数据的时间戳，与Gazebo同步
+    line.header.stamp = stamp;     // 使用传入的时间戳
     line.ns = "box3D";            // 设置Marker的命名空间
     line.id = i;                  // 为Marker设置唯一的ID
     line.type = visualization_msgs::Marker::

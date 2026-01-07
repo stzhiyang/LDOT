@@ -216,7 +216,7 @@ void StaticPointFilter::updateMap(
 
   // 每10帧清理一次地图
   frame_count_++;
-  if (frame_count_ >= 1) {
+  if (frame_count_ >= 5) {
     cleanMap(current_time);
     frame_count_ = 0;
   }

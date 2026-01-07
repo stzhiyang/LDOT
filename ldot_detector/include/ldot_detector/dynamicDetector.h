@@ -424,9 +424,11 @@ public:
   
   // 可视化辅助函数
   void publishPoints(const std::vector<Eigen::Vector3d> &points,
-                    const ros::Publisher &publisher);
+                    const ros::Publisher &publisher,
+                    const ros::Time &stamp);
   void publish3dBox(const std::vector<onboardDetector::box3D> &bboxes,
-                   const ros::Publisher &publisher, double r, double g, double b);
+                   const ros::Publisher &publisher, double r, double g, double b,
+                   const ros::Time &stamp);
 
   // ===================================================================
   // 双缓冲机制
