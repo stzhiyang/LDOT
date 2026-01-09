@@ -168,9 +168,7 @@ private:
   bool staticFilterUseNeighborVoting_;   // 是否启用邻域投票
   int staticFilterMinNeighborVotes_;     // 最小邻域投票数
   
-  bool staticClusterFilterEnabled_;      // 是否启用静态聚类滤波
-  float staticClusterFilterRatio_;       // 静态聚类过滤比例
-
+  
   // ===================================================================
   // 目标跟踪与数据关联参数
   // ===================================================================

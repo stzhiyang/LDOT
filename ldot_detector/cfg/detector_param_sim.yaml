@@ -11,16 +11,14 @@ ground_height: 0.2 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.5   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
 lidar_detection_range: [10.0, 10.0, 2.5]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
 enable_voxel_downsampling: true  # 启用下采样以减少处理时间和延迟
-voxel_base_leaf_size: 0.08       # 增大体素以减少点数，加快处理速度
-voxel_target_point_count: 3500  # 降低目标点数，减少后续处理负担
+voxel_base_leaf_size: 0.2       # 增大体素以减少点数，加快处理速度
+voxel_target_point_count: 5  # 降低目标点数，减少后续处理负担
 
 # 静态点与静态簇去除滤波器参数
 static_filter_enabled: true     # 暂时禁用静态点去除以减少延迟
-static_cluster_filter_enabled: false # 是否启用静态聚类去除
 static_filter_voxel_size: 0.2    # 静态滤波器体素大小 (米)，比第一个体素大
 static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
 static_filter_time_threshold: 5.0 # 静态点在地图中保留的时间阈值 (秒)
-static_cluster_filter_ratio: 0.6    # 判定为静态聚类的静态点比例阈值
 static_filter_use_neighbor_voting: false  # 是否启用邻域投票（利用空间连续性增强稀疏点云的静态判断）
 static_filter_min_neighbor_votes: 3      # 最小邻域投票数（6邻域中至少需要多少个邻居支持）
 
@@ -33,7 +31,7 @@ max_object_size: [3.0, 3.0, 1.8] # 过滤掉过大物体的尺寸阈值 [长, �
 
 # 质心补偿参数 - 解决雷达只能检测到物体朝向雷达一面导致的位置误差
 enable_centroid_compensation: true   # 是否启用质心补偿（建议开启）
-centroid_compensation_ratio: 0.2     # 补偿比例系数 (0.0-1.0)，0.5表示补偿物体尺寸的一半
+centroid_compensation_ratio: 0.3     # 补偿比例系数 (0.0-1.0)，0.5表示补偿物体尺寸的一半
 centroid_compensation_min_distance: 3.0  # 质心补偿的最小距离阈值(米)，近距离物体不补偿
 centroid_compensation_max_distance: 15.0 # 质心补偿的最大距离阈值(米)，远距离物体不补偿
 

@@ -16,11 +16,9 @@ voxel_target_point_count: 3500  # 目标点云数量, 超过此数量会自适�
 
 # 静态点与静态簇去除滤波器参数
 static_filter_enabled: true     # 是否启用静态点去除
-static_cluster_filter_enabled: false # 是否启用静态聚类去除
 static_filter_voxel_size: 0.15    # 静态滤波器体素大小 (米)，比第一个体素大
 static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
 static_filter_time_threshold: 5.0 # 静态点在地图中保留的时间阈值 (秒)
-static_cluster_filter_ratio: 0.6    # 判定为静态聚类的静态点比例阈值
 static_filter_use_neighbor_voting: true  # 是否启用邻域投票（利用空间连续性增强稀疏点云的静态判断）
 static_filter_min_neighbor_votes: 3      # 最小邻域投票数（6邻域中至少需要多少个邻居支持）
 

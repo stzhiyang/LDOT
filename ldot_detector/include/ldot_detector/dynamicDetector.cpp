@@ -8,6 +8,10 @@
 #include <chrono>  // for timing
 #include <iomanip> // for std::put_time
 #include <sstream> // for std::stringstream
+#include <unordered_map> // for std::unordered_map
+#include <unordered_set> // for std::unordered_set
+#include <random>   // for std::random_device, std::mt19937, std::shuffle
+#include <algorithm> // for std::shuffle
 #include <ldot_detector/dynamicDetector.h>
 #include <ldot_detector/paramLoader.h>
 
@@ -354,103 +358,72 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
     }
   }
 
-  // --- 5. 基于距离的自适应降采样 ---
-  // 策略：近处降采样激进，远处降采样保守，接近最大检测范围时不降采样
+  // --- 5. 基于体素内点云数量上限的自适应降采样 ---
+  // 策略：对每个体素内的点云数量进行限制，超过上限时随机保留部分点
   pcl::PointCloud<pcl::PointXYZ>::Ptr finalCloud(
       new pcl::PointCloud<pcl::PointXYZ>());
 
   if (this->enableVoxelDownsampling_) {
-    // 计算最大检测距离（使用XY平面的最大范围）
-    double maxRange = std::max(this->localLidarRange_.x(), this->localLidarRange_.y());
+    // 预分配内存，减少动态扩容开销
+    finalCloud->reserve(groundRoofFilterCloud->size());
     
-    // 定义距离分段阈值（相对于最大检测范围的比例）
-    // 0 ~ 30%: 近距离区域，激进降采样
-    // 30% ~ 70%: 中距离区域，中等降采样
-    // 70% ~ 90%: 远距离区域，轻度降采样
-    // 90% ~ 100%: 边缘区域，不降采样
-    const double nearRatio = 0.3;      // 近距离区域边界
-    const double midRatio = 0.5;       // 中距离区域边界
-    const double farRatio = 0.8;       // 远距离区域边界（超过此比例不降采样）
+    // 使用更高效的体素分组方式
+    std::unordered_map<int, std::vector<int>> voxelMap;
+    voxelMap.reserve(groundRoofFilterCloud->size() / 10); // 预估体素数量
     
-    // 各区域的体素大小倍率（相对于基础体素大小）
-    const float nearLeafScale = 1.5f;  
-    const float midLeafScale = 1.2f;   
-    const float farLeafScale = 1.0f;  
-    
-    // 按距离分组点云
-    pcl::PointCloud<pcl::PointXYZ>::Ptr nearCloud(new pcl::PointCloud<pcl::PointXYZ>());
-    pcl::PointCloud<pcl::PointXYZ>::Ptr midCloud(new pcl::PointCloud<pcl::PointXYZ>());
-    pcl::PointCloud<pcl::PointXYZ>::Ptr farCloud(new pcl::PointCloud<pcl::PointXYZ>());
-    pcl::PointCloud<pcl::PointXYZ>::Ptr edgeCloud(new pcl::PointCloud<pcl::PointXYZ>());
-    
-    // 预分配内存
-    size_t totalPoints = groundRoofFilterCloud->size();
-    nearCloud->reserve(totalPoints / 4);
-    midCloud->reserve(totalPoints / 3);
-    farCloud->reserve(totalPoints / 3);
-    edgeCloud->reserve(totalPoints / 10);
-    
-    // 按距离分类点云
-    for (const pcl::PointXYZ &pt : groundRoofFilterCloud->points) {
-      // 计算点到机体的水平距离
-      double dx = pt.x - this->position_(0);
-      double dy = pt.y - this->position_(1);
-      double dist = std::sqrt(dx * dx + dy * dy);
-      double distRatio = dist / maxRange;
+    // 计算每个点的体素索引并分组
+    const float invLeafSize = 1.0f / this->voxelBaseLeafSize_; // 预计算倒数，避免除法
+    for (size_t i = 0; i < groundRoofFilterCloud->size(); ++i) {
+      const pcl::PointXYZ &pt = groundRoofFilterCloud->points[i];
       
-      if (distRatio < nearRatio) {
-        nearCloud->push_back(pt);
-      } else if (distRatio < midRatio) {
-        midCloud->push_back(pt);
-      } else if (distRatio < farRatio) {
-        farCloud->push_back(pt);
+      // 使用位运算和乘法代替除法，提高计算速度
+      int voxelX = static_cast<int>(std::floor(pt.x * invLeafSize));
+      int voxelY = static_cast<int>(std::floor(pt.y * invLeafSize));
+      int voxelZ = static_cast<int>(std::floor(pt.z * invLeafSize));
+      
+      // 使用更简单的哈希函数，减少计算开销
+      int voxelKey = ((voxelX * 73856093) ^ (voxelY * 19349663)) ^ (voxelZ * 83492791);
+      
+      voxelMap[voxelKey].push_back(i);
+    }
+    
+    // 对每个体素内的点进行降采样
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    
+    for (const auto &voxelPair : voxelMap) {
+      const std::vector<int> &pointIndices = voxelPair.second;
+      const size_t pointCount = pointIndices.size();
+      
+      if (pointCount <= static_cast<size_t>(this->voxelTargetPointCount_)) {
+        // 如果体素内点数不超过上限，全部保留
+        for (int idx : pointIndices) {
+          finalCloud->push_back(groundRoofFilterCloud->points[idx]);
+        }
       } else {
-        // 边缘区域：不降采样，直接保留
-        edgeCloud->push_back(pt);
+        // 使用 Fisher-Yates 洗牌算法的部分实现，只随机选择前N个点
+        // 这比完全洗牌更高效
+        std::vector<int> selectedIndices;
+        selectedIndices.reserve(this->voxelTargetPointCount_);
+        
+        // 简单的随机采样：随机选择N个不重复的索引
+        std::uniform_int_distribution<int> dist(0, pointCount - 1);
+        std::unordered_set<int> selectedSet;
+        selectedSet.reserve(this->voxelTargetPointCount_);
+        
+        while (selectedSet.size() < static_cast<size_t>(this->voxelTargetPointCount_)) {
+          int randomIdx = dist(gen);
+          if (selectedSet.insert(randomIdx).second) {
+            selectedIndices.push_back(pointIndices[randomIdx]);
+          }
+        }
+        
+        // 添加选中的点
+        for (int idx : selectedIndices) {
+          finalCloud->push_back(groundRoofFilterCloud->points[idx]);
+        }
       }
     }
-    
-    // 对各区域分别进行降采样
-    pcl::VoxelGrid<pcl::PointXYZ> voxelFilter;
-    
-    // 近距离区域降采样
-    if (!nearCloud->empty()) {
-      pcl::PointCloud<pcl::PointXYZ>::Ptr nearFiltered(new pcl::PointCloud<pcl::PointXYZ>());
-      float nearLeafSize = this->voxelBaseLeafSize_ * nearLeafScale;
-      voxelFilter.setInputCloud(nearCloud);
-      voxelFilter.setLeafSize(nearLeafSize, nearLeafSize, nearLeafSize);
-      voxelFilter.filter(*nearFiltered);
-      *finalCloud += *nearFiltered;
-    }
-    
-    // 中距离区域降采样
-    if (!midCloud->empty()) {
-      pcl::PointCloud<pcl::PointXYZ>::Ptr midFiltered(new pcl::PointCloud<pcl::PointXYZ>());
-      float midLeafSize = this->voxelBaseLeafSize_ * midLeafScale;
-      voxelFilter.setInputCloud(midCloud);
-      voxelFilter.setLeafSize(midLeafSize, midLeafSize, midLeafSize);
-      voxelFilter.filter(*midFiltered);
-      *finalCloud += *midFiltered;
-    }
-    
-    // 远距离区域降采样
-    if (!farCloud->empty()) {
-      pcl::PointCloud<pcl::PointXYZ>::Ptr farFiltered(new pcl::PointCloud<pcl::PointXYZ>());
-      float farLeafSize = this->voxelBaseLeafSize_ * farLeafScale;
-      voxelFilter.setInputCloud(farCloud);
-      voxelFilter.setLeafSize(farLeafSize, farLeafSize, farLeafSize);
-      voxelFilter.filter(*farFiltered);
-      *finalCloud += *farFiltered;
-    }
-    
-    // 边缘区域不降采样，直接添加
-    if (!edgeCloud->empty()) {
-      *finalCloud += *edgeCloud;
-    }
-    
-    ROS_DEBUG_THROTTLE(1.0, "%s: Distance-based downsampling - Near: %lu, Mid: %lu, Far: %lu, Edge(no ds): %lu -> Total: %lu",
-                       this->hint_.c_str(), nearCloud->size(), midCloud->size(), 
-                       farCloud->size(), edgeCloud->size(), finalCloud->size());
   } else {
     finalCloud = groundRoofFilterCloud;
   }
@@ -506,7 +479,7 @@ void dynamicDetector::runDetection() {
 
   // 2. 收集保护区域（动态物体边界框）- 只收集一次，供点级和聚类级过滤共用
   std::vector<onboardDetector::box3D> protectedBoxes;
-  if (this->staticFilterEnabled_ || this->staticClusterFilterEnabled_) {
+  if (this->staticFilterEnabled_) {
     for (const auto &track : this->boxHist_) {
       if (!track.empty() && track[0].is_dynamic) {
         protectedBoxes.push_back(track[0]);
@@ -543,14 +516,6 @@ void dynamicDetector::runDetection() {
 
     lidarBBoxesFiltered.push_back(lidarBBox);
     lidarClustersFiltered.push_back(lidarClustersRaw[i]);
-  }
-
-  // 4. 执行静态聚类过滤 (聚类级) - 移至尺寸过滤之后以减少计算量
-  if (this->staticClusterFilterEnabled_) {
-    this->staticFilter_->filterClusters(lidarClustersFiltered,
-                                        lidarBBoxesFiltered,
-                                        this->staticClusterFilterRatio_,
-                                        protectedBoxes);
   }
 
   // 将簇点云转成Eigen格式以便NMS处理；延迟计算质心与标准差直到NMS之后
@@ -1262,23 +1227,23 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     // 使用匈牙利算法求解最优匹配
     this->hungarianAlgorithm(costMatrix, bestMatch);
 
-    // 统计并输出关联结果
-    int numMatched = 0;
-    int numNewTargets = 0;
-    for (int i = 0; i < numCurrObjs; ++i) {
-      if (bestMatch[i] >= 0) {
-        numMatched++;
-      } else {
-        numNewTargets++;
-      }
-    }
-    int numLostTargets = numHistObjs - numMatched;
+    // // 统计并输出关联结果
+    // int numMatched = 0;
+    // int numNewTargets = 0;
+    // for (int i = 0; i < numCurrObjs; ++i) {
+    //   if (bestMatch[i] >= 0) {
+    //     numMatched++;
+    //   } else {
+    //     numNewTargets++;
+    //   }
+    // }
+    // int numLostTargets = numHistObjs - numMatched;
 
-    // 简洁的日志输出
-    ROS_INFO_THROTTLE(
-        1, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
-        this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
-        numNewTargets, numLostTargets);
+    // // 简洁的日志输出
+    // ROS_INFO_THROTTLE(
+    //     1, "%s: boxAssociation[currBox:%d histBox:%d] -> [o:%d +:%d -:%d]",
+    //     this->hint_.c_str(), numCurrObjs, numHistObjs, numMatched,
+    //     numNewTargets, numLostTargets);
   }
 }
 
@@ -2620,7 +2585,7 @@ void dynamicDetector::visHistoryTraj(const SharedData& buffer) {
       traj.color.g = 1.0;
       traj.color.b = 0.0;
       traj.pose.orientation.w = 1.0;
-      traj.lifetime = ros::Duration(0.2);
+      traj.lifetime = ros::Duration(0.1);
       
       for (size_t j = 0; j < buffer.boxHist[i].size() - 1; ++j) {
         geometry_msgs::Point p1, p2;
@@ -2720,7 +2685,7 @@ void dynamicDetector::visDynamicTraj(const SharedData& buffer) {
     trajLine.pose.orientation.w = 1.0;
     trajLine.scale.x = 0.05;
     trajLine.color.r = 0.0; trajLine.color.g = 0.8; trajLine.color.b = 0.8; trajLine.color.a = 0.8;
-    trajLine.lifetime = ros::Duration(0.2);
+    trajLine.lifetime = ros::Duration(0.1);
 
     for (int j = buffer.boxHist[i].size() - 1; j >= 0; --j) {
       geometry_msgs::Point p;
@@ -2759,7 +2724,7 @@ void dynamicDetector::visDynamicTraj(const SharedData& buffer) {
       velArrow.points.push_back(end);
       velArrow.scale.x = 0.1; velArrow.scale.y = 0.15; velArrow.scale.z = 0.2;
       velArrow.color.r = 1.0; velArrow.color.g = 1.0; velArrow.color.b = 0.0; velArrow.color.a = 0.9;
-      velArrow.lifetime = ros::Duration(0.2);
+      velArrow.lifetime = ros::Duration(0.1);
       trajMarkers.markers.push_back(velArrow);
     }
 
@@ -2776,7 +2741,7 @@ void dynamicDetector::visDynamicTraj(const SharedData& buffer) {
     textLabel.pose.position.z = buffer.boxHist[i][0].z + buffer.boxHist[i][0].z_width / 2.0 + 0.5;
     textLabel.scale.z = 0.25;
     textLabel.color.r = 1.0; textLabel.color.g = 1.0; textLabel.color.b = 1.0; textLabel.color.a = 1.0;
-    textLabel.lifetime = ros::Duration(0.2);
+    textLabel.lifetime = ros::Duration(0.1);
 
     std::string classStr;
     if (buffer.boxHist[i][0].is_human) classStr = "Human";
