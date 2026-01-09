@@ -22,6 +22,11 @@ find_package(catkin REQUIRED COMPONENTS
   vision_msgs
   message_generation
   livox_ros_driver2
+  nav_msgs
+  sensor_msgs
+  geometry_msgs
+  visualization_msgs
+  pcl_conversions
 )
 
 ## System dependencies are found with CMake's conventions
@@ -127,7 +132,7 @@ generate_messages(
 catkin_package(
    INCLUDE_DIRS include
    LIBRARIES ldot_detector
-   CATKIN_DEPENDS roscpp rospy std_msgs message_generation geometry_msgs livox_ros_driver2
+   CATKIN_DEPENDS roscpp rospy std_msgs message_generation geometry_msgs livox_ros_driver2 nav_msgs sensor_msgs visualization_msgs pcl_conversions
   #  DEPENDS system_lib
 )
 

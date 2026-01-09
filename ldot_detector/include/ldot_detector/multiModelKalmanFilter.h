@@ -136,12 +136,12 @@ protected:
 
     // 1. 更新新息缓冲区 (已移至外部或由 updateInnovationBuffer 处理)
     // innovation_buffer_.push_back(innovation);
-    // if (innovation_buffer_.size() > window_size_) {
+    // if (innovation_buffer_.size() > static_cast<size_t>(window_size_)) {
     //   innovation_buffer_.pop_front();
     // }
 
     // 需要足够的样本
-    if (innovation_buffer_.size() < window_size_)
+    if (innovation_buffer_.size() < static_cast<size_t>(window_size_))
       return;
 
     // 2. 计算新息的实际协方差 (C_gamma)
@@ -217,7 +217,7 @@ protected:
     // 鉴于目前架构，我们在 update() 中手动管理 buffer 更清晰。
     // 这里假设 buffer 已经是最新的。
 
-    if (innovation_buffer_.size() < window_size_)
+    if (innovation_buffer_.size() < static_cast<size_t>(window_size_))
       return;
 
     // 2. 计算 C_gamma
@@ -253,7 +253,7 @@ protected:
   // 辅助函数：更新新息缓冲区
   void updateInnovationBuffer(const Eigen::VectorXd &innovation) {
     innovation_buffer_.push_back(innovation);
-    if (innovation_buffer_.size() > window_size_) {
+    if (innovation_buffer_.size() > static_cast<size_t>(window_size_)) {
       innovation_buffer_.pop_front();
     }
   }

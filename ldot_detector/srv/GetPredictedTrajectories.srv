@@ -9,6 +9,7 @@ float64 prediction_dt                   # 预测时间步长（秒），默认0.
 ---
 # 响应字段（每个障碍物一组轨迹，使用扁平化数组存储）
 
+time timestamp                          # 数据时间戳（从缓冲区获取）
 uint32[] obstacle_ids                        # 障碍物ID列表
 string[] obstacle_types                      # 障碍物类型（human/vehicle/uav/other）
 geometry_msgs/Vector3[] current_positions    # 当前位置

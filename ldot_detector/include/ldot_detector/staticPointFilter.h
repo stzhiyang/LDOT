@@ -45,15 +45,7 @@ public:
                     const std::vector<onboardDetector::box3D> &protected_boxes =
                         std::vector<onboardDetector::box3D>());
 
-  // 聚类级过滤
-  // 注意：使用成员变量 sensor_position_，需要先调用 updateMap 更新传感器位置
-  void
-  filterClusters(std::vector<onboardDetector::Cluster> &clusters,
-                 std::vector<onboardDetector::box3D> &bboxes,
-                 float static_ratio_threshold,
-                 const std::vector<onboardDetector::box3D> &protected_boxes =
-                     std::vector<onboardDetector::box3D>());
-
+  
   // 清理旧体素
   void cleanMap(double current_time);
 

@@ -287,15 +287,15 @@ void ParamLoader::loadVoxelParams(dynamicDetector *detector) {
                           << detector->voxelBaseLeafSize_ << "m");
   }
 
-  // 目标点云数量
-  if (not nh_.getParam(ns_ + "/voxel_target_point_count",
-                       detector->voxelTargetPointCount_)) {
-    detector->voxelTargetPointCount_ = 30000;
-    ROS_WARN_STREAM(hint_ << " No voxel_target_point_count param. Use default: "
-                             "30000");
+  // 单个体素内最大点数限制
+  if (not nh_.getParam(ns_ + "/voxel_max_points_per_voxel",
+                       detector->voxelMaxPointsPerVoxel_)) {
+    detector->voxelMaxPointsPerVoxel_ = 50;  // 默认每个体素最多50个点
+    ROS_WARN_STREAM(hint_ << " No voxel_max_points_per_voxel param. Use default: "
+                             "50");
   } else {
-    ROS_INFO_STREAM(hint_ << " voxel_target_point_count: "
-                          << detector->voxelTargetPointCount_);
+    ROS_INFO_STREAM(hint_ << " voxel_max_points_per_voxel: "
+                          << detector->voxelMaxPointsPerVoxel_);
   }
 }
 
@@ -348,29 +348,7 @@ void ParamLoader::loadStaticFilterParams(dynamicDetector *detector) {
                           << detector->staticFilterTimeThreshold_ << "s");
   }
 
-  // 是否启用静态聚类滤波
-  if (not nh_.getParam(ns_ + "/static_cluster_filter_enabled",
-                       detector->staticClusterFilterEnabled_)) {
-    detector->staticClusterFilterEnabled_ = true;
-    ROS_WARN_STREAM(hint_ << " No static_cluster_filter_enabled param. Use "
-                             "default: true");
-  } else {
-    ROS_INFO_STREAM(hint_ << " static_cluster_filter_enabled: "
-                          << (detector->staticClusterFilterEnabled_ ? "true"
-                                                                    : "false"));
-  }
-
-  // 静态聚类比例阈值
-  if (not nh_.getParam(ns_ + "/static_cluster_filter_ratio",
-                       detector->staticClusterFilterRatio_)) {
-    detector->staticClusterFilterRatio_ = 0.7;
-    ROS_WARN_STREAM(hint_ << " No static_cluster_filter_ratio param. Use "
-                             "default: 0.7");
-  } else {
-    ROS_INFO_STREAM(hint_ << " static_cluster_filter_ratio: "
-                          << detector->staticClusterFilterRatio_);
-  }
-
+  
   // 是否启用邻域投票（用于稀疏点云的静态点判断增强）
   if (not nh_.getParam(ns_ + "/static_filter_use_neighbor_voting",
                        detector->staticFilterUseNeighborVoting_)) {
@@ -400,15 +378,11 @@ void ParamLoader::loadStaticFilterParams(dynamicDetector *detector) {
       detector->staticFilterEnabled_, detector->staticFilterVoxelSize_,
       detector->staticFilterHitThreshold_, detector->staticFilterTimeThreshold_,
       detector->staticFilterUseNeighborVoting_, detector->staticFilterMinNeighborVotes_);
-  if (detector->staticFilterEnabled_ || detector->staticClusterFilterEnabled_) {
+  if (detector->staticFilterEnabled_) {
     ROS_INFO_STREAM(hint_ << " Static Point Filter initialized (voxel: "
                           << detector->staticFilterVoxelSize_
                           << "m, hits: " << detector->staticFilterHitThreshold_
                           << ", time: " << detector->staticFilterTimeThreshold_ << "s)");
-    if (detector->staticClusterFilterEnabled_) {
-      ROS_INFO_STREAM(hint_ << " Static Cluster Filter ENABLED (ratio: "
-                            << detector->staticClusterFilterRatio_ << ")");
-    }
   }
 }
 

@@ -23,36 +23,34 @@ ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.8   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
 lidar_detection_range: [10.0, 10.0, 3.0]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
 enable_voxel_downsampling: true  # 启用下采样以减少处理时间和延迟
-voxel_base_leaf_size: 0.1       # 增大体素以减少点数，加快处理速度
-voxel_target_point_count: 3500  # 降低目标点数，减少后续处理负担
+voxel_base_leaf_size: 0.2       # 增大体素以减少点数，加快处理速度
+voxel_max_points_per_voxel: 3  # 单个体素内最大点数限制，防止局部点云过密
 
-# 静态点与静态簇去除滤波器参数
+# 静态点去除滤波器参数
 static_filter_enabled: true     # 暂时禁用静态点去除以减少延迟
-static_cluster_filter_enabled: false # 是否启用静态聚类去除
 static_filter_voxel_size: 0.2    # 静态滤波器体素大小 (米)，比第一个体素大
 static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
 static_filter_time_threshold: 5.0 # 静态点在地图中保留的时间阈值 (秒)
-static_cluster_filter_ratio: 0.6    # 判定为静态聚类的静态点比例阈值
-static_filter_use_neighbor_voting: true  # 是否启用邻域投票（利用空间连续性增强稀疏点云的静态判断）
+static_filter_use_neighbor_voting: true   # 是否启用邻域投票（利用空间连续性增强稀疏点云的静态判断）
 static_filter_min_neighbor_votes: 3      # 最小邻域投票数（6邻域中至少需要多少个邻居支持）
 
 # DBSCAN 激光雷达聚类参数
 lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数
 lidar_DBSCAN_epsilon: 0.2    # 激光雷达DBSCAN邻域搜索半径 (米)，不能小于最大体素大小
 lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (true: 启用, false: 使用固定epsilon)
-lidar_DBSCAN_distance_scale: 0.02  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
+lidar_DBSCAN_distance_scale: 0.04  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
 max_object_size: [3.0, 3.0, 1.8] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
 
 # 质心补偿参数 - 解决雷达只能检测到物体朝向雷达一面导致的位置误差
-enable_centroid_compensation: true   # 是否启用质心补偿（建议开启）
+enable_centroid_compensation: false  # 是否启用质心补偿（建议开启）
 centroid_compensation_ratio: 0.2     # 补偿比例系数 (0.0-1.0)，0.5表示补偿物体尺寸的一半
 centroid_compensation_min_distance: 5.0  # 质心补偿的最小距离阈值(米)，近距离物体不补偿
-centroid_compensation_max_distance: 15.0 # 质心补偿的最大距离阈值(米)，远距离物体不补偿
+centroid_compensation_max_distance: 12.0 # 质心补偿的最大距离阈值(米)，远距离物体不补偿
 
 # 帧内去重(NMS)参数 - 解决同一物体产生多个检测框的问题
 enable_detection_nms: true        # 是否启用检测去重（强烈建议开启）
 detection_nms_iou_threshold: 0.4  # NMS的IoU阈值，IoU > 该值的检测框会被合并 (0.2-0.5)
-detection_nms_dist_scale: 1.2     # NMS 距离缩放参数，平均尺寸乘以该系数作为中心距离阈值
+detection_nms_dist_scale: 1.0     # NMS 距离缩放参数，平均尺寸乘以该系数作为中心距离阈值
 
 # 目标跟踪与数据关联
 association_gate_confidence: 0.9  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
@@ -89,14 +87,13 @@ frames_force_dynamic_check_range: 7 # 强制判断为动态障碍物前，历史
 frames_force_dynamic: 5 # 满足前面的条件下，连续k帧被投票为动态候选的障碍物则强制为动态
 # 动态条件二
 dynamic_consistency_threshold: 3 # 最近连续k帧被投票为动态候选，才被最终分类为动态
-# 静态体素地图误判修复参数
 
 # 卡尔曼滤波器参数
 kalman_filter:
   adaptive_window_size: 10 # Window size for adaptive Q estimation (0 to disable)
   adaptive_alpha: 0.7      # Q update smoothing factor (0.0 - 1.0)
   adaptive_r_alpha: 0.7    # R update smoothing factor (0.0 - 1.0)
-  adaptive_min_noise_ratio: 0.3 # Minimum Q/R threshold ratio relative to initial value
+  adaptive_min_noise_ratio: 0.2 # Minimum Q/R threshold ratio relative to initial value
   # 协方差上限参数 - 防止预测不确定性椭圆过大
   enable_cov_limit: true   # 是否启用协方差上限限制
   max_pos_cov: 1.5         # 位置协方差上限 (m²)，对应标准差3米

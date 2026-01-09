@@ -8,6 +8,8 @@
 #include <chrono>  // for timing
 #include <iomanip> // for std::put_time
 #include <sstream> // for std::stringstream
+#include <random>  // for std::random_device, std::mt19937
+#include <algorithm> // for std::shuffle
 #include <ldot_detector/dynamicDetector.h>
 #include <ldot_detector/paramLoader.h>
 
@@ -136,7 +138,7 @@ void dynamicDetector::registerCallback() {
                   << this->staticMapWarmupDuration_ << "s (will start when first cloud received)");
 
   this->odomSub_.reset(new message_filters::Subscriber<nav_msgs::Odometry>(
-      this->nh_, this->odomTopicName_, 25));
+      this->nh_, this->odomTopicName_, 50));
 
   if (this->useLivoxCustomMsg_) {
     // 使用Livox CustomMsg格式
@@ -446,13 +448,13 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::transformLivoxToWorld(
   worldCloud->height = 1;
   worldCloud->is_dense = false;
   
-  if (canInterpolate) {
-    ROS_INFO_THROTTLE(1.0, "%s: Motion compensation: %zu points, success=%d, fail=%d",
-                      this->hint_.c_str(), worldCloud->size(), successCount, failCount);
-  } else {
-    ROS_WARN_THROTTLE(1.0, "%s: Insufficient odom history, using frame pose for all points",
-                      this->hint_.c_str());
-  }
+  // if (canInterpolate) {
+  //   ROS_INFO_THROTTLE(1.0, "%s: Motion compensation: %zu points, success=%d, fail=%d",
+  //                     this->hint_.c_str(), worldCloud->size(), successCount, failCount);
+  // } else {
+  //   ROS_WARN_THROTTLE(1.0, "%s: Insufficient odom history, using frame pose for all points",
+  //                     this->hint_.c_str());
+  // }
   
   return worldCloud;
 }
@@ -535,6 +537,8 @@ void dynamicDetector::updatePose(const nav_msgs::OdometryConstPtr &odom) {
 pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessWorldCloud(
     pcl::PointCloud<pcl::PointXYZ>::Ptr worldCloud) {
   
+  const size_t n_in = worldCloud ? worldCloud->size() : 0;
+  
   // --- 1. 范围过滤（基于传感器位置，矩形区域） ---
   pcl::PointCloud<pcl::PointXYZ>::Ptr rangeFilteredCloud(
       new pcl::PointCloud<pcl::PointXYZ>());
@@ -564,80 +568,64 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessWorldCloud(
     }
   }
 
-  // --- 3. 自适应体素下采样 ---
+  // --- 3. 统一体素下采样（基于单体素点数限制） ---
   pcl::PointCloud<pcl::PointXYZ>::Ptr finalCloud(new pcl::PointCloud<pcl::PointXYZ>());
 
   if (!this->enableVoxelDownsampling_) {
     return heightFilteredCloud;
   }
 
-  // 获取检测范围的XY最大值，用于距离归一化
-  double rangeXY = std::max(this->localLidarRange_.x(), this->localLidarRange_.y());
-  if (rangeXY <= 1e-6) {
-    return heightFilteredCloud;
+  // 直接使用单体素点数限制机制，无需第一步体素下采样
+  finalCloud = heightFilteredCloud;
+  
+  // 如果设置了单个体素点数限制，进行下采样
+  if (this->voxelMaxPointsPerVoxel_ > 0) {
+    // 创建体素网格来统计每个体素的点数
+    std::unordered_map<uint64_t, std::vector<pcl::PointXYZ>> voxelMap;
+    
+    // 计算体素坐标（使用原始配置的体素大小进行点数限制）
+    auto getVoxelKey = [&](const pcl::PointXYZ &pt) -> uint64_t {
+      int32_t x = static_cast<int32_t>(std::floor(pt.x / this->voxelBaseLeafSize_));
+      int32_t y = static_cast<int32_t>(std::floor(pt.y / this->voxelBaseLeafSize_));
+      int32_t z = static_cast<int32_t>(std::floor(pt.z / this->voxelBaseLeafSize_));
+      return (static_cast<uint64_t>(x) << 42) | 
+             (static_cast<uint64_t>(y) << 21) | 
+             static_cast<uint64_t>(z);
+    };
+    
+    // 将点分配到对应体素
+    for (const auto &pt : finalCloud->points) {
+      uint64_t key = getVoxelKey(pt);
+      voxelMap[key].push_back(pt);
+    }
+    
+    // 对每个体素进行随机下采样，限制点数
+    pcl::PointCloud<pcl::PointXYZ>::Ptr limitedCloud(new pcl::PointCloud<pcl::PointXYZ>());
+    limitedCloud->reserve(finalCloud->size());
+    
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    
+    for (auto &voxel : voxelMap) {
+      if (voxel.second.size() <= static_cast<size_t>(this->voxelMaxPointsPerVoxel_)) {
+        // 如果体素内点数不超过限制，保留所有点
+        for (const auto &pt : voxel.second) {
+          limitedCloud->push_back(pt);
+        }
+      } else {
+        // 如果体素内点数超过限制，随机采样
+        std::shuffle(voxel.second.begin(), voxel.second.end(), gen);
+        for (int i = 0; i < this->voxelMaxPointsPerVoxel_; ++i) {
+          limitedCloud->push_back(voxel.second[i]);
+        }
+      }
+    }
+    
+    finalCloud = limitedCloud;
   }
 
-  // 按距离分段：距离越近体素越大（leaf size 倍率越高）
-  // ratio = distXY / rangeXY
-  // - ratio >= 0.8 : 不执行体素降采样（最远区域，保留原始点云）
-  // - 0.5 <= ratio < 0.8 : 正常倍率（leaf = voxel_base_leaf_size * 1.0）
-  // - 0.3 <= ratio < 0.5 : 1.2倍率（leaf = voxel_base_leaf_size * 1.2）
-  // - ratio < 0.3 : 1.5倍率（leaf = voxel_base_leaf_size * 1.5，最大倍率）
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_15(new pcl::PointCloud<pcl::PointXYZ>());
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_12(new pcl::PointCloud<pcl::PointXYZ>());
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_10(new pcl::PointCloud<pcl::PointXYZ>());
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_no(new pcl::PointCloud<pcl::PointXYZ>());
-
-  cloud_15->reserve(heightFilteredCloud->size());
-  cloud_12->reserve(heightFilteredCloud->size());
-  cloud_10->reserve(heightFilteredCloud->size());
-  cloud_no->reserve(heightFilteredCloud->size());
-
-  // 根据点与雷达的XY距离比例，将点云分配到对应距离段
-  for (const pcl::PointXYZ &pt : heightFilteredCloud->points) {
-    double dx = pt.x - this->positionLidar_(0);
-    double dy = pt.y - this->positionLidar_(1);
-    double distXY = std::sqrt(dx * dx + dy * dy);
-    double ratio = distXY / rangeXY;
-
-    if (ratio >= 0.8) {
-      cloud_no->push_back(pt);
-    } else if (ratio >= 0.5) {
-      cloud_10->push_back(pt);
-    } else if (ratio >= 0.3) {
-      cloud_12->push_back(pt);
-    } else {
-      cloud_15->push_back(pt);
-    }
-  }
-
-  // 辅助函数：对指定点云执行体素下采样，leafSize = voxel_base_leaf_size * leafScale
-  auto applyVoxel = [&](const pcl::PointCloud<pcl::PointXYZ>::Ptr &in,
-                        float leafScale) {
-    if (!in || in->empty()) {
-      return pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>());
-    }
-    pcl::PointCloud<pcl::PointXYZ>::Ptr out(new pcl::PointCloud<pcl::PointXYZ>());
-    float leaf = this->voxelBaseLeafSize_ * leafScale;
-    pcl::VoxelGrid<pcl::PointXYZ> voxelFilter;
-    voxelFilter.setInputCloud(in);
-    voxelFilter.setLeafSize(leaf, leaf, leaf);
-    voxelFilter.filter(*out);
-    return out;
-  };
-
-  // 对需要降采样的三段分别执行体素滤波
-  pcl::PointCloud<pcl::PointXYZ>::Ptr out_15 = applyVoxel(cloud_15, 1.5f);
-  pcl::PointCloud<pcl::PointXYZ>::Ptr out_12 = applyVoxel(cloud_12, 1.2f);
-  pcl::PointCloud<pcl::PointXYZ>::Ptr out_10 = applyVoxel(cloud_10, 1.0f);
-
-  // 合并所有段的点云（降采样后的三段 + 未降采样的最远段）
-  finalCloud->reserve(out_15->size() + out_12->size() + out_10->size() +
-                      cloud_no->size());
-  *finalCloud += *out_15;
-  *finalCloud += *out_12;
-  *finalCloud += *out_10;
-  *finalCloud += *cloud_no;
+  const size_t n_final = finalCloud->size();
+  ROS_INFO_THROTTLE(1.0, "%s: preprocess output: %zu -> %zu", this->hint_.c_str(), n_in, n_final);
 
   return finalCloud;
 }
@@ -784,7 +772,7 @@ void dynamicDetector::runDetection() {
 
   // 2. 收集保护区域（动态物体边界框）- 只收集一次，供点级和聚类级过滤共用
   std::vector<onboardDetector::box3D> protectedBoxes;
-  if (this->staticFilterEnabled_ || this->staticClusterFilterEnabled_) {
+  if (this->staticFilterEnabled_) {
     for (const auto &track : this->boxHist_) {
       if (!track.empty() && track[0].is_dynamic) {
         protectedBoxes.push_back(track[0]);
@@ -821,14 +809,6 @@ void dynamicDetector::runDetection() {
 
     lidarBBoxesFiltered.push_back(lidarBBox);
     lidarClustersFiltered.push_back(lidarClustersRaw[i]);
-  }
-
-  // 4. 执行静态聚类过滤 (聚类级) - 移至尺寸过滤之后以减少计算量
-  if (this->staticClusterFilterEnabled_) {
-    this->staticFilter_->filterClusters(lidarClustersFiltered,
-                                        lidarBBoxesFiltered,
-                                        this->staticClusterFilterRatio_,
-                                        protectedBoxes);
   }
 
   // 保存过滤后的结果
@@ -2622,44 +2602,8 @@ void dynamicDetector::runClassification() {
         }
       }
     }
-
-    // 精细化强制动态判断逻辑
-    bool forceDynamic = false;
     
-    // 计算历史动态比例
-    double dynaRatio = (this->forceDynaCheckRange_ > 0) ? 
-                       double(dynaFrames) / double(this->forceDynaCheckRange_) : 0.0;
-    
-    if (dynaFrames >= this->forceDynaFrames_ && velNorm >= this->dynaVelThresh_) {
-      // 正常情况：历史动态帧数足够 + 当前速度足够
-      forceDynamic = true;
-    } else if (dynaRatio >= 0.7 && dynaFrames >= this->dynamicConsistThresh_) {
-      // 特殊情况：历史动态比例极高（>70%），即使当前低速也保持动态
-      // 这解决了动态物体低速或原地转弯时被误判为静态的问题
-      // 但需要检查是否真的停下来了（连续低速帧数）
-      int lowSpeedFrames = 0;
-      const int maxLowSpeedFrames = this->forceDynaCheckRange_;  // 连续低速超过检查范围帧数才允许转为静态
-      forceDynamic = true;  // 默认保持动态，只有确认真正停止时才设为false
-      
-      for (int j = 0; j < std::min(maxLowSpeedFrames, int(this->boxHist_[i].size())); ++j) {
-        // 计算历史帧的速度
-        double histVel = std::sqrt(
-            this->boxHist_[i][j].Vx * this->boxHist_[i][j].Vy +
-            this->boxHist_[i][j].Vy * this->boxHist_[i][j].Vy);
-        if (histVel < this->dynaVelThresh_ * 0.5) {
-          lowSpeedFrames++;
-          // 如果连续低速帧数达到阈值，说明真的停止了，不再保持动态
-          if (lowSpeedFrames >= (maxLowSpeedFrames + 1)) {
-            forceDynamic = false;
-            break;  // 确认停止，提前退出循环
-          }
-        } else {
-          break;  // 一旦有高速帧就停止计数
-        }
-      }
-    }
-    
-    if (forceDynamic) {
+    if (dynaFrames >= this->forceDynaFrames_ && velNorm >= this->dynaVelThresh_ * 0.8) {
       this->boxHist_[i][0].is_dynamic = true;
       dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
       continue;
@@ -2855,12 +2799,12 @@ void dynamicDetector::visFilteredPoints(const SharedData& buffer) {
 
 // 3. 发布过滤后的边界框（青色）
 void dynamicDetector::visFilteredBBoxes(const SharedData& buffer) {
-  this->publish3dBox(buffer.filteredBBoxes, this->filteredBBoxesPub_, 0, 1, 1);
+  this->publish3dBox(buffer.filteredBBoxes, this->filteredBBoxesPub_, 0, 1, 1, buffer.timestamp);
 }
 
 // 4. 发布跟踪的边界框（黄色）
 void dynamicDetector::visTrackedBBoxes(const SharedData& buffer) {
-  this->publish3dBox(buffer.trackedBBoxes, this->trackedBBoxesPub_, 1, 1, 0);
+  this->publish3dBox(buffer.trackedBBoxes, this->trackedBBoxesPub_, 1, 1, 0, buffer.timestamp);
 }
 
 // 5. 发布历史轨迹
@@ -2885,7 +2829,7 @@ void dynamicDetector::visHistoryTraj(const SharedData& buffer) {
       traj.color.g = 1.0;
       traj.color.b = 0.0;
       traj.pose.orientation.w = 1.0;
-      traj.lifetime = ros::Duration(0.2);
+      traj.lifetime = ros::Duration(0.1);
       
       for (size_t j = 0; j < buffer.boxHist[i].size() - 1; ++j) {
         geometry_msgs::Point p1, p2;
@@ -2907,7 +2851,7 @@ void dynamicDetector::visHistoryTraj(const SharedData& buffer) {
 
 // 6. 发布动态边界框（蓝色）
 void dynamicDetector::visDynamicBBoxes(const SharedData& buffer) {
-  this->publish3dBox(buffer.dynamicBBoxes, this->dynamicBBoxesPub_, 0, 0, 1);
+  this->publish3dBox(buffer.dynamicBBoxes, this->dynamicBBoxesPub_, 0, 0, 1, buffer.timestamp);
 }
 
 // 7. 发布动态点云
@@ -2926,7 +2870,7 @@ void dynamicDetector::visDynamicPoints(const SharedData& buffer) {
       }
     }
   }
-  this->publishPoints(dynamicPc, this->dynamicPointsPub_);
+  this->publishPoints(dynamicPc, this->dynamicPointsPub_, buffer.timestamp);
 }
 
 // 8. 发布原始动态点云（从世界坐标系点云中提取动态边界框内的点）
@@ -2950,7 +2894,7 @@ void dynamicDetector::visRawDynamicPoints(const SharedData& buffer) {
     }
   }
   if (!dynamicEigenPoints.empty()) {
-    this->publishPoints(dynamicEigenPoints, this->rawDynamicPointsPub_);
+    this->publishPoints(dynamicEigenPoints, this->rawDynamicPointsPub_, buffer.timestamp);
   }
 }
 
@@ -2976,7 +2920,7 @@ void dynamicDetector::visDynamicTraj(const SharedData& buffer) {
     trajLine.pose.orientation.w = 1.0;
     trajLine.scale.x = 0.05;
     trajLine.color.r = 0.0; trajLine.color.g = 0.8; trajLine.color.b = 0.8; trajLine.color.a = 0.8;
-    trajLine.lifetime = ros::Duration(0.2);
+    trajLine.lifetime = ros::Duration(0.1);
 
     for (int j = buffer.boxHist[i].size() - 1; j >= 0; --j) {
       geometry_msgs::Point p;
@@ -3015,7 +2959,7 @@ void dynamicDetector::visDynamicTraj(const SharedData& buffer) {
       velArrow.points.push_back(end);
       velArrow.scale.x = 0.1; velArrow.scale.y = 0.15; velArrow.scale.z = 0.2;
       velArrow.color.r = 1.0; velArrow.color.g = 1.0; velArrow.color.b = 0.0; velArrow.color.a = 0.9;
-      velArrow.lifetime = ros::Duration(0.2);
+      velArrow.lifetime = ros::Duration(0.1);
       trajMarkers.markers.push_back(velArrow);
     }
 
@@ -3032,7 +2976,7 @@ void dynamicDetector::visDynamicTraj(const SharedData& buffer) {
     textLabel.pose.position.z = buffer.boxHist[i][0].z + buffer.boxHist[i][0].z_width / 2.0 + 0.5;
     textLabel.scale.z = 0.25;
     textLabel.color.r = 1.0; textLabel.color.g = 1.0; textLabel.color.b = 1.0; textLabel.color.a = 1.0;
-    textLabel.lifetime = ros::Duration(0.2);
+    textLabel.lifetime = ros::Duration(0.1);
 
     std::string classStr;
     if (buffer.boxHist[i][0].is_human) classStr = "Human";
@@ -3051,7 +2995,8 @@ void dynamicDetector::visDynamicTraj(const SharedData& buffer) {
 
 // 发布点云
 void dynamicDetector::publishPoints(const std::vector<Eigen::Vector3d> &points,
-                                    const ros::Publisher &publisher) {
+                                    const ros::Publisher &publisher,
+                                    const ros::Time &timestamp) {
   pcl::PointXYZ pt;
   pcl::PointCloud<pcl::PointXYZ> cloud;
   for (size_t i = 0; i < points.size(); ++i) {
@@ -3067,21 +3012,20 @@ void dynamicDetector::publishPoints(const std::vector<Eigen::Vector3d> &points,
 
   sensor_msgs::PointCloud2 cloudMsg;
   pcl::toROSMsg(cloud, cloudMsg);
-  // 使用传感器数据的时间戳，确保与Gazebo同步
-  cloudMsg.header.stamp = (this->lastCloudTime_.toSec() > 0) ? this->lastCloudTime_ : ros::Time::now();
+  // 使用传入的时间戳，确保与缓冲区同步
+  cloudMsg.header.stamp = (timestamp.toSec() > 0) ? timestamp : ros::Time::now();
   publisher.publish(cloudMsg);
 }
 
 // 发布3D边界框
 void dynamicDetector::publish3dBox(const std::vector<box3D> &boxes,
                                    const ros::Publisher &publisher, double r,
-                                   double g, double b) {
+                                   double g, double b, const ros::Time &timestamp) {
   // 创建一个MarkerArray消息，用于批量发布多个Marker
   visualization_msgs::MarkerArray markers;
   
-  // 使用传感器数据的时间戳，确保与Gazebo同步
-  // 如果没有有效的时间戳，则使用当前时间
-  ros::Time stamp = (this->lastCloudTime_.toSec() > 0) ? this->lastCloudTime_ : ros::Time::now();
+  // 使用传入的时间戳，确保与缓冲区同步
+  ros::Time stamp = (timestamp.toSec() > 0) ? timestamp : ros::Time::now();
 
   // 遍历所有传入的边界框
   for (size_t i = 0; i < boxes.size(); i++) {
@@ -3200,6 +3144,9 @@ bool dynamicDetector::getDynamicObstacles(
   // 从双缓冲读取数据（只读，无需加锁）
   const SharedData& readBuffer = getReadBuffer();
   std::vector<DynamicObstacleInfo> obstaclesWithInfo;
+  
+  // 设置响应时间戳（使用缓冲区的时间戳）
+  res.timestamp = readBuffer.timestamp;
   
   // 检查是否有有效的跟踪数据
   if (readBuffer.boxHist.empty()) {
@@ -3340,6 +3287,38 @@ bool dynamicDetector::getDynamicObstacles(
     }
   }
 
+  // 系统步长预测功能（默认执行）
+  // 设置预测时域为系统步长
+  double predictionHorizon = this->dt_;  // 使用系统步长作为预测时域
+  res.prediction_horizon = predictionHorizon;
+
+  // 为每个障碍物生成一步预测
+  for (const auto &info : obstaclesWithInfo) {
+    const onboardDetector::box3D &bbox = info.bbox;
+    
+    // 调用轨迹预测函数生成单步预测
+    std::vector<TrajectoryPoint> trajectory;
+    if (info.filterIndex >= 0 && info.filterIndex < static_cast<int>(readBuffer.filters.size())) {
+      this->predictTrajectoryFromFilter(readBuffer.filters[info.filterIndex], bbox, 
+                                        predictionHorizon, predictionHorizon, trajectory);
+    }
+    
+    // 提取预测位置和速度（trajectory保证非空，predictTrajectoryFromFilter已处理失败情况）
+    const TrajectoryPoint &predPoint = trajectory.back();  // 取最后一个预测点
+    
+    geometry_msgs::Vector3 predPos, predVel;
+    predPos.x = predPoint.position.x();
+    predPos.y = predPoint.position.y();
+    predPos.z = predPoint.position.z();
+    
+    predVel.x = predPoint.velocity.x();
+    predVel.y = predPoint.velocity.y();
+    predVel.z = predPoint.velocity.z();
+    
+    res.predicted_positions.push_back(predPos);
+    res.predicted_velocities.push_back(predVel);
+  }
+
   // 计算并输出服务耗时
   auto end_time = std::chrono::high_resolution_clock::now();
   double duration_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
@@ -3387,6 +3366,9 @@ bool dynamicDetector::getPredictedTrajectories(
 
   // 从双缓冲读取数据（只读，无需加锁）
   const SharedData& readBuffer = getReadBuffer();
+  
+  // 设置响应时间戳（使用缓冲区的时间戳）
+  res.timestamp = readBuffer.timestamp;
   std::vector<DynamicObstacleInfo> obstaclesWithInfo;
 
   if (readBuffer.boxHist.empty()) {

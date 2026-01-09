@@ -3,6 +3,7 @@ geometry_msgs/Point current_position    # 机器人当前位置
 float64 range                           # 查询范围（米）
 ---
 # 响应字段
+time timestamp                          # 数据时间戳（从缓冲区获取）
 geometry_msgs/Vector3[] position        # 当前位置
 geometry_msgs/Vector3[] velocity        # 当前速度
 geometry_msgs/Vector3[] size            # 障碍物尺寸
@@ -10,3 +11,8 @@ string[] obstacle_types                 # 障碍物类型（human/vehicle/uav/ot
 uint32[] state_dims                     # 每个障碍物的状态向量维度
 float64[] states                        # 所有状态向量（扁平化）
 float64[] covariances                   # 所有协方差矩阵（扁平化，按行存储）
+
+# 预测相关字段（默认提供）
+geometry_msgs/Vector3[] predicted_positions    # 预测位置（系统步长后）
+geometry_msgs/Vector3[] predicted_velocities    # 预测速度（系统步长后）
+float64 prediction_horizon                        # 预测时域（秒）

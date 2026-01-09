@@ -157,7 +157,7 @@ private:
   // Voxel Grid下采样
   bool enableVoxelDownsampling_;         // 是否启用自适应下采样
   float voxelBaseLeafSize_;              // 基础体素大小（米）
-  int voxelTargetPointCount_;            // 目标点云数量
+  int voxelMaxPointsPerVoxel_;           // 单个体素内最大点数限制
 
   // ===================================================================
   // DBSCAN聚类参数
@@ -183,9 +183,7 @@ private:
   bool staticFilterUseNeighborVoting_;   // 是否启用邻域投票
   int staticFilterMinNeighborVotes_;     // 最小邻域投票数
   
-  bool staticClusterFilterEnabled_;      // 是否启用静态聚类滤波
-  float staticClusterFilterRatio_;       // 静态聚类过滤比例
-
+  
   // ===================================================================
   // 目标跟踪与数据关联参数
   // ===================================================================
@@ -465,9 +463,11 @@ public:
   
   // 可视化辅助函数
   void publishPoints(const std::vector<Eigen::Vector3d> &points,
-                    const ros::Publisher &publisher);
+                    const ros::Publisher &publisher,
+                    const ros::Time &timestamp);
   void publish3dBox(const std::vector<onboardDetector::box3D> &bboxes,
-                   const ros::Publisher &publisher, double r, double g, double b);
+                   const ros::Publisher &publisher, double r, double g, double b,
+                   const ros::Time &timestamp);
 
   // ===================================================================
   // 双缓冲机制
