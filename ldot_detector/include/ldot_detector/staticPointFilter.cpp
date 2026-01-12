@@ -51,17 +51,6 @@ bool StaticPointFilter::isPointInBox(const pcl::PointXYZ &pt,
   float dy = pt.y - box.y;
   float dz = pt.z - box.z;
 
-  // 如果box有yaw旋转，将点转换到box的局部坐标系
-  // 通过反向旋转(-yaw)将点从世界坐标系转到box坐标系
-  if (std::abs(box.yaw) > 1e-6) {
-    float cos_yaw = std::cos(-box.yaw);
-    float sin_yaw = std::sin(-box.yaw);
-    float dx_local = dx * cos_yaw - dy * sin_yaw;
-    float dy_local = dx * sin_yaw + dy * cos_yaw;
-    dx = dx_local;
-    dy = dy_local;
-  }
-
   // 在box局部坐标系中进行AABB检查
   float half_x = box.x_width / 2.0;
   float half_y = box.y_width / 2.0;
@@ -194,22 +183,8 @@ void StaticPointFilter::updateMap(
     VoxelStatus &status = voxel_map_[key]; // 将哈希值存入一维哈希表
     status.last_seen_time = current_time;
 
-    // 【关键优化】近距离体素累积抑制，防止动态物体被快速标记为静态
-    // 计算点到传感器的2D距离（在全局坐标系下）
-    double dx = point.x - sensor_position.x();
-    double dy = point.y - sensor_position.y();
-    double dist = dx * dx + dy * dy;
-
-    // 近距离（<3m）：降低累积速度，每2帧才累积1次
-    // 这样可以防止近距离的动态物体（如人、车）被快速标记为静态
-    bool should_increment = true;
-    if (dist < 4.0) {
-      // 基于当前计数的模运算，确保不同体素有不同的累积节奏
-      should_increment = (status.hit_count % 1 == 0);
-    }
-
     // 增加体素格子命中计数，但进行截断以避免溢出
-    if (should_increment && status.hit_count <= hit_threshold_ + 1) {
+    if (status.hit_count <= hit_threshold_ + 1) {
       status.hit_count++;
     }
   }
@@ -246,7 +221,7 @@ void StaticPointFilter::filterPoints(
           long long key = getVoxelKey(point);
           if (voxel_map_.find(key) != voxel_map_.end()) {
             voxel_map_[key].hit_count =
-                std::max(0, voxel_map_[key].hit_count - 1);
+                std::max(0, voxel_map_[key].hit_count - 2);
           }
           break;
         }

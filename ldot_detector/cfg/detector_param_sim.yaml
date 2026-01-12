@@ -41,7 +41,7 @@ detection_nms_iou_threshold: 0.4  # NMS的IoU阈值，IoU > 该值的检测框�
 detection_nms_dist_scale: 1.0     # NMS 距离缩放参数，平均尺寸乘以该系数作为中心距离阈值
 
 # 目标跟踪与数据关联
-association_gate_confidence: 0.9  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
+association_gate_confidence: 0.7  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
 association_pos_cost_weight: 0.8    # 位置代价权重（马氏距离），考虑不确定性
 association_iou_cost_weight: 1    # 3D IoU代价权重，反映空间重叠度，月小月宽松
 # 分类稳定性参数

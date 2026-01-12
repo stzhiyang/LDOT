@@ -369,7 +369,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
     
     // 使用更高效的体素分组方式
     std::unordered_map<int, std::vector<int>> voxelMap;
-    voxelMap.reserve(groundRoofFilterCloud->size() / 10); // 预估体素数量
+    voxelMap.reserve(groundRoofFilterCloud->size() / 5); // 预估体素数量
     
     // 计算每个点的体素索引并分组
     const float invLeafSize = 1.0f / this->voxelBaseLeafSize_; // 预计算倒数，避免除法
@@ -2311,45 +2311,8 @@ void dynamicDetector::runClassification() {
     }
     // 获取卡尔曼滤波器估计的速度大小
     double velNorm = Vkf.norm();
-
-    // 强制动态判定（历史动态惯性机制）
-    // 条件1：历史帧数条件 + 当前速度仍然足够快（原有逻辑）
-    // 条件2：历史动态比例极高（>80%）时，即使当前低速也保持动态状态（防止低速/转弯误判）
-    //        但需要额外检查：如果连续多帧速度都很低，则允许转为静态
-    bool forceDynamic = false;
     
-    // 计算历史动态比例
-    double dynaRatio = (this->forceDynaCheckRange_ > 0) ? 
-                       double(dynaFrames) / double(this->forceDynaCheckRange_) : 0.0;
-    
-    if (dynaFrames >= this->forceDynaFrames_ && velNorm >= this->dynaVelThresh_) {
-      // 原有逻辑：历史动态帧数足够 + 当前速度足够
-      forceDynamic = true;
-    } else if (dynaRatio >= 0.7 && dynaFrames >= this->dynamicConsistThresh_) {
-      // 新增逻辑：历史动态比例极高（>80%），即使当前低速也保持动态
-      // 这解决了动态物体低速或原地转弯时被误判为静态的问题
-      // 但需要检查是否真的停下来了（连续低速帧数）
-      int lowSpeedFrames = 0;
-      const int maxLowSpeedFrames = this->forceDynaCheckRange_;  // 连续低速超过10帧才允许转为静态
-      forceDynamic = true;
-      for (int j = 0; j < std::min(maxLowSpeedFrames, int(this->boxHist_[i].size())); ++j) {
-        // 计算历史帧的速度
-        double histVel = std::sqrt(
-            this->boxHist_[i][j].Vx * this->boxHist_[i][j].Vx +
-            this->boxHist_[i][j].Vy * this->boxHist_[i][j].Vy);
-        if (histVel < this->dynaVelThresh_ * 0.5) {
-          lowSpeedFrames++;
-          // 只有连续低速帧数未达到阈值时才保持动态
-          if (lowSpeedFrames > maxLowSpeedFrames) {
-            forceDynamic = false;
-          }
-        } else {
-          break;  // 一旦有高速帧就停止计数
-        }
-      }
-    }
-    
-    if (forceDynamic) {
+    if (dynaFrames >= this->forceDynaFrames_ && velNorm >= this->dynaVelThresh_ * 0.8) {
       this->boxHist_[i][0].is_dynamic = true;
       dynamicBBoxesTemp.push_back(this->boxHist_[i][0]);
       continue;
