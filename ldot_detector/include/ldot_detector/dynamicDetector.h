@@ -376,7 +376,8 @@ public:
   // 统一处理入口：预处理 + 检测 + 跟踪 + 分类
   void processWorldCloud(pcl::PointCloud<pcl::PointXYZ>::Ptr worldCloud,
                          const nav_msgs::OdometryConstPtr &odom,
-                         const ros::Time &cloudStamp);
+                         const ros::Time &cloudStamp,
+                         double motionCompMs = 0.0);
   
   // 点云格式转换与坐标变换（输出世界坐标系 PCL 点云）
   pcl::PointCloud<pcl::PointXYZ>::Ptr transformLivoxToWorld(
