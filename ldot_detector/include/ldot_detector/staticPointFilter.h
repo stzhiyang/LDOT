@@ -32,7 +32,7 @@ public:
   // 设置参数
   void setParams(bool enabled, float voxel_size, int hit_threshold,
                  double time_threshold, bool use_neighbor_voting = true,
-                 int min_neighbor_votes = 3);
+                 int min_neighbor_votes = 3, int ray_cast_decrement = 1);
 
   // 仅更新地图
   // sensor_position: 传感器在全局坐标系中的位置（用于近距离累积抑制）
@@ -59,6 +59,14 @@ public:
 private:
   // 计算体素键值的辅助函数
   long long getVoxelKey(const pcl::PointXYZ &point);
+  
+  // 【新增】从三维坐标计算体素键值
+  long long getVoxelKeyFromCoords(int x_idx, int y_idx, int z_idx);
+
+  // 【新增】使用 Bresenham 3D 算法进行射线投射
+  // 从 sensor_position 到 end_point 的射线路径上的所有体素进行清除操作
+  void rayCast(const Eigen::Vector3d &sensor_position,
+               const pcl::PointXYZ &end_point);
 
   // 检查点是否在边界框内
   bool isPointInBox(const pcl::PointXYZ &pt, const onboardDetector::box3D &box);
@@ -82,6 +90,10 @@ private:
   // 【新增】邻域投票相关参数
   bool use_neighbor_voting_;      // 是否启用邻域投票
   int min_neighbor_votes_;        // 最小邻域投票数
+
+  // 【新增】射线投射相关参数
+  int ray_cast_decrement_;        // 射线穿过体素时的递减值
+  int ray_cast_skip_counter_;     // 射线投射跳过计数器（用于降采样）
 
   // 帧计数器，用于控制清理频率
   int frame_count_;

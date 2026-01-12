@@ -372,17 +372,30 @@ void ParamLoader::loadStaticFilterParams(dynamicDetector *detector) {
                           << detector->staticFilterMinNeighborVotes_);
   }
 
+  // 射线投射递减值（射线投射始终启用，用于快速清除动态物体残影）
+  if (not nh_.getParam(ns_ + "/static_filter_ray_cast_decrement",
+                       detector->staticFilterRayCastDecrement_)) {
+    detector->staticFilterRayCastDecrement_ = 1;
+    ROS_WARN_STREAM(hint_ << " No static_filter_ray_cast_decrement param. Use "
+                             "default: 1");
+  } else {
+    ROS_INFO_STREAM(hint_ << " static_filter_ray_cast_decrement: "
+                          << detector->staticFilterRayCastDecrement_);
+  }
+
   // 初始化静态点滤波器
   detector->staticFilter_.reset(new StaticPointFilter());
   detector->staticFilter_->setParams(
       detector->staticFilterEnabled_, detector->staticFilterVoxelSize_,
       detector->staticFilterHitThreshold_, detector->staticFilterTimeThreshold_,
-      detector->staticFilterUseNeighborVoting_, detector->staticFilterMinNeighborVotes_);
+      detector->staticFilterUseNeighborVoting_, detector->staticFilterMinNeighborVotes_,
+      detector->staticFilterRayCastDecrement_);
   if (detector->staticFilterEnabled_) {
     ROS_INFO_STREAM(hint_ << " Static Point Filter initialized (voxel: "
                           << detector->staticFilterVoxelSize_
                           << "m, hits: " << detector->staticFilterHitThreshold_
-                          << ", time: " << detector->staticFilterTimeThreshold_ << "s)");
+                          << ", time: " << detector->staticFilterTimeThreshold_ << "s"
+                          << ", ray_casting: always enabled)");
   }
 }
 

@@ -12,20 +12,23 @@ namespace onboardDetector {
 StaticPointFilter::StaticPointFilter()
     : enabled_(false), voxel_size_(0.1), hit_threshold_(5),
       time_threshold_(5.0), use_neighbor_voting_(true), min_neighbor_votes_(4),
-      frame_count_(0), sensor_position_(Eigen::Vector3d::Zero()) {}
+      ray_cast_decrement_(1), ray_cast_skip_counter_(0), frame_count_(0),
+      sensor_position_(Eigen::Vector3d::Zero()) {}
 
 StaticPointFilter::~StaticPointFilter() {}
 
 void StaticPointFilter::setParams(bool enabled, float voxel_size,
                                   int hit_threshold, double time_threshold,
                                   bool use_neighbor_voting,
-                                  int min_neighbor_votes) {
+                                  int min_neighbor_votes,
+                                  int ray_cast_decrement) {
   enabled_ = enabled;
   voxel_size_ = voxel_size;
   hit_threshold_ = hit_threshold;
   time_threshold_ = time_threshold;
   use_neighbor_voting_ = use_neighbor_voting;
   min_neighbor_votes_ = min_neighbor_votes;
+  ray_cast_decrement_ = ray_cast_decrement;
 }
 
 long long StaticPointFilter::getVoxelKey(const pcl::PointXYZ &point) {
@@ -34,6 +37,11 @@ long long StaticPointFilter::getVoxelKey(const pcl::PointXYZ &point) {
   int y_idx = std::floor(point.y / voxel_size_);
   int z_idx = std::floor(point.z / voxel_size_);
 
+  return getVoxelKeyFromCoords(x_idx, y_idx, z_idx);
+}
+
+long long StaticPointFilter::getVoxelKeyFromCoords(int x_idx, int y_idx,
+                                                   int z_idx) {
   // 每个坐标的质数。为了下面进行异或运算和防止不同点云占据同一个体素格子，即哈希函数的运算
   const long long p1 = 73856093;
   const long long p2 = 19349663;
@@ -83,22 +91,17 @@ bool StaticPointFilter::isPointStatic(const pcl::PointXYZ &pt) {
 // 【新增】距离自适应阈值 - 远距离降低判定门槛，补偿点云稀疏性
 // 使用成员变量 sensor_position_ 计算点到传感器的距离
 int StaticPointFilter::getAdaptiveThreshold(const pcl::PointXYZ &pt) {
-  // 计算点到传感器的2D距离（在全局坐标系下）
   double dx = pt.x - sensor_position_.x();
   double dy = pt.y - sensor_position_.y();
-  double dist = std::sqrt(dx * dx + dy * dy);
+  double dist_sq = dx * dx + dy * dy;
   
-  if (dist < 5.0) {
-    // 近距离（<5m）：使用标准阈值，保持严格判定
+  if (dist_sq < 25.0) {  
     return hit_threshold_;
-  } else if (dist < 10.0) {
-    // 中距离（5-10m）：降低1，适度放宽
+  } else if (dist_sq < 100.0) {  
     return std::max(2, hit_threshold_ - 1);
-  } else if (dist < 20.0) {
-    // 远距离（10-20m）：降低2，补偿稀疏性
+  } else if (dist_sq < 400.0) {  
     return std::max(2, hit_threshold_ - 2);
   } else {
-    // 极远距离（>20m）：降低3，最小为2
     return std::max(2, hit_threshold_ - 3);
   }
 }
@@ -166,6 +169,118 @@ bool StaticPointFilter::isPointStaticWithNeighbors(const pcl::PointXYZ &pt) {
   return false;
 }
 
+// 【新增】使用 Bresenham 3D 算法进行射线投射
+// 核心思想：从传感器位置到激光点的射线路径上，所有穿过的体素都应该是"空闲"的
+// 因为激光穿过了这些位置而没有发生碰撞。对这些体素进行递减操作，可以快速清除
+// 动态物体留下的"残影"
+// 
+// 优化策略：
+// 1. 只对射线路径上已存在的体素进行递减（不创建新体素）
+// 2. 如果体素 hit_count 已经很低，提前跳过
+// 3. 【遮挡处理】如果遇到高 hit_count 的静态体素，提前终止（说明被遮挡）
+void StaticPointFilter::rayCast(const Eigen::Vector3d &sensor_position,
+                                const pcl::PointXYZ &end_point) {
+  // 将起点和终点转换为体素索引
+  int x0 = std::floor(sensor_position.x() / voxel_size_);
+  int y0 = std::floor(sensor_position.y() / voxel_size_);
+  int z0 = std::floor(sensor_position.z() / voxel_size_);
+
+  int x1 = std::floor(end_point.x / voxel_size_);
+  int y1 = std::floor(end_point.y / voxel_size_);
+  int z1 = std::floor(end_point.z / voxel_size_);
+
+  // 计算差值
+  int dx = std::abs(x1 - x0);
+  int dy = std::abs(y1 - y0);
+  int dz = std::abs(z1 - z0);
+
+  // 确定步进方向
+  int sx = (x0 < x1) ? 1 : -1;
+  int sy = (y0 < y1) ? 1 : -1;
+  int sz = (z0 < z1) ? 1 : -1;
+
+  // Bresenham 3D 算法的核心：使用误差累积来决定在哪个维度上步进
+  // 选择最大的差值作为主轴
+  int dm = std::max({dx, dy, dz});
+
+  // 【优化】如果射线太短（小于2个体素），跳过射线投射
+  if (dm < 2) {
+    return;
+  }
+
+  // 初始化当前位置
+  int x = x0, y = y0, z = z0;
+
+  // 误差累积器
+  int err_x = dm / 2;
+  int err_y = dm / 2;
+  int err_z = dm / 2;
+
+  // 【优化】预先计算终点体素的哈希，避免重复计算
+  long long end_key = getVoxelKeyFromCoords(x1, y1, z1);
+
+  // 【遮挡检测】静态体素阈值：如果 hit_count 超过此值，认为是可靠的静态物体
+  // 射线不应该穿过它，说明存在遮挡，应该提前终止
+  const int occlusion_threshold = hit_threshold_ * 0.8;  // 80% 的阈值
+
+  // 沿着射线遍历所有体素（不包括终点，因为终点是命中点）
+  for (int i = 0; i < dm - 1; ++i) {  // 改为 dm-1，确保不处理最后一步
+    // Bresenham 步进逻辑（先步进，再处理）
+    err_x -= dx;
+    if (err_x < 0) {
+      x += sx;
+      err_x += dm;
+    }
+
+    err_y -= dy;
+    if (err_y < 0) {
+      y += sy;
+      err_y += dm;
+    }
+
+    err_z -= dz;
+    if (err_z < 0) {
+      z += sz;
+      err_z += dm;
+    }
+
+    // 对当前体素进行清除操作
+    long long key = getVoxelKeyFromCoords(x, y, z);
+    
+    // 【关键修复】跳过终点体素，避免误清除命中点
+    if (key == end_key) {
+      break;  // 已经到达终点体素，停止清除
+    }
+    
+    auto it = voxel_map_.find(key);
+    if (it != voxel_map_.end()) {
+      // 【遮挡检测】如果遇到高 hit_count 的静态体素，说明存在遮挡
+      // 射线不应该穿过静态物体，提前终止以保护后面的静态地图
+      if (it->second.hit_count >= occlusion_threshold) {
+        break;  // 遇到静态障碍物，停止射线投射
+      }
+      
+      // 【软保护机制】对于正在累积的体素（0 < hit_count < 阈值）
+      // 降低清除力度，避免擦边清除导致边缘难以累积
+      if (it->second.hit_count > 0 && it->second.hit_count < occlusion_threshold) {
+        // 如果 hit_count 很低，直接删除
+        if (it->second.hit_count <= ray_cast_decrement_) {
+          voxel_map_.erase(it);
+        } else {
+          // 否则使用减半的递减力度（软保护）
+          it->second.hit_count -= (ray_cast_decrement_ / 2);
+          if (it->second.hit_count < 0) {
+            it->second.hit_count = 0;
+          }
+        }
+      } else {
+        // hit_count = 0 或其他异常情况，删除
+        voxel_map_.erase(it);
+      }
+    }
+  }
+}
+
 void StaticPointFilter::updateMap(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, double current_time,
     const Eigen::Vector3d &sensor_position) {
@@ -176,6 +291,7 @@ void StaticPointFilter::updateMap(
   // 更新传感器位置（供后续 isPointStatic 等函数使用）
   sensor_position_ = sensor_position;
 
+  // 【第一遍】先累积所有命中点，避免被射线投射误清除
   for (const auto &point : cloud->points) {
     long long key = getVoxelKey(point);
 
@@ -189,9 +305,23 @@ void StaticPointFilter::updateMap(
     }
   }
 
+  // 【第二遍】射线投射清除（降采样）
+  // 使用遮挡检测保护静态物体，不再需要距离过滤
+  const int ray_cast_skip_interval = 5; // 每5个点做一次射线投射
+
+  ray_cast_skip_counter_ = 0; // 重置计数器
+  for (const auto &point : cloud->points) {
+    // 【射线投射降采样】只对部分点进行射线投射
+    ray_cast_skip_counter_++;
+    if (ray_cast_skip_counter_ >= ray_cast_skip_interval) {
+      rayCast(sensor_position, point);
+      ray_cast_skip_counter_ = 0;
+    }
+  }
+
   // 每10帧清理一次地图
   frame_count_++;
-  if (frame_count_ >= 10) {
+  if (frame_count_ >= 1) {
     cleanMap(current_time);
     frame_count_ = 0;
   }

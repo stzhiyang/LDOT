@@ -33,6 +33,7 @@ static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
 static_filter_time_threshold: 7.0 # 静态点在地图中保留的时间阈值 (秒)
 static_filter_use_neighbor_voting: true  # 是否启用邻域投票（利用空间连续性增强稀疏点云的静态判断）
 static_filter_min_neighbor_votes: 3      # 最小邻域投票数（6邻域中至少需要多少个邻居支持）
+static_filter_ray_cast_decrement: 1      # 射线投射递减值（射线投射始终启用，用于快速清除动态物体残影）
 
 # DBSCAN 激光雷达聚类参数
 lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数

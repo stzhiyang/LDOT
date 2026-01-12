@@ -182,6 +182,7 @@ private:
   double staticFilterTimeThreshold_;     // 时间阈值
   bool staticFilterUseNeighborVoting_;   // 是否启用邻域投票
   int staticFilterMinNeighborVotes_;     // 最小邻域投票数
+  int staticFilterRayCastDecrement_;     // 射线投射递减值（射线投射始终启用）
   
   
   // ===================================================================

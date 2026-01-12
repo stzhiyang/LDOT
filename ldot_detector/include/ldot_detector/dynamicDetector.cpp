@@ -432,9 +432,14 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::transformLivoxToWorld(
   int successCount = 0;
   int failCount = 0;
   
-  // 优化：如果里程计历史很小，禁用插值以提升性能
-  if (this->odomHistory_.size() < 10) {
-    // 直接使用帧位姿进行批量变换
+  // 判断是否启用逐点插值：
+  // 1. 必须配置了高频里程计话题（不为空）
+  // 2. 里程计历史队列足够大（至少10帧）
+  bool enableInterpolation = !this->highFreqOdomTopicName_.empty() && 
+                             this->odomHistory_.size() >= 10;
+  
+  if (!enableInterpolation) {
+    // 快速路径：直接使用帧位姿进行批量变换（无插值）
     for (size_t i = 0; i < customMsg->points.size(); ++i) {
       const auto &pt = customMsg->points[i];
       
