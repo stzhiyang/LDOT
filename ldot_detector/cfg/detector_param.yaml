@@ -21,7 +21,8 @@ odom_history_size: 50  # 里程计历史队列大小（帧数）
 # 点云过滤参数
 ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.0 # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
-lidar_detection_range: [10.0, 10.0, 2.0]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
+lidar_detection_range: [10.0, 10.0, 2.0]  # 激光雷达动态检测范围 [x, y, z] (米)，用于聚类和跟踪
+static_map_buffer: 5.0  # 静态地图缓冲区 (米)，静态地图范围 = 检测范围 + buffer，只应用于XY轴，让边缘点云有足够时间累积
 enable_voxel_downsampling: true  # 是否启用Voxel Grid自适应下采样
 voxel_base_leaf_size: 0.1       # 基础体素大小 (米), 初始下采样精度
 voxel_max_points_per_voxel: 7  # 单个体素内最大点数限制，防止局部点云过密

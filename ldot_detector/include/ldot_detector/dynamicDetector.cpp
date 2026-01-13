@@ -290,7 +290,7 @@ void dynamicDetector::processWorldCloud(
     double motionCompMs) {
   
   // 记录总处理开始时间（包含后续所有处理）
-  auto totalStart = std::chrono::high_resolution_clock::now();
+  auto callbackStart = std::chrono::high_resolution_clock::now();
   
   // 更新位姿信息
   this->updatePose(odom);
@@ -318,9 +318,7 @@ void dynamicDetector::processWorldCloud(
     return;
   }
   
-  // ===== 静态地图已就绪，开始完整流程并计时 =====
-  auto callbackStart = std::chrono::high_resolution_clock::now();
-  
+  // ===== 静态地图已就绪，开始完整流程并计时 =====  
   // 预处理
   auto preprocessStart = std::chrono::high_resolution_clock::now();
   this->lidarCloud_ = this->preprocessWorldCloud(worldCloud);
@@ -583,44 +581,28 @@ void dynamicDetector::updatePose(const nav_msgs::OdometryConstPtr &odom) {
 /*!
  * \brief 统一预处理函数 - 处理世界坐标系下的点云
  * \param worldCloud 世界坐标系下的 PCL 点云
- * \return 预处理后的点云
+ * \return 预处理后的点云（用于检测和跟踪）
  * 
  * 处理流程：
- * 1. 范围过滤（基于传感器位置）
- * 2. 地面和天花板过滤
- * 3. 自适应体素下采样
+ * 1. 高度过滤（地面和天花板）- 通用预处理
+ * 2. 体素下采样 - 通用预处理
+ * 3. 范围过滤 - 分成两份：
+ *    a) 扩展范围（检测范围+buffer）→ 用于静态地图更新
+ *    b) 检测范围 → 用于聚类和跟踪
+ * 
+ * 注意：静态地图更新使用更大的范围（检测范围+buffer），以便边缘点云有足够时间累积
  */
 pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessWorldCloud(
     pcl::PointCloud<pcl::PointXYZ>::Ptr worldCloud) {
   
   const size_t n_in = worldCloud ? worldCloud->size() : 0;
   
-  // --- 1. 范围过滤（基于传感器位置，矩形区域） ---
-  pcl::PointCloud<pcl::PointXYZ>::Ptr rangeFilteredCloud(
-      new pcl::PointCloud<pcl::PointXYZ>());
-  rangeFilteredCloud->reserve(worldCloud->size());
-  
-  double rangeX = this->localLidarRange_.x();
-  double rangeY = this->localLidarRange_.y();
-  
-  for (const pcl::PointXYZ &pt : worldCloud->points) {
-    double dx = std::abs(pt.x - this->positionLidar_(0));
-    double dy = std::abs(pt.y - this->positionLidar_(1));
-    
-    // X和Y方向分别比较，形成矩形检测区域
-    if (dx <= rangeX && dy <= rangeY) {
-      rangeFilteredCloud->push_back(pt);
-    }
-  }
-  
-  const size_t n_after_range = rangeFilteredCloud->size();
-
-  // --- 2. 地面和天花板过滤 ---
+  // --- 1. 地面和天花板过滤（通用预处理，先做）---
   pcl::PointCloud<pcl::PointXYZ>::Ptr heightFilteredCloud(
       new pcl::PointCloud<pcl::PointXYZ>());
-  heightFilteredCloud->reserve(rangeFilteredCloud->size());
+  heightFilteredCloud->reserve(worldCloud->size());
 
-  for (const pcl::PointXYZ &pt : rangeFilteredCloud->points) {
+  for (const pcl::PointXYZ &pt : worldCloud->points) {
     if (pt.z >= this->groundHeight_ && pt.z <= this->roofHeight_) {
       heightFilteredCloud->push_back(pt);
     }
@@ -628,11 +610,11 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessWorldCloud(
   
   const size_t n_after_height = heightFilteredCloud->size();
 
-  // --- 3. 体素下采样（使用 PCL 标准 VoxelGrid 保证空间均匀性） ---
-  pcl::PointCloud<pcl::PointXYZ>::Ptr finalCloud(new pcl::PointCloud<pcl::PointXYZ>());
+  // --- 2. 体素下采样（通用预处理，先做）---
+  pcl::PointCloud<pcl::PointXYZ>::Ptr downsampledCloud(new pcl::PointCloud<pcl::PointXYZ>());
 
   if (!this->enableVoxelDownsampling_) {
-    finalCloud = heightFilteredCloud;
+    downsampledCloud = heightFilteredCloud;
   } else {
     // 使用 PCL 标准 VoxelGrid 滤波器
     pcl::VoxelGrid<pcl::PointXYZ> voxelFilter;
@@ -640,16 +622,61 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessWorldCloud(
     voxelFilter.setLeafSize(this->voxelBaseLeafSize_, 
                            this->voxelBaseLeafSize_, 
                            this->voxelBaseLeafSize_);
-    voxelFilter.filter(*finalCloud);
+    voxelFilter.filter(*downsampledCloud);
   }
-
-  const size_t n_final = finalCloud->size();
   
-  // // 输出详细的分步统计信息
-  // ROS_INFO_THROTTLE(1.0, "%s: Preprocess - Input: %zu, AfterRange: %zu, AfterHeight: %zu, AfterVoxel: %zu",
-  //                   this->hint_.c_str(), n_in, n_after_range, n_after_height, n_final);
+  const size_t n_after_voxel = downsampledCloud->size();
+  
+  // --- 3. 范围过滤（分成两份：扩展范围 vs 检测范围）---
+  // 3a. 扩展范围点云（检测范围 + buffer）- 用于静态地图更新
+  pcl::PointCloud<pcl::PointXYZ>::Ptr extendedRangeCloud(
+      new pcl::PointCloud<pcl::PointXYZ>());
+  extendedRangeCloud->reserve(downsampledCloud->size());
+  
+  double extendedRangeX = this->localLidarRange_.x() + this->staticMapBuffer_;
+  double extendedRangeY = this->localLidarRange_.y() + this->staticMapBuffer_;
+  
+  for (const pcl::PointXYZ &pt : downsampledCloud->points) {
+    double dx = std::abs(pt.x - this->positionLidar_(0));
+    double dy = std::abs(pt.y - this->positionLidar_(1));
+    
+    // 使用扩展范围（仅XY轴，Z轴不扩展）
+    if (dx <= extendedRangeX && dy <= extendedRangeY) {
+      extendedRangeCloud->push_back(pt);
+    }
+  }
+  
+  const size_t n_extended = extendedRangeCloud->size();
+  
+  // 保存扩展范围点云，用于静态地图更新
+  this->extendedRangeCloud_ = extendedRangeCloud;
+  
+  // 3b. 检测范围点云 - 用于聚类和跟踪
+  pcl::PointCloud<pcl::PointXYZ>::Ptr detectionRangeCloud(
+      new pcl::PointCloud<pcl::PointXYZ>());
+  detectionRangeCloud->reserve(downsampledCloud->size());
+  
+  double rangeX = this->localLidarRange_.x();
+  double rangeY = this->localLidarRange_.y();
+  
+  for (const pcl::PointXYZ &pt : downsampledCloud->points) {
+    double dx = std::abs(pt.x - this->positionLidar_(0));
+    double dy = std::abs(pt.y - this->positionLidar_(1));
+    
+    // X和Y方向分别比较，形成矩形检测区域
+    if (dx <= rangeX && dy <= rangeY) {
+      detectionRangeCloud->push_back(pt);
+    }
+  }
+  
+  const size_t n_detection = detectionRangeCloud->size();
+  
+  // 输出详细的分步统计信息
+  ROS_INFO_THROTTLE(2.0, "%s: Preprocess - Input: %zu, AfterHeight: %zu, AfterVoxel: %zu, Extended(+%.1fm): %zu, Detection: %zu",
+                    this->hint_.c_str(), n_in, n_after_height, n_after_voxel, 
+                    this->staticMapBuffer_, n_extended, n_detection);
 
-  return finalCloud;
+  return detectionRangeCloud;
 }
 
 // ===================================================================
@@ -774,9 +801,12 @@ void dynamicDetector::runDetection() {
     return;
   }
 
-  // 1. 始终更新静态地图，使用当前ROS时间，并传入传感器位置（全局坐标系）
+  // 1. 始终更新静态地图，使用扩展范围点云（检测范围+buffer），并传入传感器位置（全局坐标系）
   double currentTime = ros::Time::now().toSec();
-  this->staticFilter_->updateMap(this->lidarCloud_, currentTime, this->positionLidar_);
+  // 使用扩展范围点云更新静态地图，让边缘区域的点云有足够时间累积
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloudForStaticMap = 
+      (this->extendedRangeCloud_ != NULL) ? this->extendedRangeCloud_ : this->lidarCloud_;
+  this->staticFilter_->updateMap(cloudForStaticMap, currentTime, this->positionLidar_);
 
   // 检查静态地图预热阶段
   // 如果是第一帧，记录启动时间

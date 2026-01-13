@@ -168,6 +168,14 @@ void ParamLoader::loadFilterParams(dynamicDetector *detector) {
                                "default: [10.0, 10.0, 3.0]m");
     }
   }
+  
+  // 静态地图缓冲区
+  if (not nh_.getParam(ns_ + "/static_map_buffer", detector->staticMapBuffer_)) {
+    detector->staticMapBuffer_ = 5.0;
+    ROS_WARN_STREAM(hint_ << " No static_map_buffer param. Use default: 5.0m");
+  } else {
+    ROS_INFO_STREAM(hint_ << " static_map_buffer: " << detector->staticMapBuffer_ << "m");
+  }
 }
 
 // ==================== DBSCAN Clustering Parameters ====================

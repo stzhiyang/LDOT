@@ -21,16 +21,17 @@ odom_history_size: 100  # 里程计历史队列大小（帧数）
 # 点云过滤参数
 ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.8   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
-lidar_detection_range: [10.0, 10.0, 3.0]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
+lidar_detection_range: [10.0, 10.0, 3.0]  # 激光雷达动态检测范围 [x, y, z] (米)，用于聚类和跟踪
+static_map_buffer: 5.0  # 静态地图缓冲区 (米)，静态地图范围 = 检测范围 + buffer，只应用于XY轴，让边缘点云有足够时间累积
 enable_voxel_downsampling: true  # 启用下采样以减少处理时间和延迟
-voxel_base_leaf_size: 0.15       # 增大体素以减少点数，加快处理速度
+voxel_base_leaf_size: 0.15       # 增大体素以减少点数，加快处理速度，比后面两个小
 voxel_max_points_per_voxel: 3  # 单个体素内最大点数限制，防止局部点云过密
 
 # 静态点去除滤波器参数
 static_filter_enabled: true     # 暂时禁用静态点去除以减少延迟
-static_filter_voxel_size: 0.2    # 静态滤波器体素大小 (米)，比第一个体素大
+static_filter_voxel_size: 0.3    # 静态滤波器体素大小 (米)
 static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
-static_filter_time_threshold: 5.0 # 静态点在地图中保留的时间阈值 (秒)
+static_filter_time_threshold: 10.0 # 静态点在地图中保留的时间阈值 (秒)
 static_filter_use_neighbor_voting: true   # 是否启用邻域投票（利用空间连续性增强稀疏点云的静态判断）
 static_filter_min_neighbor_votes: 3      # 最小邻域投票数（6邻域中至少需要多少个邻居支持）
 static_filter_ray_cast_decrement: 2      # 射线投射递减值（射线投射始终启用，用于快速清除动态物体残影）

@@ -278,7 +278,8 @@ private:
   Eigen::Matrix3d orientation_;      // 机器人当前姿态（世界坐标系）
   Eigen::Vector3d positionLidar_;    // 激光雷达当前位置（世界坐标系）
   Eigen::Matrix3d orientationLidar_; // 激光雷达当前姿态（世界坐标系）
-  Eigen::Vector3d localLidarRange_;  // 激光雷达局部检测范围（X、Y方向）
+  Eigen::Vector3d localLidarRange_;  // 激光雷达局部检测范围（X、Y、Z方向）
+  double staticMapBuffer_;           // 静态地图缓冲区（米），静态地图范围 = 检测范围 + buffer（仅XY轴）
   
   // 运动补偿相关
   int odomHistorySize_;              // 里程计历史队列大小
@@ -287,8 +288,9 @@ private:
   // ===================================================================
   // 点云处理数据
   // ===================================================================
-  pcl::PointCloud<pcl::PointXYZ>::Ptr lidarCloud_ = NULL;   // 预处理后的激光雷达点云
-  pcl::PointCloud<pcl::PointXYZ>::Ptr latestCloud_ = NULL;  // 最新的世界坐标系点云（用于可视化）
+  pcl::PointCloud<pcl::PointXYZ>::Ptr lidarCloud_ = NULL;          // 预处理后的激光雷达点云（检测范围）
+  pcl::PointCloud<pcl::PointXYZ>::Ptr extendedRangeCloud_ = NULL;  // 扩展范围点云（用于静态地图更新）
+  pcl::PointCloud<pcl::PointXYZ>::Ptr latestCloud_ = NULL;         // 最新的世界坐标系点云（用于可视化）
 
   // ===================================================================
   // 检测结果
