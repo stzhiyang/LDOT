@@ -178,8 +178,10 @@ bool StaticPointFilter::isPointStaticWithNeighbors(const pcl::PointXYZ &pt) {
 // 1. 只对射线路径上已存在的体素进行递减（不创建新体素）
 // 2. 如果体素 hit_count 已经很低，提前跳过
 // 3. 【遮挡处理】如果遇到高 hit_count 的静态体素，提前终止（说明被遮挡）
+// 4. 【动态物体保护】跳过 protected_boxes 内的体素，避免误清除无人机等动态物体
 void StaticPointFilter::rayCast(const Eigen::Vector3d &sensor_position,
-                                const pcl::PointXYZ &end_point) {
+                                const pcl::PointXYZ &end_point,
+                                const std::vector<onboardDetector::box3D> *protected_boxes) {
   // 将起点和终点转换为体素索引
   int x0 = std::floor(sensor_position.x() / voxel_size_);
   int y0 = std::floor(sensor_position.y() / voxel_size_);
@@ -252,6 +254,27 @@ void StaticPointFilter::rayCast(const Eigen::Vector3d &sensor_position,
       break;  // 已经到达终点体素，停止清除
     }
     
+    // 【动态物体保护】检查当前体素是否在保护区域内
+    if (protected_boxes != nullptr) {
+      pcl::PointXYZ voxel_center;
+      voxel_center.x = x * voxel_size_ + voxel_size_ / 2.0f;
+      voxel_center.y = y * voxel_size_ + voxel_size_ / 2.0f;
+      voxel_center.z = z * voxel_size_ + voxel_size_ / 2.0f;
+      
+      bool in_protected_area = false;
+      for (const auto &box : *protected_boxes) {
+        if (isPointInBox(voxel_center, box)) {
+          in_protected_area = true;
+          break;
+        }
+      }
+      
+      // 如果在保护区域内，跳过清除操作
+      if (in_protected_area) {
+        continue;
+      }
+    }
+    
     auto it = voxel_map_.find(key);
     if (it != voxel_map_.end()) {
       // 【遮挡检测】如果遇到高 hit_count 的静态体素，说明存在遮挡
@@ -283,7 +306,8 @@ void StaticPointFilter::rayCast(const Eigen::Vector3d &sensor_position,
 
 void StaticPointFilter::updateMap(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, double current_time,
-    const Eigen::Vector3d &sensor_position) {
+    const Eigen::Vector3d &sensor_position,
+    const std::vector<onboardDetector::box3D> *protected_boxes) {
   if (cloud->empty()) {
     return;
   }
@@ -314,7 +338,7 @@ void StaticPointFilter::updateMap(
     // 【射线投射降采样】只对部分点进行射线投射
     ray_cast_skip_counter_++;
     if (ray_cast_skip_counter_ >= ray_cast_skip_interval) {
-      rayCast(sensor_position, point);
+      rayCast(sensor_position, point, protected_boxes);
       ray_cast_skip_counter_ = 0;
     }
   }

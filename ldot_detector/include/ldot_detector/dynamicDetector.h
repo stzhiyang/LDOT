@@ -213,11 +213,6 @@ private:
   // 检测过滤参数
   // ===================================================================
   Eigen::Vector3d maxObjectSize_;                    // 物体的最大尺寸阈值
-  
-  // 帧内去重(NMS)
-  bool enableDetectionNMS_;                          // 是否启用检测NMS
-  double detectionNMSIoUThreshold_;                  // NMS的IoU阈值
-  double detectionNMSDistScale_;                     // NMS距离阈值缩放参数
 
   // ===================================================================
   // 动态/静态分类参数
@@ -409,11 +404,6 @@ public:
   // ===================================================================
   // 检测模块
   // ===================================================================
-  void applyDetectionNMS(std::vector<onboardDetector::box3D> &bboxes,
-                        std::vector<std::vector<Eigen::Vector3d>> &pcClusters,
-                        std::vector<Eigen::Vector3d> &pcClusterCenters,
-                        std::vector<Eigen::Vector3d> &pcClusterStds);
-
   // ===================================================================
   // 跟踪模块
   // ===================================================================

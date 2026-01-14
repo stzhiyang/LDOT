@@ -28,7 +28,6 @@ void ParamLoader::loadAllParams(dynamicDetector *detector) {
   loadTrackingParams(detector);
   loadClassificationParams(detector);
   loadSizeConstraintParams(detector);
-  loadNMSParams(detector);
   loadObjectClassifyParams(detector);
   loadKalmanFilterParams(detector);
   loadTrajectoryPredictionParams(detector);
@@ -680,45 +679,6 @@ void ParamLoader::loadSizeConstraintParams(dynamicDetector *detector) {
       ROS_WARN_STREAM(hint_ << " Invalid max_object_size size. Use default: "
                                "[2.0, 2.0, 2.0]m");
     }
-  }
-}
-
-// ==================== NMS (Non-Maximum Suppression) Parameters ====================
-void ParamLoader::loadNMSParams(dynamicDetector *detector) {
-  ROS_INFO_STREAM(hint_ << " --- NMS Parameters ---");
-
-  // 是否启用检测 NMS
-  if (not nh_.getParam(ns_ + "/enable_detection_nms",
-                       detector->enableDetectionNMS_)) {
-    detector->enableDetectionNMS_ = true;
-    ROS_WARN_STREAM(hint_ << " No enable_detection_nms param. Use default: "
-                             "true");
-  } else {
-    ROS_INFO_STREAM(hint_ << " enable_detection_nms: "
-                          << (detector->enableDetectionNMS_ ? "enabled"
-                                                            : "disabled"));
-  }
-
-  // NMS IoU 阈值
-  if (not nh_.getParam(ns_ + "/detection_nms_iou_threshold",
-                       detector->detectionNMSIoUThreshold_)) {
-    detector->detectionNMSIoUThreshold_ = 0.3;
-    ROS_WARN_STREAM(hint_ << " No detection_nms_iou_threshold param. Use "
-                             "default: 0.3");
-  } else {
-    ROS_INFO_STREAM(hint_ << " detection_nms_iou_threshold: "
-                          << detector->detectionNMSIoUThreshold_);
-  }
-
-  // NMS 距离缩放参数
-  if (not nh_.getParam(ns_ + "/detection_nms_dist_scale",
-                       detector->detectionNMSDistScale_)) {
-    detector->detectionNMSDistScale_ = 2.0;
-    ROS_WARN_STREAM(hint_ << " No detection_nms_dist_scale param. Use default: "
-                             "2.0");
-  } else {
-    ROS_INFO_STREAM(hint_ << " detection_nms_dist_scale: "
-                          << detector->detectionNMSDistScale_);
   }
 }
 

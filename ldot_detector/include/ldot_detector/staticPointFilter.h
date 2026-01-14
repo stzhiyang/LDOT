@@ -36,9 +36,11 @@ public:
 
   // 仅更新地图
   // sensor_position: 传感器在全局坐标系中的位置（用于近距离累积抑制）
+  // protected_boxes: 动态物体保护区域（可选），射线投射时会跳过这些区域
   void updateMap(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
                  double current_time,
-                 const Eigen::Vector3d &sensor_position);
+                 const Eigen::Vector3d &sensor_position,
+                 const std::vector<onboardDetector::box3D> *protected_boxes = nullptr);
 
   // 点级过滤 (原 filter 函数)
   void filterPoints(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
@@ -65,8 +67,10 @@ private:
 
   // 【新增】使用 Bresenham 3D 算法进行射线投射
   // 从 sensor_position 到 end_point 的射线路径上的所有体素进行清除操作
+  // protected_boxes: 动态物体保护区域（可选），射线投射时会跳过这些区域
   void rayCast(const Eigen::Vector3d &sensor_position,
-               const pcl::PointXYZ &end_point);
+               const pcl::PointXYZ &end_point,
+               const std::vector<onboardDetector::box3D> *protected_boxes = nullptr);
 
   // 检查点是否在边界框内
   bool isPointInBox(const pcl::PointXYZ &pt, const onboardDetector::box3D &box);

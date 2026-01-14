@@ -49,11 +49,6 @@ centroid_compensation_ratio: 0.2     # 补偿比例系数 (0.0-1.0)，0.5表示�
 centroid_compensation_min_distance: 5.0  # 质心补偿的最小距离阈值(米)，近距离物体不补偿
 centroid_compensation_max_distance: 12.0 # 质心补偿的最大距离阈值(米)，远距离物体不补偿
 
-# 帧内去重(NMS)参数 - 解决同一物体产生多个检测框的问题
-enable_detection_nms: true        # 是否启用检测去重（强烈建议开启）
-detection_nms_iou_threshold: 0.4  # NMS的IoU阈值，IoU > 该值的检测框会被合并 (0.2-0.5)
-detection_nms_dist_scale: 1.0     # NMS 距离缩放参数，平均尺寸乘以该系数作为中心距离阈值
-
 # 目标跟踪与数据关联
 association_gate_confidence: 0.9  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
 association_pos_cost_weight: 0.8    # 位置代价权重（马氏距离），考虑不确定性

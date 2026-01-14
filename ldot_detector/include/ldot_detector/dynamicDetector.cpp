@@ -801,13 +801,6 @@ void dynamicDetector::runDetection() {
     return;
   }
 
-  // 1. 始终更新静态地图，使用扩展范围点云（检测范围+buffer），并传入传感器位置（全局坐标系）
-  double currentTime = ros::Time::now().toSec();
-  // 使用扩展范围点云更新静态地图，让边缘区域的点云有足够时间累积
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloudForStaticMap = 
-      (this->extendedRangeCloud_ != NULL) ? this->extendedRangeCloud_ : this->lidarCloud_;
-  this->staticFilter_->updateMap(cloudForStaticMap, currentTime, this->positionLidar_);
-
   // 检查静态地图预热阶段
   // 如果是第一帧，记录启动时间
   if (this->systemStartTime_.toSec() < 0.001) {
@@ -819,7 +812,12 @@ void dynamicDetector::runDetection() {
   double elapsedTime = (ros::Time::now() - this->systemStartTime_).toSec();
   if (!this->isStaticMapReady_) {
     if (elapsedTime < this->staticMapWarmupDuration_) {
-      // 预热阶段：只更新静态地图，不进行检测
+      // 预热阶段：只更新静态地图，不进行检测（无需保护区域）
+      double currentTime = ros::Time::now().toSec();
+      pcl::PointCloud<pcl::PointXYZ>::Ptr cloudForStaticMap = 
+          (this->extendedRangeCloud_ != NULL) ? this->extendedRangeCloud_ : this->lidarCloud_;
+      this->staticFilter_->updateMap(cloudForStaticMap, currentTime, this->positionLidar_, nullptr);
+      
       ROS_INFO_THROTTLE(1.0, "%s: Static map warmup phase (%.1f/%.1f s). Only updating static map...",
                         this->hint_.c_str(), elapsedTime, this->staticMapWarmupDuration_);
       return;  // 预热中，直接返回
@@ -830,7 +828,7 @@ void dynamicDetector::runDetection() {
     }
   }
 
-  // 2. 收集保护区域（动态物体边界框）- 只收集一次，供点级和聚类级过滤共用
+  // 1. 先收集保护区域（动态物体边界框）- 必须在更新静态地图之前！
   std::vector<onboardDetector::box3D> protectedBoxes;
   if (this->staticFilterEnabled_) {
     for (const auto &track : this->boxHist_) {
@@ -839,6 +837,13 @@ void dynamicDetector::runDetection() {
       }
     }
   }
+
+  // 2. 更新静态地图，传入保护区域以避免误清除动态物体
+  double currentTime = ros::Time::now().toSec();
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloudForStaticMap = 
+      (this->extendedRangeCloud_ != NULL) ? this->extendedRangeCloud_ : this->lidarCloud_;
+  // 关键：传入 &protectedBoxes，让射线投射跳过动态物体区域
+  this->staticFilter_->updateMap(cloudForStaticMap, currentTime, this->positionLidar_, &protectedBoxes);
 
   // 3. 执行静态点过滤 (点级，可选)
   if (this->staticFilterEnabled_) {
@@ -894,19 +899,6 @@ void dynamicDetector::runDetection() {
     tmpPcClusters.push_back(std::move(pcCluster));
   }
 
-  // 在生成特征之前进行帧内去重(NMS)以减少不必要计算
-  if (this->enableDetectionNMS_ && tmpPcClusters.size() > 1) {
-    size_t beforeNMS = lidarBBoxesFiltered.size();
-    this->applyDetectionNMS(lidarBBoxesFiltered, tmpPcClusters,
-                            lidarPcClusterCentersTemp,
-                            lidarPcClusterStdsTemp);
-    size_t afterNMS = lidarBBoxesFiltered.size();
-    if (beforeNMS != afterNMS) {
-      ROS_INFO_THROTTLE(1.0, "%s: Detection NMS (pre-feature): %lu -> %lu boxes",
-                        this->hint_.c_str(), beforeNMS, afterNMS);
-    }
-  }
-
   // 将（已NMS或未NMS）结果转回用于后续处理的临时容器
   for (size_t i = 0; i < lidarBBoxesFiltered.size(); ++i) {
     onboardDetector::box3D lidarBBox = lidarBBoxesFiltered[i];
@@ -920,14 +912,14 @@ void dynamicDetector::runDetection() {
     if (!pcCluster.empty()) clusterCenter /= static_cast<double>(pcCluster.size());
     
     // ===== 质心补偿：使bbox的质心与点云质心保持一致 =====
-    // 注意：lidarBBox已经在lidarDBSCAN()或applyDetectionNMS()中补偿过
+    // 注意：lidarBBox已经在lidarDBSCAN()中补偿过
     // 这里将点云质心也更新为bbox的中心位置，保持一致性
     clusterCenter.x() = lidarBBox.x;
     clusterCenter.y() = lidarBBox.y;
     clusterCenter.z() = lidarBBox.z;
     // ===== 质心同步结束 =====
 
-    // 计算点云簇的标准差（如果applyDetectionNMS已经计算过，保留其值）
+    // 计算点云簇的标准差
     Eigen::Vector3d clusterStd(0, 0, 0);
     if (lidarPcClusterStdsTemp.size() == lidarBBoxesFiltered.size()) {
       clusterStd = lidarPcClusterStdsTemp[i];
@@ -963,216 +955,6 @@ void dynamicDetector::runDetection() {
   //     end_time - start_time);
   // ROS_INFO_THROTTLE(1.0, "%s: runDetection took %.3f ms",
   //                   this->hint_.c_str(), duration.count() / 1000.0);
-}
-
-/*!
- * @brief 帧内检测去重(NMS) - 合并同一物体的多个重叠检测框
- * @param bboxes 检测框列表（会被修改）
- * @param pcClusters 点云聚类列表（会被修改）
- * @param pcClusterCenters 点云中心列表（会被修改）
- * @param pcClusterStds 点云标准差列表（会被修改）
- * 算法逻辑：
- * 1. 按边界框体积从大到小排序（保留较大检测，抑制较小重复检测）
- * 2. 遍历每个检测框，判断是否应该合并（IoU高 或 中心距离近）
- * 3. 如果满足合并条件，则合并两个检测（合并点云、重新计算边界框）
- */
-void dynamicDetector::applyDetectionNMS(
-    std::vector<onboardDetector::box3D> &bboxes,
-    std::vector<std::vector<Eigen::Vector3d>> &pcClusters,
-    std::vector<Eigen::Vector3d> &pcClusterCenters,
-    std::vector<Eigen::Vector3d> &pcClusterStds) {
-
-  if (bboxes.size() <= 1) {return; }
-
-  int n = bboxes.size();
-
-  // 计算每个边界框的体积（用作排序依据：保留较大的检测）
-  std::vector<double> volumes(n);
-  std::vector<Eigen::Vector3d> centers(n);
-  std::vector<double> avgSizes(n);
-  std::vector<double> distThresholds(n);
-  for (int i = 0; i < n; ++i) {
-    volumes[i] = bboxes[i].x_width * bboxes[i].y_width * bboxes[i].z_width;
-    centers[i] = Eigen::Vector3d(bboxes[i].x, bboxes[i].y, bboxes[i].z);
-    double avgSize = (bboxes[i].x_width + bboxes[i].y_width + bboxes[i].z_width) / 3.0;
-    avgSizes[i] = avgSize;
-    distThresholds[i] = avgSize * this->detectionNMSDistScale_; // scaled by parameter
-  }
-
-  // 按体积从大到小排序的索引
-  std::vector<int> sortedIdx(n);
-  std::iota(sortedIdx.begin(), sortedIdx.end(), 0);
-  std::sort(sortedIdx.begin(), sortedIdx.end(),
-            [&volumes](int a, int b) { return volumes[a] > volumes[b]; });
-
-  // 标记被抑制的检测
-  std::vector<bool> suppressed(n, false);
-
-  // 存储合并后的结果
-  std::vector<onboardDetector::box3D> mergedBBoxes;
-  std::vector<std::vector<Eigen::Vector3d>> mergedPcClusters;
-  std::vector<Eigen::Vector3d> mergedPcClusterCenters;
-  std::vector<Eigen::Vector3d> mergedPcClusterStds;
-
-  for (int _i = 0; _i < n; ++_i) {
-    int i = sortedIdx[_i];
-    if (suppressed[i])
-      continue;
-
-    // 收集所有应该合并的检测框（包括自己）
-    std::vector<int> toMerge;
-    toMerge.push_back(i);
-
-    // 查找所有与当前框应该合并的检测框
-    for (int _j = _i + 1; _j < n; ++_j) {
-      int j = sortedIdx[_j];
-      if (suppressed[j])continue;
-      
-      double iou = this->compute3DIoU(bboxes[i], bboxes[j]);
-
-      // 计算中心点距离（使用平方距离避免不必要的开方）
-      double dx = centers[i].x() - centers[j].x();
-      double dy = centers[i].y() - centers[j].y();
-      double dz = centers[i].z() - centers[j].z();
-      double centerDistSqr = dx * dx + dy * dy + dz * dz;
-
-      // 计算两个框的平均尺寸（用于自适应距离阈值）
-      // 使用之前缓存好的平均尺寸和距离阈值
-      // avgSizes is cached and used to compute distThresholds (above)
-      double distThreshold = (distThresholds[i] + distThresholds[j]) / 2.0;
-      double distThresholdSqr = distThreshold * distThreshold;
-
-      // 合并条件：IoU高 或 中心距离近
-      bool shouldMerge = (iou > this->detectionNMSIoUThreshold_) ||
-             (centerDistSqr < distThresholdSqr);
-
-      if (shouldMerge) {
-        // 标记为抑制
-        suppressed[j] = true;toMerge.push_back(j);
-      }
-    }
-
-    // 合并所有收集到的检测框
-    // 1. 合并点云（使用移动语义，并预分配内存以避免反复分配）
-    std::vector<Eigen::Vector3d> mergedPc;
-    size_t totalPts = 0;
-    for (int idx : toMerge) totalPts += pcClusters[idx].size();
-    mergedPc.reserve(totalPts);
-
-    // 为合并后的统计量做准备（避免再次遍历点云）
-    Eigen::Vector3d sumPos(0, 0, 0);
-    Eigen::Vector3d sumSq(0, 0, 0); // sum of squares for variance
-    size_t mergedPtCount = 0;
-
-    for (int idx : toMerge) {
-      // 移动每个点进入mergedPc（避免复制）
-      for (auto &pt : pcClusters[idx]) {
-        mergedPc.push_back(std::move(pt));
-        sumPos += mergedPc.back();
-        sumSq += mergedPc.back().cwiseProduct(mergedPc.back());
-        ++mergedPtCount;
-      }
-      // 清理移动后的小向量容量（optional）
-      std::vector<Eigen::Vector3d>().swap(pcClusters[idx]);
-    }
-
-    // 2. 从合并后的点云重新计算边界框（更准确、更鲁棒）
-    if (mergedPtCount == 0) {
-      continue;
-    }
-
-    // 计算点云质心
-    Eigen::Vector3d mergedCenter = sumPos / static_cast<double>(mergedPc.size());
-    
-    // 对于X和Y轴，使用传统的min/max方法
-    double minX = std::numeric_limits<double>::max();
-    double maxX = std::numeric_limits<double>::lowest();
-    double minY = std::numeric_limits<double>::max();
-    double maxY = std::numeric_limits<double>::lowest();
-    
-    // 收集所有Z坐标用于鲁棒估计
-    std::vector<double> z_values;
-    z_values.reserve(mergedPc.size());
-    
-    for (const auto& pt : mergedPc) {
-      minX = std::min(minX, pt.x());
-      maxX = std::max(maxX, pt.x());
-      minY = std::min(minY, pt.y());
-      maxY = std::max(maxY, pt.y());
-      z_values.push_back(pt.z());
-    }
-    
-    // 对Z轴使用百分位数方法过滤离群点
-    std::sort(z_values.begin(), z_values.end());
-    size_t n = z_values.size();
-    size_t lower_idx = std::max(size_t(1), static_cast<size_t>(n * 0.02));
-    size_t upper_idx = std::min(n - 1, static_cast<size_t>(n * 0.98));
-    double z_min_robust = z_values[lower_idx];
-    double z_max_robust = z_values[upper_idx];
-
-    // 计算新的边界框
-    onboardDetector::box3D mergedBox;
-    // 合并得到的边界框没有明确的原始簇 id，设置为 -1 表示未知/合并产生
-    mergedBox.id = -1.0;
-    // 尺寸：XY使用包围盒，Z使用鲁棒估计
-    mergedBox.x_width = maxX - minX;
-    mergedBox.y_width = maxY - minY;
-    mergedBox.z_width = z_max_robust - z_min_robust;
-    
-    // box位置：XY使用点云质心（需要补偿），Z使用鲁棒估计的中心
-    mergedBox.x = mergedCenter.x();
-    mergedBox.y = mergedCenter.y();
-    mergedBox.z = (z_min_robust + z_max_robust) / 2.0;
-    
-    // ===== NMS质心补偿：对合并后的检测框也进行质心补偿 =====
-    if (this->enableCentroidCompensation_) {
-      Eigen::Vector3d objectPos(mergedBox.x, mergedBox.y, mergedBox.z);
-      Eigen::Vector3d radarToObject = objectPos - this->positionLidar_;
-      double distance = radarToObject.norm();
-      
-      if (distance >= this->centroidCompMinDistance_ && distance <= this->centroidCompMaxDistance_) {
-        Eigen::Vector3d direction = radarToObject.normalized();
-        
-        // 使用较大的水平尺寸作为补偿基准
-        double sizeInDirection = std::max(mergedBox.x_width, mergedBox.y_width);
-        
-        // 计算补偿距离
-        double compensationDist = sizeInDirection * this->centroidCompensationRatio_;
-        
-        // 应用补偿（只补偿XY平面）
-        mergedBox.x += direction.x() * compensationDist;
-        mergedBox.y += direction.y() * compensationDist;
-        
-        // 同步更新质心（用于后续特征计算）
-        mergedCenter.x() = mergedBox.x;
-        mergedCenter.y() = mergedBox.y;
-      }
-    }
-    // ===== NMS质心补偿结束 =====
-
-    // 计算点云标准差（PCA特征），使用在合并点云时就累加的sumSq与sumPos
-    Eigen::Vector3d mergedStd(0, 0, 0);
-    Eigen::Vector3d mean = mergedCenter;
-    Eigen::Vector3d var = (sumSq / static_cast<double>(mergedPtCount)) -
-                          mean.cwiseProduct(mean);
-    // 防止数值不稳定导致负数
-    for (int k = 0; k < 3; ++k) {
-      if (var[k] < 0) var[k] = 0;
-    }
-    mergedStd = var.cwiseSqrt();
-
-    // 保存合并后的结果
-    mergedBBoxes.push_back(mergedBox);
-    mergedPcClusters.push_back(mergedPc);
-    mergedPcClusterCenters.push_back(mergedCenter);
-    mergedPcClusterStds.push_back(mergedStd);
-  }
-
-  // 更新输出
-  bboxes = mergedBBoxes;
-  pcClusters = mergedPcClusters;
-  pcClusterCenters = mergedPcClusterCenters;
-  pcClusterStds = mergedPcClusterStds;
 }
 
 
@@ -1225,7 +1007,7 @@ void dynamicDetector::runTracking() {
           double pointRatio =
               (double)currPoints / std::max((double)prevPoints, 1.0);
 
-          if (maxRatio > this->sizeMergeThresh_ &&
+          if (maxRatio > this->sizeMergeThresh_ ||
               pointRatio > this->pointCountMergeThresh_) {
             isMerge = true;
             // ROS_WARN_STREAM(this->hint_ << " Merge detected for object " <<

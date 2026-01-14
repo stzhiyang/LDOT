@@ -75,9 +75,6 @@ private:
   // 加载尺寸约束参数
   void loadSizeConstraintParams(dynamicDetector *detector);
 
-  // 加载帧内去重(NMS)参数
-  void loadNMSParams(dynamicDetector *detector);
-
   // 加载物体分类阈值参数
   void loadObjectClassifyParams(dynamicDetector *detector);
 
