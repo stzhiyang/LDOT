@@ -54,9 +54,9 @@ association_gate_confidence: 0.9  # 关联置信度，用于根据卡方分布�
 association_pos_cost_weight: 0.8    # 位置代价权重（马氏距离），考虑不确定性
 association_iou_cost_weight: 1    # 3D IoU代价权重，反映空间重叠度，月小月宽松
 # 分类稳定性参数
-classification_size_merge_threshold: 1.5        # 尺寸增长比例阈值，用于判定疑似合并
-classification_point_count_merge_threshold: 1.3 # 点数增长比例阈值，用于确认合并
-classification_size_reset_frames: 10            # 尺寸重置帧数，当物体尺寸持续较小时重置最大尺寸
+classification_size_change_ratio: 0.4           # 尺寸变化比例（0.4表示±40%，合并阈值=1.4，分离阈值=0.6）
+classification_point_count_change_ratio: 0.3    # 点数变化比例（0.3表示±30%）
+classification_size_change_confirm_frames: 8    # 尺寸变化确认帧数（持续N帧后确认为真实变化，用于合并和分离）
 # 分类与模型切换参数，[box中z、x/y的宽度比较, 质心z高度  z轴宽度的倍数]
 classification_start_frame: 10 # 跟踪多少帧后开始进行分类和模型切换
 classification_interval_sec: 1 # 分类检查时间间隔 s

@@ -11,7 +11,7 @@ namespace onboardDetector {
 
 StaticPointFilter::StaticPointFilter()
     : enabled_(false), voxel_size_(0.1), hit_threshold_(5),
-      time_threshold_(5.0), use_neighbor_voting_(true), min_neighbor_votes_(4),
+      time_threshold_(5.0),
       ray_cast_decrement_(1), ray_cast_skip_counter_(0), frame_count_(0),
       sensor_position_(Eigen::Vector3d::Zero()) {}
 
@@ -19,15 +19,11 @@ StaticPointFilter::~StaticPointFilter() {}
 
 void StaticPointFilter::setParams(bool enabled, float voxel_size,
                                   int hit_threshold, double time_threshold,
-                                  bool use_neighbor_voting,
-                                  int min_neighbor_votes,
                                   int ray_cast_decrement) {
   enabled_ = enabled;
   voxel_size_ = voxel_size;
   hit_threshold_ = hit_threshold;
   time_threshold_ = time_threshold;
-  use_neighbor_voting_ = use_neighbor_voting;
-  min_neighbor_votes_ = min_neighbor_votes;
   ray_cast_decrement_ = ray_cast_decrement;
 }
 
@@ -74,12 +70,7 @@ bool StaticPointFilter::isPointInBox(const pcl::PointXYZ &pt,
 // 判断体素格子的命中次数，如果大于阈值为静态，返回true
 // 注意：此函数依赖 sensor_position_ 成员变量，需要先调用 updateMap 更新传感器位置
 bool StaticPointFilter::isPointStatic(const pcl::PointXYZ &pt) {
-  // 如果启用邻域投票，使用增强版判断
-  if (use_neighbor_voting_) {
-    return isPointStaticWithNeighbors(pt);
-  }
-  
-  // 原始逻辑：使用距离自适应阈值
+  // 使用距离自适应阈值
   long long key = getVoxelKey(pt);
   if (voxel_map_.find(key) != voxel_map_.end()) {
     int adaptive_thresh = getAdaptiveThreshold(pt);
@@ -88,7 +79,7 @@ bool StaticPointFilter::isPointStatic(const pcl::PointXYZ &pt) {
   return false;
 }
 
-// 【新增】距离自适应阈值 - 远距离降低判定门槛，补偿点云稀疏性
+// 距离自适应阈值 - 远距离降低判定门槛，补偿点云稀疏性
 // 使用成员变量 sensor_position_ 计算点到传感器的距离
 int StaticPointFilter::getAdaptiveThreshold(const pcl::PointXYZ &pt) {
   double dx = pt.x - sensor_position_.x();
@@ -106,79 +97,16 @@ int StaticPointFilter::getAdaptiveThreshold(const pcl::PointXYZ &pt) {
   }
 }
 
-// 【新增】带邻域投票的静态点判断 - 利用空间连续性
-// 核心思想：稀疏点云中，单个体素可能累积不够，但如果周围邻居都是静态的，
-// 则该点大概率也是静态的（空间连续性假设）
-// 使用成员变量 sensor_position_ 计算距离
-bool StaticPointFilter::isPointStaticWithNeighbors(const pcl::PointXYZ &pt) {
-  long long key = getVoxelKey(pt);
-  int adaptive_thresh = getAdaptiveThreshold(pt);
-  
-  // 1. 首先检查自身
-  int self_hits = 0;
-  auto self_it = voxel_map_.find(key);
-  if (self_it != voxel_map_.end()) {
-    self_hits = self_it->second.hit_count;
-  }
-  
-  // 如果自身已经达到阈值，直接返回静态
-  if (self_hits > adaptive_thresh) {
-    return true;
-  }
-  
-  // 2. 自身未达标，检查邻域投票
-  // 只有当自身有一定累积（至少达到阈值的1/2）时才考虑邻域投票
-  if (self_hits < adaptive_thresh / 2) {
-    return false;
-  }
-  
-  // 3. 6邻域投票（上下左右前后，不含对角线以减少计算量）
-  int neighbor_votes = 0;
-  
-  // 6个方向的偏移
-  float offsets[6][3] = {
-    {voxel_size_, 0, 0}, {-voxel_size_, 0, 0},
-    {0, voxel_size_, 0}, {0, -voxel_size_, 0},
-    {0, 0, voxel_size_}, {0, 0, -voxel_size_}
-  };
-  
-  for (int i = 0; i < 6; ++i) {
-    pcl::PointXYZ neighbor;
-    neighbor.x = pt.x + offsets[i][0];
-    neighbor.y = pt.y + offsets[i][1];
-    neighbor.z = pt.z + offsets[i][2];
-    
-    long long nkey = getVoxelKey(neighbor);
-    auto it = voxel_map_.find(nkey);
-    if (it != voxel_map_.end()) {
-      // 邻居必须是真正的静态点（达到阈值）才能投票
-      // 避免"半静态"的邻居互相抬轿子
-      if (it->second.hit_count > adaptive_thresh) {
-        neighbor_votes++;
-        // 提前退出：如果已经达到投票阈值，无需继续检查
-        if (neighbor_votes >= min_neighbor_votes_) {
-          // 4. 综合判断：自身接近达标 且 邻域投票支持
-          if (self_hits > (adaptive_thresh * 0.67)) {
-            return true;
-          }
-        }
-      }
-    }
-  }
-  
-  return false;
-}
-
-// 【新增】使用 Bresenham 3D 算法进行射线投射
+// 使用 Bresenham 3D 算法进行射线投射
 // 核心思想：从传感器位置到激光点的射线路径上，所有穿过的体素都应该是"空闲"的
 // 因为激光穿过了这些位置而没有发生碰撞。对这些体素进行递减操作，可以快速清除
-// 动态物体留下的"残影"
+// 射线投射清除：清理射线路径上的体素（不包括终点）
 // 
-// 优化策略：
-// 1. 只对射线路径上已存在的体素进行递减（不创建新体素）
-// 2. 如果体素 hit_count 已经很低，提前跳过
-// 3. 【遮挡处理】如果遇到高 hit_count 的静态体素，提前终止（说明被遮挡）
-// 4. 【动态物体保护】跳过 protected_boxes 内的体素，避免误清除无人机等动态物体
+// 清理逻辑：
+// 1. 当前帧被观测的体素：绝对不清除（新发现的静态物体）
+// 2. 保护区内的体素：直接清除（动态物体不应累积到静态地图）
+// 3. 非保护区 + hit_count >= hit_threshold_ * 0.5：不清除（稳定静态物体）
+// 4. 非保护区 + hit_count < hit_threshold_ * 0.5：递减（可能是动态残影）
 void StaticPointFilter::rayCast(const Eigen::Vector3d &sensor_position,
                                 const pcl::PointXYZ &end_point,
                                 const std::vector<onboardDetector::box3D> *protected_boxes) {
@@ -201,11 +129,9 @@ void StaticPointFilter::rayCast(const Eigen::Vector3d &sensor_position,
   int sy = (y0 < y1) ? 1 : -1;
   int sz = (z0 < z1) ? 1 : -1;
 
-  // Bresenham 3D 算法的核心：使用误差累积来决定在哪个维度上步进
-  // 选择最大的差值作为主轴
   int dm = std::max({dx, dy, dz});
 
-  // 【优化】如果射线太短（小于2个体素），跳过射线投射
+  // 如果射线太短（小于2个体素），跳过
   if (dm < 2) {
     return;
   }
@@ -218,16 +144,12 @@ void StaticPointFilter::rayCast(const Eigen::Vector3d &sensor_position,
   int err_y = dm / 2;
   int err_z = dm / 2;
 
-  // 【优化】预先计算终点体素的哈希，避免重复计算
+  // 预先计算终点体素的哈希
   long long end_key = getVoxelKeyFromCoords(x1, y1, z1);
 
-  // 【遮挡检测】静态体素阈值：如果 hit_count 超过此值，认为是可靠的静态物体
-  // 射线不应该穿过它，说明存在遮挡，应该提前终止
-  const int occlusion_threshold = hit_threshold_ * 0.8;  // 80% 的阈值
-
-  // 沿着射线遍历所有体素（不包括终点，因为终点是命中点）
-  for (int i = 0; i < dm - 1; ++i) {  // 改为 dm-1，确保不处理最后一步
-    // Bresenham 步进逻辑（先步进，再处理）
+  // 沿着射线遍历所有体素（不包括终点）
+  for (int i = 0; i < dm - 1; ++i) {
+    // Bresenham 步进逻辑
     err_x -= dx;
     if (err_x < 0) {
       x += sx;
@@ -246,61 +168,51 @@ void StaticPointFilter::rayCast(const Eigen::Vector3d &sensor_position,
       err_z += dm;
     }
 
-    // 对当前体素进行清除操作
     long long key = getVoxelKeyFromCoords(x, y, z);
     
-    // 【关键修复】跳过终点体素，避免误清除命中点
+    // 跳过终点体素（终点已在第一步处理）
     if (key == end_key) {
-      break;  // 已经到达终点体素，停止清除
+      break;
     }
     
-    // 【动态物体保护】检查当前体素是否在保护区域内
+    // 【规则1】当前帧被观测的体素：绝对不清除
+    if (current_frame_hits_.count(key) > 0) {
+      continue;
+    }
+    
+    auto it = voxel_map_.find(key);
+    if (it == voxel_map_.end()) {
+      continue;
+    }
+    
+    // 检查当前体素是否在保护区内
+    bool in_protected = false;
     if (protected_boxes != nullptr) {
       pcl::PointXYZ voxel_center;
       voxel_center.x = x * voxel_size_ + voxel_size_ / 2.0f;
       voxel_center.y = y * voxel_size_ + voxel_size_ / 2.0f;
       voxel_center.z = z * voxel_size_ + voxel_size_ / 2.0f;
       
-      bool in_protected_area = false;
       for (const auto &box : *protected_boxes) {
         if (isPointInBox(voxel_center, box)) {
-          in_protected_area = true;
+          in_protected = true;
           break;
         }
       }
-      
-      // 如果在保护区域内，跳过清除操作
-      if (in_protected_area) {
-        continue;
-      }
     }
     
-    auto it = voxel_map_.find(key);
-    if (it != voxel_map_.end()) {
-      // 【遮挡检测】如果遇到高 hit_count 的静态体素，说明存在遮挡
-      // 射线不应该穿过静态物体，提前终止以保护后面的静态地图
-      if (it->second.hit_count >= occlusion_threshold) {
-        break;  // 遇到静态障碍物，停止射线投射
-      }
-      
-      // 【软保护机制】对于正在累积的体素（0 < hit_count < 阈值）
-      // 降低清除力度，避免擦边清除导致边缘难以累积
-      if (it->second.hit_count > 0 && it->second.hit_count < occlusion_threshold) {
-        // 如果 hit_count 很低，直接删除
-        if (it->second.hit_count <= ray_cast_decrement_) {
-          voxel_map_.erase(it);
-        } else {
-          // 否则使用减半的递减力度（软保护）
-          it->second.hit_count -= (ray_cast_decrement_ / 2);
-          if (it->second.hit_count < 0) {
-            it->second.hit_count = 0;
-          }
-        }
-      } else {
-        // hit_count = 0 或其他异常情况，删除
+    if (in_protected) {
+      // 【规则2】保护区内：直接清除
+      voxel_map_.erase(it);
+    } else if (it->second.hit_count < hit_threshold_ * 0.5) {
+      // 【规则4】非保护区 + 低 hit_count：递减（可能是动态残影）
+      if (it->second.hit_count <= ray_cast_decrement_) {
         voxel_map_.erase(it);
+      } else {
+        it->second.hit_count -= ray_cast_decrement_;
       }
     }
+    // 【规则3】非保护区 + hit_count >= hit_threshold_ * 0.5：不处理（稳定静态物体）
   }
 }
 
@@ -315,17 +227,49 @@ void StaticPointFilter::updateMap(
   // 更新传感器位置（供后续 isPointStatic 等函数使用）
   sensor_position_ = sensor_position;
 
-  // 【第一遍】先累积所有命中点，避免被射线投射误清除
+  // 清空当前帧命中集合，准备记录新的命中
+  current_frame_hits_.clear();
+
+  // 【第一遍】处理终点体素
+  // - 非保护区：累积 hit_count
+  // - 保护区：递减 hit_count（动态物体表面的体素）
   for (const auto &point : cloud->points) {
+    // 检查点是否在保护区域内
+    bool in_protected_area = false;
+    if (protected_boxes != nullptr) {
+      for (const auto &box : *protected_boxes) {
+        if (isPointInBox(point, box)) {
+          in_protected_area = true;
+          break;
+        }
+      }
+    }
+    
     long long key = getVoxelKey(point);
+    
+    if (in_protected_area) {
+      // 保护区内：递减已有体素的 hit_count（清除动态物体残影）
+      auto it = voxel_map_.find(key);
+      if (it != voxel_map_.end()) {
+        if (it->second.hit_count <= ray_cast_decrement_) {
+          voxel_map_.erase(it);
+        } else {
+          it->second.hit_count -= ray_cast_decrement_;
+        }
+      }
+    } else {
+      // 非保护区：累积
+      // 记录当前帧命中的体素（用于射线投射时保护）
+      current_frame_hits_.insert(key);
 
-    // 更新体素状态
-    VoxelStatus &status = voxel_map_[key]; // 将哈希值存入一维哈希表
-    status.last_seen_time = current_time;
+      // 更新体素状态
+      VoxelStatus &status = voxel_map_[key]; 
+      status.last_seen_time = current_time;
 
-    // 增加体素格子命中计数，但进行截断以避免溢出
-    if (status.hit_count <= hit_threshold_ + 1) {
-      status.hit_count++;
+      // 增加体素格子命中计数，但进行截断以避免溢出
+      if (status.hit_count <= hit_threshold_ + 1) {
+        status.hit_count++;
+      }
     }
   }
 
@@ -365,23 +309,17 @@ void StaticPointFilter::filterPoints(
   for (const auto &point : cloud->points) {
     // 检查是否为静态
     if (isPointStatic(point)) {
+      // 静态点：检查是否在保护区域内
       bool protected_point = false;
-      // 检查是否在保护区域内（历史轨迹为动态的区域）
       for (const auto &box : protected_boxes) {
         if (isPointInBox(point, box)) {
           protected_point = true;
-          // 使用置信度衰减而非清零，避免动态物体离开后背景恢复过慢
-          // 衰减1次可以平滑处理动静转换，同时保留部分历史信息
-          long long key = getVoxelKey(point);
-          if (voxel_map_.find(key) != voxel_map_.end()) {
-            voxel_map_[key].hit_count =
-                std::max(0, voxel_map_[key].hit_count - 2);
-          }
           break;
         }
       }
 
       if (protected_point) {
+        // 在保护区内的静态点：保留（可能是动态物体表面）
         filtered_cloud->push_back(point);
       }
       // 否则，它是静态的且不在保护区内，移除它

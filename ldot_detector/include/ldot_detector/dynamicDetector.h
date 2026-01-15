@@ -180,8 +180,6 @@ private:
   float staticFilterVoxelSize_;          // 体素大小
   int staticFilterHitThreshold_;         // 命中阈值
   double staticFilterTimeThreshold_;     // 时间阈值
-  bool staticFilterUseNeighborVoting_;   // 是否启用邻域投票
-  int staticFilterMinNeighborVotes_;     // 最小邻域投票数
   int staticFilterRayCastDecrement_;     // 射线投射递减值（射线投射始终启用）
   
   
@@ -230,9 +228,9 @@ private:
 
   
   // 尺寸管理
-  double sizeMergeThresh_;                           // 尺寸合并阈值
-  double pointCountMergeThresh_;                     // 点数合并阈值
-  int sizeResetFrames_;                              // 尺寸重置帧数
+  double sizeChangeRatio_;                           // 尺寸变化比例（例如0.3表示±30%，合并阈值=1.3，分离阈值=0.7）
+  double pointCountChangeRatio_;                     // 点数变化比例（例如0.3表示±30%）
+  int sizeChangeConfirmFrames_;                      // 尺寸变化确认帧数（持续N帧后确认为真实变化，用于合并和分离）
 
   // ===================================================================
   // 物体分类参数
@@ -311,7 +309,8 @@ private:
   std::vector<std::deque<Eigen::Vector3d>> pcCenterHist_;             // 点云中心历史
   std::vector<std::deque<Eigen::Vector3d>> pcStdHist_;                // 点云标准差历史
   std::vector<Eigen::Vector3d> maxHistorySizes_;                      // 历史最大尺寸
-  std::vector<int> smallSizeCounter_;                                 // 小尺寸计数器
+  std::vector<int> smallSizeCounter_;                                 // 小尺寸计数器（用于检测分离）
+  std::vector<int> largeSizeCounter_;                                 // 大尺寸计数器（用于区分真实大尺寸 vs 临时合并）
   std::vector<std::shared_ptr<KalmanFilterBase>> filters_;            // 卡尔曼滤波器
 
   // ===================================================================

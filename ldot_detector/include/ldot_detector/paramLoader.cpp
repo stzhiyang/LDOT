@@ -355,30 +355,6 @@ void ParamLoader::loadStaticFilterParams(dynamicDetector *detector) {
                           << detector->staticFilterTimeThreshold_ << "s");
   }
 
-  
-  // 是否启用邻域投票（用于稀疏点云的静态点判断增强）
-  if (not nh_.getParam(ns_ + "/static_filter_use_neighbor_voting",
-                       detector->staticFilterUseNeighborVoting_)) {
-    detector->staticFilterUseNeighborVoting_ = true;
-    ROS_WARN_STREAM(hint_ << " No static_filter_use_neighbor_voting param. Use "
-                             "default: true");
-  } else {
-    ROS_INFO_STREAM(hint_ << " static_filter_use_neighbor_voting: "
-                          << (detector->staticFilterUseNeighborVoting_ ? "true"
-                                                                       : "false"));
-  }
-
-  // 最小邻域投票数
-  if (not nh_.getParam(ns_ + "/static_filter_min_neighbor_votes",
-                       detector->staticFilterMinNeighborVotes_)) {
-    detector->staticFilterMinNeighborVotes_ = 3;
-    ROS_WARN_STREAM(hint_ << " No static_filter_min_neighbor_votes param. Use "
-                             "default: 3");
-  } else {
-    ROS_INFO_STREAM(hint_ << " static_filter_min_neighbor_votes: "
-                          << detector->staticFilterMinNeighborVotes_);
-  }
-
   // 射线投射递减值（射线投射始终启用，用于快速清除动态物体残影）
   if (not nh_.getParam(ns_ + "/static_filter_ray_cast_decrement",
                        detector->staticFilterRayCastDecrement_)) {
@@ -395,7 +371,6 @@ void ParamLoader::loadStaticFilterParams(dynamicDetector *detector) {
   detector->staticFilter_->setParams(
       detector->staticFilterEnabled_, detector->staticFilterVoxelSize_,
       detector->staticFilterHitThreshold_, detector->staticFilterTimeThreshold_,
-      detector->staticFilterUseNeighborVoting_, detector->staticFilterMinNeighborVotes_,
       detector->staticFilterRayCastDecrement_);
   if (detector->staticFilterEnabled_) {
     ROS_INFO_STREAM(hint_ << " Static Point Filter initialized (voxel: "
@@ -621,37 +596,41 @@ void ParamLoader::loadClassificationParams(dynamicDetector *detector) {
                           << detector->classificationMinNeighborDist_ << "m");
   }
 
-  // 尺寸合并阈值
-  if (not nh_.getParam(ns_ + "/classification_size_merge_threshold",
-                       detector->sizeMergeThresh_)) {
-    detector->sizeMergeThresh_ = 1.5;
-    ROS_WARN_STREAM(hint_ << " No classification_size_merge_threshold param. "
-                             "Use default: 1.5");
+  // 尺寸变化比例（用于合并和分离检测）
+  if (not nh_.getParam(ns_ + "/classification_size_change_ratio",
+                       detector->sizeChangeRatio_)) {
+    detector->sizeChangeRatio_ = 0.3;
+    ROS_WARN_STREAM(hint_ << " No classification_size_change_ratio param. "
+                             "Use default: 0.3 (merge: 1.3, separation: 0.7)");
   } else {
-    ROS_INFO_STREAM(hint_ << " classification_size_merge_threshold: "
-                          << detector->sizeMergeThresh_);
+    ROS_INFO_STREAM(hint_ << " classification_size_change_ratio: "
+                          << detector->sizeChangeRatio_ 
+                          << " (merge: " << (1.0 + detector->sizeChangeRatio_)
+                          << ", separation: " << (1.0 - detector->sizeChangeRatio_) << ")");
   }
 
-  // 点数合并阈值
-  if (not nh_.getParam(ns_ + "/classification_point_count_merge_threshold",
-                       detector->pointCountMergeThresh_)) {
-    detector->pointCountMergeThresh_ = 1.5;
-    ROS_WARN_STREAM(hint_ << " No classification_point_count_merge_threshold "
-                             "param. Use default: 1.5");
+  // 点数变化比例（用于合并和分离检测）
+  if (not nh_.getParam(ns_ + "/classification_point_count_change_ratio",
+                       detector->pointCountChangeRatio_)) {
+    detector->pointCountChangeRatio_ = 0.3;
+    ROS_WARN_STREAM(hint_ << " No classification_point_count_change_ratio "
+                             "param. Use default: 0.3 (merge: 1.3, separation: 0.7)");
   } else {
-    ROS_INFO_STREAM(hint_ << " classification_point_count_merge_threshold: "
-                          << detector->pointCountMergeThresh_);
+    ROS_INFO_STREAM(hint_ << " classification_point_count_change_ratio: "
+                          << detector->pointCountChangeRatio_
+                          << " (merge: " << (1.0 + detector->pointCountChangeRatio_)
+                          << ", separation: " << (1.0 - detector->pointCountChangeRatio_) << ")");
   }
 
-  // 尺寸重置帧数
-  if (not nh_.getParam(ns_ + "/classification_size_reset_frames",
-                       detector->sizeResetFrames_)) {
-    detector->sizeResetFrames_ = 30;
-    ROS_WARN_STREAM(hint_ << " No classification_size_reset_frames param. Use "
-                             "default: 30");
+  // 尺寸变化确认帧数（用于合并和分离）
+  if (not nh_.getParam(ns_ + "/classification_size_change_confirm_frames",
+                       detector->sizeChangeConfirmFrames_)) {
+    detector->sizeChangeConfirmFrames_ = 5;
+    ROS_WARN_STREAM(hint_ << " No classification_size_change_confirm_frames param. Use "
+                             "default: 5");
   } else {
-    ROS_INFO_STREAM(hint_ << " classification_size_reset_frames: "
-                          << detector->sizeResetFrames_);
+    ROS_INFO_STREAM(hint_ << " classification_size_change_confirm_frames: "
+                          << detector->sizeChangeConfirmFrames_);
   }
 }
 
