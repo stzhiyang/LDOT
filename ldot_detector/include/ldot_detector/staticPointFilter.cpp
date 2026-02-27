@@ -202,17 +202,13 @@ void StaticPointFilter::rayCast(const Eigen::Vector3d &sensor_position,
     }
     
     if (in_protected) {
-      // 【规则2】保护区内：直接清除
-      voxel_map_.erase(it);
-    } else if (it->second.hit_count < hit_threshold_ * 0.5) {
-      // 【规则4】非保护区 + 低 hit_count：递减（可能是动态残影）
+      // 【规则2】保护区内递减
       if (it->second.hit_count <= ray_cast_decrement_) {
         voxel_map_.erase(it);
       } else {
         it->second.hit_count -= ray_cast_decrement_;
       }
     }
-    // 【规则3】非保护区 + hit_count >= hit_threshold_ * 0.5：不处理（稳定静态物体）
   }
 }
 

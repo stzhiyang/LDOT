@@ -19,26 +19,23 @@ static_map_warmup_duration: 5.0 # 静态地图预热时长 (秒)，启动后前N
 odom_history_size: 100  # 里程计历史队列大小（帧数）
 
 # 点云过滤参数
-ground_height: 0.1 # 地面高度阈值 (米), 用于移除地面点云
-roof_height: 2.8   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
-lidar_detection_range: [10.0, 10.0, 3.0]  # 激光雷达动态检测范围 [x, y, z] (米)，用于聚类和跟踪
+ground_height: 0.2 # 地面高度阈值 (米), 用于移除地面点云
+roof_height: 2.5   # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
+lidar_detection_range: [20.0, 20.0, 2.8]  # 激光雷达动态检测范围 [x, y, z] (米)，用于聚类和跟踪
 static_map_buffer: 5.0  # 静态地图缓冲区 (米)，静态地图范围 = 检测范围 + buffer，只应用于XY轴，让边缘点云有足够时间累积
 enable_voxel_downsampling: true  # 启用下采样以减少处理时间和延迟
-voxel_base_leaf_size: 0.15       # 增大体素以减少点数，加快处理速度，比后面两个小
-voxel_max_points_per_voxel: 3  # 单个体素内最大点数限制，防止局部点云过密
+voxel_base_leaf_size: 0.1       # 增大体素以减少点数，加快处理速度，比后面两个小
 
 # 静态点去除滤波器参数
 static_filter_enabled: true     # 暂时禁用静态点去除以减少延迟
-static_filter_voxel_size: 0.3    # 静态滤波器体素大小 (米)
+static_filter_voxel_size: 0.2    # 静态滤波器体素大小 (米)
 static_filter_hit_threshold: 10   # 判定为静态的命中次数阈值
 static_filter_time_threshold: 10.0 # 静态点在地图中保留的时间阈值 (秒)
-static_filter_use_neighbor_voting: true   # 是否启用邻域投票（利用空间连续性增强稀疏点云的静态判断）
-static_filter_min_neighbor_votes: 3      # 最小邻域投票数（6邻域中至少需要多少个邻居支持）
-static_filter_ray_cast_decrement: 2      # 射线投射递减值（射线投射始终启用，用于快速清除动态物体残影）
+static_filter_ray_cast_decrement: 1      # 射线投射递减值（射线投射始终启用，用于快速清除动态物体残影）
 
 # DBSCAN 激光雷达聚类参数
 lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数
-lidar_DBSCAN_epsilon: 0.3    # 激光雷达DBSCAN邻域搜索半径 (米)，不能小于最大体素大小
+lidar_DBSCAN_epsilon: 0.2    # 激光雷达DBSCAN邻域搜索半径 (米)，不能小于最大体素大小
 lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (true: 启用, false: 使用固定epsilon)
 lidar_DBSCAN_distance_scale: 0.03  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
 max_object_size: [3.0, 3.0, 2.5] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
@@ -50,20 +47,20 @@ centroid_compensation_min_distance: 5.0  # 质心补偿的最小距离阈值(米
 centroid_compensation_max_distance: 12.0 # 质心补偿的最大距离阈值(米)，远距离物体不补偿
 
 # 目标跟踪与数据关联
-association_gate_confidence: 0.9  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
+association_gate_confidence: 0.7  # 关联置信度，用于根据卡方分布计算 2D/3D 关联门限
 association_pos_cost_weight: 0.8    # 位置代价权重（马氏距离），考虑不确定性
 association_iou_cost_weight: 1    # 3D IoU代价权重，反映空间重叠度，月小月宽松
 # 分类稳定性参数
-classification_size_change_ratio: 0.4           # 尺寸变化比例（0.4表示±40%，合并阈值=1.4，分离阈值=0.6）
-classification_point_count_change_ratio: 0.3    # 点数变化比例（0.3表示±30%）
-classification_size_change_confirm_frames: 8    # 尺寸变化确认帧数（持续N帧后确认为真实变化，用于合并和分离）
+classification_size_change_ratio: 0.5           # 尺寸变化比例（0.4表示±40%，合并阈值=1.4，分离阈值=0.6）
+classification_point_count_change_ratio: 0.5    # 点数变化比例（0.3表示±30%）
+classification_size_change_confirm_frames: 3    # 尺寸变化确认帧数（持续N帧后确认为真实变化，用于合并和分离）
 # 分类与模型切换参数，[box中z、x/y的宽度比较, 质心z高度  z轴宽度的倍数]
 classification_start_frame: 10 # 跟踪多少帧后开始进行分类和模型切换
 classification_interval_sec: 1 # 分类检查时间间隔 s
 classify_xy_distance_threshold: 3.0 # box与无人机xy轴距离阈值(米)，小于该值则继承前一帧的分类
 classify_human_threshold: [1.1, 0.8]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
 classify_vehicle_threshold: [1.5, 0.7] # [x/y >=z, z<0.7*zw, PCA xy_std/z_std > 1.2]
-classify_uav_threshold: [0.8, 1.2] # z/y/z <0.7 ,z>1.2*zw
+classify_uav_threshold: [0.6, 1.5] # z/y/z <0.7 ,z>1.2*zw
 fix_size_classification_threshold: 3 # 连续相同分类次数阈值，达到后固定尺寸和分类（仅对人/车/无人机生效）
 # 跟踪、防幽灵轨迹
 size_retain_ratio: 0.8              # 尺寸保持比例阈值 (0.0-1.0)，当前尺寸低于此比例时触发约束
@@ -77,7 +74,7 @@ coasting_track_gate_relax_factor: 1.5 # coasting轨迹的关联门限放松倍�
 
 # 动态/静态分类相关
 dynamic_velocity_threshold: 0.1 # 判断为动态障碍物的线速度阈值 (米/秒)
-dynamic_voting_threshold: 0.8 # 动态性投票的阈值, 超过该比例则认为可能是动态
+dynamic_voting_threshold: 0.7 # 动态性投票的阈值, 超过该比例则认为可能是动态
 classification_min_neighbor_distance: 1.0 # 点云匹配距离
 # 动态条件一，最近的check_range帧范围内有K帧被投票为动态候选，才被最终分类为动态
 frames_force_dynamic_check_range: 7 # 强制判断为动态障碍物前，历史轨迹的最小长度

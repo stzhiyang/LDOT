@@ -14,7 +14,7 @@ import numpy as np
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
-from onboard_detector.srv import GetPredictedTrajectories, GetPredictedTrajectoriesRequest
+from ldot_detector.srv import GetPredictedTrajectories, GetPredictedTrajectoriesRequest
 
 
 class TrajectoryPredictionTester:

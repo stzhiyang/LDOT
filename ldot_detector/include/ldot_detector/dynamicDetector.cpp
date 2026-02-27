@@ -358,12 +358,12 @@ void dynamicDetector::processWorldCloud(
   this->copyToWriteBuffer();
   this->swapBuffers();
   
-  // 计算总耗时
+  // 计算总耗时（不含运动补偿的处理时间）
   auto callbackEnd = std::chrono::high_resolution_clock::now();
   double totalMs = std::chrono::duration<double, std::milli>(
       callbackEnd - callbackStart).count();
   
-  // 输出到 CSV 文件
+  // 输出到 CSV 文件（TotalTime 需要加上 MotionCompTime）
   if (this->enableTimingOutput_ && this->timingOutputFile_.is_open()) {
     this->timingOutputFile_ << cloudStamp << "," 
                             << motionCompMs << ","
@@ -371,7 +371,7 @@ void dynamicDetector::processWorldCloud(
                             << detectionMs << "," 
                             << trackingMs << "," 
                             << classificationMs << "," 
-                            << totalMs << std::endl;
+                            << (totalMs + motionCompMs) << std::endl;
   }
   
   ROS_INFO_THROTTLE(1.0, "%s: Process completed in %.1f ms (MotionComp: %.1f, Preprocess: %.1f, Detection: %.1f, Tracking: %.1f, Classification: %.1f)", 
@@ -899,7 +899,7 @@ void dynamicDetector::runDetection() {
     tmpPcClusters.push_back(std::move(pcCluster));
   }
 
-  // 将（已NMS或未NMS）结果转回用于后续处理的临时容器
+  // 将结果转回用于后续处理的临时容器
   for (size_t i = 0; i < lidarBBoxesFiltered.size(); ++i) {
     onboardDetector::box3D lidarBBox = lidarBBoxesFiltered[i];
     std::vector<Eigen::Vector3d> &pcCluster = tmpPcClusters[i];
