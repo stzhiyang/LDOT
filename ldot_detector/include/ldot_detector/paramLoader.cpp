@@ -27,7 +27,6 @@ void ParamLoader::loadAllParams(dynamicDetector *detector) {
   loadTrackingParams(detector);
   loadClassificationParams(detector);
   loadSizeConstraintParams(detector);
-  loadNMSParams(detector);
   loadObjectClassifyParams(detector);
   loadKalmanFilterParams(detector);
   loadTrajectoryPredictionParams(detector);
@@ -303,35 +302,11 @@ void ParamLoader::loadStaticFilterParams(dynamicDetector *detector) {
   }
 
   
-  // 是否启用邻域投票（用于稀疏点云的静态点判断增强）
-  if (not nh_.getParam(ns_ + "/static_filter_use_neighbor_voting",
-                       detector->staticFilterUseNeighborVoting_)) {
-    detector->staticFilterUseNeighborVoting_ = true;
-    ROS_WARN_STREAM(hint_ << " No static_filter_use_neighbor_voting param. Use "
-                             "default: true");
-  } else {
-    ROS_INFO_STREAM(hint_ << " static_filter_use_neighbor_voting: "
-                          << (detector->staticFilterUseNeighborVoting_ ? "true"
-                                                                       : "false"));
-  }
-
-  // 最小邻域投票数
-  if (not nh_.getParam(ns_ + "/static_filter_min_neighbor_votes",
-                       detector->staticFilterMinNeighborVotes_)) {
-    detector->staticFilterMinNeighborVotes_ = 3;
-    ROS_WARN_STREAM(hint_ << " No static_filter_min_neighbor_votes param. Use "
-                             "default: 3");
-  } else {
-    ROS_INFO_STREAM(hint_ << " static_filter_min_neighbor_votes: "
-                          << detector->staticFilterMinNeighborVotes_);
-  }
-
   // 初始化静态点滤波器
   detector->staticFilter_.reset(new StaticPointFilter());
   detector->staticFilter_->setParams(
       detector->staticFilterEnabled_, detector->staticFilterVoxelSize_,
-      detector->staticFilterHitThreshold_, detector->staticFilterTimeThreshold_,
-      detector->staticFilterUseNeighborVoting_, detector->staticFilterMinNeighborVotes_);
+      detector->staticFilterHitThreshold_, detector->staticFilterTimeThreshold_);
   if (detector->staticFilterEnabled_) {
     ROS_INFO_STREAM(hint_ << " Static Point Filter initialized (voxel: "
                           << detector->staticFilterVoxelSize_
@@ -555,37 +530,37 @@ void ParamLoader::loadClassificationParams(dynamicDetector *detector) {
                           << detector->classificationMinNeighborDist_ << "m");
   }
 
-  // 尺寸合并阈值
-  if (not nh_.getParam(ns_ + "/classification_size_merge_threshold",
-                       detector->sizeMergeThresh_)) {
-    detector->sizeMergeThresh_ = 1.5;
-    ROS_WARN_STREAM(hint_ << " No classification_size_merge_threshold param. "
-                             "Use default: 1.5");
+  // 尺寸变化比例阈值（用于检测合并/分离）
+  if (not nh_.getParam(ns_ + "/classification_size_change_ratio",
+                       detector->sizeChangeRatio_)) {
+    detector->sizeChangeRatio_ = 0.3;
+    ROS_WARN_STREAM(hint_ << " No classification_size_change_ratio param. "
+                             "Use default: 0.3");
   } else {
-    ROS_INFO_STREAM(hint_ << " classification_size_merge_threshold: "
-                          << detector->sizeMergeThresh_);
+    ROS_INFO_STREAM(hint_ << " classification_size_change_ratio: "
+                          << detector->sizeChangeRatio_);
   }
 
-  // 点数合并阈值
-  if (not nh_.getParam(ns_ + "/classification_point_count_merge_threshold",
-                       detector->pointCountMergeThresh_)) {
-    detector->pointCountMergeThresh_ = 1.5;
-    ROS_WARN_STREAM(hint_ << " No classification_point_count_merge_threshold "
-                             "param. Use default: 1.5");
+  // 点数变化比例阈值（用于检测合并/分离）
+  if (not nh_.getParam(ns_ + "/classification_point_count_change_ratio",
+                       detector->pointCountChangeRatio_)) {
+    detector->pointCountChangeRatio_ = 0.3;
+    ROS_WARN_STREAM(hint_ << " No classification_point_count_change_ratio "
+                             "param. Use default: 0.3");
   } else {
-    ROS_INFO_STREAM(hint_ << " classification_point_count_merge_threshold: "
-                          << detector->pointCountMergeThresh_);
+    ROS_INFO_STREAM(hint_ << " classification_point_count_change_ratio: "
+                          << detector->pointCountChangeRatio_);
   }
 
-  // 尺寸重置帧数
-  if (not nh_.getParam(ns_ + "/classification_size_reset_frames",
-                       detector->sizeResetFrames_)) {
-    detector->sizeResetFrames_ = 30;
-    ROS_WARN_STREAM(hint_ << " No classification_size_reset_frames param. Use "
-                             "default: 30");
+  // 确认尺寸变化所需的持续帧数
+  if (not nh_.getParam(ns_ + "/classification_size_change_confirm_frames",
+                       detector->sizeChangeConfirmFrames_)) {
+    detector->sizeChangeConfirmFrames_ = 10;
+    ROS_WARN_STREAM(hint_ << " No classification_size_change_confirm_frames param. Use "
+                             "default: 10");
   } else {
-    ROS_INFO_STREAM(hint_ << " classification_size_reset_frames: "
-                          << detector->sizeResetFrames_);
+    ROS_INFO_STREAM(hint_ << " classification_size_change_confirm_frames: "
+                          << detector->sizeChangeConfirmFrames_);
   }
 }
 
@@ -613,45 +588,6 @@ void ParamLoader::loadSizeConstraintParams(dynamicDetector *detector) {
       ROS_WARN_STREAM(hint_ << " Invalid max_object_size size. Use default: "
                                "[2.0, 2.0, 2.0]m");
     }
-  }
-}
-
-// ==================== NMS (Non-Maximum Suppression) Parameters ====================
-void ParamLoader::loadNMSParams(dynamicDetector *detector) {
-  ROS_INFO_STREAM(hint_ << " --- NMS Parameters ---");
-
-  // 是否启用检测 NMS
-  if (not nh_.getParam(ns_ + "/enable_detection_nms",
-                       detector->enableDetectionNMS_)) {
-    detector->enableDetectionNMS_ = true;
-    ROS_WARN_STREAM(hint_ << " No enable_detection_nms param. Use default: "
-                             "true");
-  } else {
-    ROS_INFO_STREAM(hint_ << " enable_detection_nms: "
-                          << (detector->enableDetectionNMS_ ? "enabled"
-                                                            : "disabled"));
-  }
-
-  // NMS IoU 阈值
-  if (not nh_.getParam(ns_ + "/detection_nms_iou_threshold",
-                       detector->detectionNMSIoUThreshold_)) {
-    detector->detectionNMSIoUThreshold_ = 0.3;
-    ROS_WARN_STREAM(hint_ << " No detection_nms_iou_threshold param. Use "
-                             "default: 0.3");
-  } else {
-    ROS_INFO_STREAM(hint_ << " detection_nms_iou_threshold: "
-                          << detector->detectionNMSIoUThreshold_);
-  }
-
-  // NMS 距离缩放参数
-  if (not nh_.getParam(ns_ + "/detection_nms_dist_scale",
-                       detector->detectionNMSDistScale_)) {
-    detector->detectionNMSDistScale_ = 2.0;
-    ROS_WARN_STREAM(hint_ << " No detection_nms_dist_scale param. Use default: "
-                             "2.0");
-  } else {
-    ROS_INFO_STREAM(hint_ << " detection_nms_dist_scale: "
-                          << detector->detectionNMSDistScale_);
   }
 }
 

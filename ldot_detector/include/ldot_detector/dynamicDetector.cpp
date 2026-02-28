@@ -518,7 +518,7 @@ void dynamicDetector::runDetection() {
     lidarClustersFiltered.push_back(lidarClustersRaw[i]);
   }
 
-  // 将簇点云转成Eigen格式以便NMS处理；延迟计算质心与标准差直到NMS之后
+  // 将簇点云转成Eigen格式
   std::vector<std::vector<Eigen::Vector3d>> tmpPcClusters;
   tmpPcClusters.reserve(lidarClustersFiltered.size());
   for (size_t i = 0; i < lidarClustersFiltered.size(); ++i) {
@@ -529,22 +529,6 @@ void dynamicDetector::runDetection() {
       pcCluster.emplace_back(point.x, point.y, point.z);
     }
     tmpPcClusters.push_back(std::move(pcCluster));
-  }
-
-  // 临时存储质心和标准差（用于NMS）
-  std::vector<Eigen::Vector3d> tmpPcClusterCenters;
-  std::vector<Eigen::Vector3d> tmpPcClusterStds;
-
-  // 在生成特征之前进行帧内去重(NMS)以减少不必要计算
-  if (this->enableDetectionNMS_ && tmpPcClusters.size() > 1) {
-    // size_t beforeNMS = lidarBBoxesFiltered.size();
-    this->applyDetectionNMS(lidarBBoxesFiltered, tmpPcClusters,
-                            tmpPcClusterCenters, tmpPcClusterStds);
-    // size_t afterNMS = lidarBBoxesFiltered.size();
-    // if (beforeNMS != afterNMS) {
-    //   ROS_INFO_THROTTLE(1.0, "%s: Detection NMS (pre-feature): %lu -> %lu boxes",
-    //                     this->hint_.c_str(), beforeNMS, afterNMS);
-    // }
   }
 
   // 清空成员变量，准备存储新的检测结果
@@ -559,7 +543,7 @@ void dynamicDetector::runDetection() {
   this->filteredPcClusterCenters_.reserve(lidarBBoxesFiltered.size());
   this->filteredPcClusterStds_.reserve(lidarBBoxesFiltered.size());
 
-  // 将（已NMS或未NMS）结果直接存入成员变量
+  // 将结果直接存入成员变量
   for (size_t i = 0; i < lidarBBoxesFiltered.size(); ++i) {
     onboardDetector::box3D lidarBBox = lidarBBoxesFiltered[i];
     std::vector<Eigen::Vector3d> &pcCluster = tmpPcClusters[i];
@@ -572,28 +556,24 @@ void dynamicDetector::runDetection() {
     if (!pcCluster.empty()) clusterCenter /= static_cast<double>(pcCluster.size());
     
     // ===== 质心补偿：使bbox的质心与点云质心保持一致 =====
-    // 注意：lidarBBox已经在lidarDBSCAN()或applyDetectionNMS()中补偿过
+    // 注意：lidarBBox已经在lidarDBSCAN()中补偿过
     // 这里将点云质心也更新为bbox的中心位置，保持一致性
     clusterCenter.x() = lidarBBox.x;
     clusterCenter.y() = lidarBBox.y;
     clusterCenter.z() = lidarBBox.z;
     // ===== 质心同步结束 =====
 
-    // 计算点云簇的标准差（如果applyDetectionNMS已经计算过，保留其值）
+    // 计算点云簇的标准差
     Eigen::Vector3d clusterStd(0, 0, 0);
-    if (tmpPcClusterStds.size() == lidarBBoxesFiltered.size()) {
-      clusterStd = tmpPcClusterStds[i];
-    } else {
-      for (const auto &pt : pcCluster) {
-        Eigen::Vector3d diff = pt - clusterCenter;
-        clusterStd.x() += diff.x() * diff.x();
-        clusterStd.y() += diff.y() * diff.y();
-        clusterStd.z() += diff.z() * diff.z();
-      }
-      if (!pcCluster.empty()) {
-        clusterStd /= static_cast<double>(pcCluster.size());
-        clusterStd = clusterStd.cwiseSqrt();
-      }
+    for (const auto &pt : pcCluster) {
+      Eigen::Vector3d diff = pt - clusterCenter;
+      clusterStd.x() += diff.x() * diff.x();
+      clusterStd.y() += diff.y() * diff.y();
+      clusterStd.z() += diff.z() * diff.z();
+    }
+    if (!pcCluster.empty()) {
+      clusterStd /= static_cast<double>(pcCluster.size());
+      clusterStd = clusterStd.cwiseSqrt();
     }
 
     // 直接存入成员变量（避免临时变量和额外的复制）
@@ -610,217 +590,6 @@ void dynamicDetector::runDetection() {
   // ROS_INFO_THROTTLE(1.0, "%s: runDetection took %.3f ms",
   //                   this->hint_.c_str(), duration.count() / 1000.0);
 }
-
-/*!
- * @brief 帧内检测去重(NMS) - 合并同一物体的多个重叠检测框
- * @param bboxes 检测框列表（会被修改）
- * @param pcClusters 点云聚类列表（会被修改）
- * @param pcClusterCenters 点云中心列表（会被修改）
- * @param pcClusterStds 点云标准差列表（会被修改）
- * 算法逻辑：
- * 1. 按边界框体积从大到小排序（保留较大检测，抑制较小重复检测）
- * 2. 遍历每个检测框，判断是否应该合并（IoU高 或 中心距离近）
- * 3. 如果满足合并条件，则合并两个检测（合并点云、重新计算边界框）
- */
-void dynamicDetector::applyDetectionNMS(
-    std::vector<onboardDetector::box3D> &bboxes,
-    std::vector<std::vector<Eigen::Vector3d>> &pcClusters,
-    std::vector<Eigen::Vector3d> &pcClusterCenters,
-    std::vector<Eigen::Vector3d> &pcClusterStds) {
-
-  if (bboxes.size() <= 1) {return; }
-
-  int n = bboxes.size();
-
-  // 计算每个边界框的体积（用作排序依据：保留较大的检测）
-  std::vector<double> volumes(n);
-  std::vector<Eigen::Vector3d> centers(n);
-  std::vector<double> avgSizes(n);
-  std::vector<double> distThresholds(n);
-  for (int i = 0; i < n; ++i) {
-    volumes[i] = bboxes[i].x_width * bboxes[i].y_width * bboxes[i].z_width;
-    centers[i] = Eigen::Vector3d(bboxes[i].x, bboxes[i].y, bboxes[i].z);
-    double avgSize = (bboxes[i].x_width + bboxes[i].y_width + bboxes[i].z_width) / 3.0;
-    avgSizes[i] = avgSize;
-    distThresholds[i] = avgSize * this->detectionNMSDistScale_; // scaled by parameter
-  }
-
-  // 按体积从大到小排序的索引
-  std::vector<int> sortedIdx(n);
-  std::iota(sortedIdx.begin(), sortedIdx.end(), 0);
-  std::sort(sortedIdx.begin(), sortedIdx.end(),
-            [&volumes](int a, int b) { return volumes[a] > volumes[b]; });
-
-  // 标记被抑制的检测
-  std::vector<bool> suppressed(n, false);
-
-  // 存储合并后的结果
-  std::vector<onboardDetector::box3D> mergedBBoxes;
-  std::vector<std::vector<Eigen::Vector3d>> mergedPcClusters;
-  std::vector<Eigen::Vector3d> mergedPcClusterCenters;
-  std::vector<Eigen::Vector3d> mergedPcClusterStds;
-
-  for (int _i = 0; _i < n; ++_i) {
-    int i = sortedIdx[_i];
-    if (suppressed[i])
-      continue;
-
-    // 收集所有应该合并的检测框（包括自己）
-    std::vector<int> toMerge;
-    toMerge.push_back(i);
-
-    // 查找所有与当前框应该合并的检测框
-    for (int _j = _i + 1; _j < n; ++_j) {
-      int j = sortedIdx[_j];
-      if (suppressed[j])continue;
-      
-      double iou = this->compute3DIoU(bboxes[i], bboxes[j]);
-
-      // 计算中心点距离（使用平方距离避免不必要的开方）
-      double dx = centers[i].x() - centers[j].x();
-      double dy = centers[i].y() - centers[j].y();
-      double dz = centers[i].z() - centers[j].z();
-      double centerDistSqr = dx * dx + dy * dy + dz * dz;
-
-      // 计算两个框的平均尺寸（用于自适应距离阈值）
-      // 使用之前缓存好的平均尺寸和距离阈值
-      // avgSizes is cached and used to compute distThresholds (above)
-      double distThreshold = (distThresholds[i] + distThresholds[j]) / 2.0;
-      double distThresholdSqr = distThreshold * distThreshold;
-
-      // 合并条件：IoU高 或 中心距离近
-      bool shouldMerge = (iou > this->detectionNMSIoUThreshold_) ||
-             (centerDistSqr < distThresholdSqr);
-
-      if (shouldMerge) {
-        // 标记为抑制
-        suppressed[j] = true;toMerge.push_back(j);
-      }
-    }
-
-    // 合并所有收集到的检测框
-    // 1. 合并点云（使用移动语义，并预分配内存以避免反复分配）
-    std::vector<Eigen::Vector3d> mergedPc;
-    size_t totalPts = 0;
-    for (int idx : toMerge) totalPts += pcClusters[idx].size();
-    mergedPc.reserve(totalPts);
-
-    // 为合并后的统计量做准备（避免再次遍历点云）
-    Eigen::Vector3d sumPos(0, 0, 0);
-    Eigen::Vector3d sumSq(0, 0, 0); // sum of squares for variance
-    size_t mergedPtCount = 0;
-
-    for (int idx : toMerge) {
-      // 移动每个点进入mergedPc（避免复制）
-      for (auto &pt : pcClusters[idx]) {
-        mergedPc.push_back(std::move(pt));
-        sumPos += mergedPc.back();
-        sumSq += mergedPc.back().cwiseProduct(mergedPc.back());
-        ++mergedPtCount;
-      }
-      // 清理移动后的小向量容量（optional）
-      std::vector<Eigen::Vector3d>().swap(pcClusters[idx]);
-    }
-
-    // 2. 从合并后的点云重新计算边界框（更准确、更鲁棒）
-    if (mergedPtCount == 0) {
-      continue;
-    }
-
-    // 计算点云质心
-    Eigen::Vector3d mergedCenter = sumPos / static_cast<double>(mergedPc.size());
-    
-    // 对于X和Y轴，使用传统的min/max方法
-    double minX = std::numeric_limits<double>::max();
-    double maxX = std::numeric_limits<double>::lowest();
-    double minY = std::numeric_limits<double>::max();
-    double maxY = std::numeric_limits<double>::lowest();
-    
-    // 收集所有Z坐标用于鲁棒估计
-    std::vector<double> z_values;
-    z_values.reserve(mergedPc.size());
-    
-    for (const auto& pt : mergedPc) {
-      minX = std::min(minX, pt.x());
-      maxX = std::max(maxX, pt.x());
-      minY = std::min(minY, pt.y());
-      maxY = std::max(maxY, pt.y());
-      z_values.push_back(pt.z());
-    }
-    
-    // 对Z轴使用百分位数方法过滤离群点
-    std::sort(z_values.begin(), z_values.end());
-    size_t n = z_values.size();
-    size_t lower_idx = std::max(size_t(1), static_cast<size_t>(n * 0.02));
-    size_t upper_idx = std::min(n - 1, static_cast<size_t>(n * 0.98));
-    double z_min_robust = z_values[lower_idx];
-    double z_max_robust = z_values[upper_idx];
-
-    // 计算新的边界框
-    onboardDetector::box3D mergedBox;
-    // 合并得到的边界框没有明确的原始簇 id，设置为 -1 表示未知/合并产生
-    mergedBox.id = -1.0;
-    // 尺寸：XY使用包围盒，Z使用鲁棒估计
-    mergedBox.x_width = maxX - minX;
-    mergedBox.y_width = maxY - minY;
-    mergedBox.z_width = z_max_robust - z_min_robust;
-    
-    // box位置：XY使用点云质心（需要补偿），Z使用鲁棒估计的中心
-    mergedBox.x = mergedCenter.x();
-    mergedBox.y = mergedCenter.y();
-    mergedBox.z = (z_min_robust + z_max_robust) / 2.0;
-    
-    // ===== NMS质心补偿：对合并后的检测框也进行质心补偿 =====
-    if (this->enableCentroidCompensation_) {
-      Eigen::Vector3d objectPos(mergedBox.x, mergedBox.y, mergedBox.z);
-      Eigen::Vector3d radarToObject = objectPos - this->position_;  // 使用机体位置
-      double distance = radarToObject.norm();
-      
-      if (distance >= this->centroidCompMinDistance_ && distance <= this->centroidCompMaxDistance_) {
-        Eigen::Vector3d direction = radarToObject.normalized();
-        
-        // 使用较大的水平尺寸作为补偿基准
-        double sizeInDirection = std::max(mergedBox.x_width, mergedBox.y_width);
-        
-        // 计算补偿距离
-        double compensationDist = sizeInDirection * this->centroidCompensationRatio_;
-        
-        // 应用补偿（只补偿XY平面）
-        mergedBox.x += direction.x() * compensationDist;
-        mergedBox.y += direction.y() * compensationDist;
-        
-        // 同步更新质心（用于后续特征计算）
-        mergedCenter.x() = mergedBox.x;
-        mergedCenter.y() = mergedBox.y;
-      }
-    }
-    // ===== NMS质心补偿结束 =====
-
-    // 计算点云标准差（PCA特征），使用在合并点云时就累加的sumSq与sumPos
-    Eigen::Vector3d mergedStd(0, 0, 0);
-    Eigen::Vector3d mean = mergedCenter;
-    Eigen::Vector3d var = (sumSq / static_cast<double>(mergedPtCount)) -
-                          mean.cwiseProduct(mean);
-    // 防止数值不稳定导致负数
-    for (int k = 0; k < 3; ++k) {
-      if (var[k] < 0) var[k] = 0;
-    }
-    mergedStd = var.cwiseSqrt();
-
-    // 保存合并后的结果
-    mergedBBoxes.push_back(mergedBox);
-    mergedPcClusters.push_back(mergedPc);
-    mergedPcClusterCenters.push_back(mergedCenter);
-    mergedPcClusterStds.push_back(mergedStd);
-  }
-
-  // 更新输出
-  bboxes = mergedBBoxes;
-  pcClusters = mergedPcClusters;
-  pcClusterCenters = mergedPcClusterCenters;
-  pcClusterStds = mergedPcClusterStds;
-}
-
 
 
 // ===================================================================
@@ -856,63 +625,99 @@ void dynamicDetector::runTracking() {
         double max_y = this->maxHistorySizes_[histIndex].y();
         double max_z = this->maxHistorySizes_[histIndex].z();
 
-        // 检查合并 (尺寸突增且点数突增)
+        // 检查临时合并/分离 (尺寸突增/突减且点数突增/突减)
         bool isMerge = false;
-        // 仅在有历史记录时检查
+        bool isSeparation = false;
         if (this->boxHist_[histIndex].size() > 1) {
+          // 计算尺寸比例（当前/历史最大值）
           double sizeRatioX = curr_x / std::max(max_x, 0.1);
           double sizeRatioY = curr_y / std::max(max_y, 0.1);
           double sizeRatioZ = curr_z / std::max(max_z, 0.1);
-          double maxRatio = std::max({sizeRatioX, sizeRatioY, sizeRatioZ});
-
-          // 检查点数增加
+          double maxSizeRatio = std::max({sizeRatioX, sizeRatioY, sizeRatioZ});
+          
+          // 计算点数比例（当前/上一帧）
           int currPoints = this->filteredPcClusters_[i].size();
           int prevPoints = this->pcHist_[histIndex][0].size(); // 上一帧
           double pointRatio =
               (double)currPoints / std::max((double)prevPoints, 1.0);
 
-          if (maxRatio > this->sizeMergeThresh_ &&
-              pointRatio > this->pointCountMergeThresh_) {
+          // 检查临时合并：尺寸或点数显著增加
+          // 合并阈值 = 1.0 + 变化量（例如 1.0 + 0.3 = 1.3）
+          double sizeMergeThreshold = 1.0 + this->sizeChangeRatio_;
+          double pointMergeThreshold = 1.0 + this->pointCountChangeRatio_;
+          
+          if (maxSizeRatio > sizeMergeThreshold ||
+              pointRatio > pointMergeThreshold) {
             isMerge = true;
-            // ROS_WARN_STREAM(this->hint_ << " Merge detected for object " <<
-            // histIndex
-            //                 << ". Size ratio: " << maxRatio << ", Point
-            //                 ratio: " << pointRatio
-            //                 << ". Skipping max size update.");
+          }
+          
+          // 检查临时分离：尺寸或点数显著减少
+          // 分离阈值 = 1.0 - 变化量（例如 1.0 - 0.3 = 0.7）
+          double sizeSeparationThreshold = 1.0 - this->sizeChangeRatio_;
+          double pointSeparationThreshold = 1.0 - this->pointCountChangeRatio_;
+          
+          if (maxSizeRatio < sizeSeparationThreshold ||
+              pointRatio < pointSeparationThreshold) {
+            isSeparation = true;
           }
         }
 
-        // 检查分离/重置 (尺寸持续小于最大值)
-        bool isReset = false;
-        // 检查当前尺寸是否显著小于最大值 (例如 < 80%)
-        if (curr_x < max_x * 0.8 && curr_y < max_y * 0.8 &&
-            curr_z < max_z * 0.8) {
-          this->smallSizeCounter_[histIndex]++;
+        // 检查持续合并 (尺寸持续大于最大值)
+        // 如果检测到临时合并，开始累积计数器
+        if (isMerge) {
+          this->largeSizeCounter_[histIndex]++;
+          this->smallSizeCounter_[histIndex] = 0;  // 重置小尺寸计数器
         } else {
-          this->smallSizeCounter_[histIndex] =
-              0; // 如果尺寸接近最大值，重置计数器
+          this->largeSizeCounter_[histIndex] = 0;  // 如果没有检测到合并，重置大尺寸计数器
         }
 
-        if (this->smallSizeCounter_[histIndex] > this->sizeResetFrames_) {
-          isReset = true;
+        // 如果大尺寸持续足够长时间，接受为真实合并
+        if (this->largeSizeCounter_[histIndex] >= this->sizeChangeConfirmFrames_) {
+          isMerge = false;  // 取消合并标志，允许更新最大尺寸
+          this->largeSizeCounter_[histIndex] = 0;  // 重置计数器
+          // ROS_INFO_STREAM(this->hint_ << " Large size accepted for object " << histIndex
+          //                 << " after " << this->sizeChangeConfirmFrames_ << " frames of consistent large size.");
+        }
+
+        // 检查持续分离 (尺寸持续小于最大值)
+        // 如果检测到临时分离，开始累积计数器
+        if (isSeparation) {
+          this->smallSizeCounter_[histIndex]++;
+          this->largeSizeCounter_[histIndex] = 0;  // 重置大尺寸计数器
+        } else {
+          this->smallSizeCounter_[histIndex] = 0;  // 如果没有检测到分离，重置小尺寸计数器
+        }
+
+        // 如果小尺寸持续足够长时间，接受为真实分离
+        if (this->smallSizeCounter_[histIndex] > this->sizeChangeConfirmFrames_) {
           // 将最大尺寸重置为当前尺寸
           this->maxHistorySizes_[histIndex] =
               Eigen::Vector3d(curr_x, curr_y, curr_z);
           this->smallSizeCounter_[histIndex] = 0;
-          // ROS_INFO_STREAM(this->hint_ << " Size reset for object " <<
-          // histIndex
-          //                 << " after " << this->sizeResetFrames_ << " frames
-          //                 of small size.");
+          this->largeSizeCounter_[histIndex] = 0;
+          isSeparation = false;  // 取消分离标志，允许后续正常更新
+          // ROS_INFO_STREAM(this->hint_ << " Size reset for object " << histIndex
+          //                 << " after " << this->sizeChangeConfirmFrames_ << " frames of consistent small size.");
         }
 
-        // 如果未合并且未重置，更新历史最大尺寸
-        if (!isMerge && !isReset) {
-          if (curr_x > this->maxHistorySizes_[histIndex].x())
+        // 如果临时合并或临时分离，使用历史最大尺寸代替当前原始尺寸
+        if (isMerge || isSeparation) {
+          this->filteredBBoxes_[i].x_width = this->maxHistorySizes_[histIndex].x();
+          this->filteredBBoxes_[i].y_width = this->maxHistorySizes_[histIndex].y();
+          this->filteredBBoxes_[i].z_width = this->maxHistorySizes_[histIndex].z();
+        }
+        
+        // 如果未临时合并且未临时分离，更新历史最大尺寸
+        if (!isMerge && !isSeparation) {
+          if (curr_x > this->maxHistorySizes_[histIndex].x()) {
             this->maxHistorySizes_[histIndex].x() = curr_x;
-          if (curr_y > this->maxHistorySizes_[histIndex].y())
+          }
+          if (curr_y > this->maxHistorySizes_[histIndex].y()) {
             this->maxHistorySizes_[histIndex].y() = curr_y;
-          if (curr_z > this->maxHistorySizes_[histIndex].z())
+          }
+          if (curr_z > this->maxHistorySizes_[histIndex].z()) {
             this->maxHistorySizes_[histIndex].z() = curr_z;
+          }
         }
 
         // 1.2 检查是否需要进行分类
@@ -1021,6 +826,7 @@ void dynamicDetector::runTracking() {
     this->pcStdHist_.clear();
     this->maxHistorySizes_.clear();
     this->smallSizeCounter_.clear();
+    this->largeSizeCounter_.clear();
     this->filters_.clear(); // 同时清空滤波器
     this->stableClassificationCount_.clear();
     this->lastClassifyTime_.clear();
@@ -1059,6 +865,7 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
     this->pcStdHist_.reserve(numCurrObjs);
     this->maxHistorySizes_.reserve(numCurrObjs);
     this->smallSizeCounter_.reserve(numCurrObjs);
+    this->largeSizeCounter_.reserve(numCurrObjs);
     this->filters_.reserve(numCurrObjs);
     this->trackMissedFrames_.reserve(numCurrObjs);
     this->trackedBBoxes_.reserve(numCurrObjs);
@@ -1094,6 +901,7 @@ void dynamicDetector::boxAssociation(std::vector<int> &bestMatch) {
           this->filteredBBoxes_[i].z_width));
 
       this->smallSizeCounter_.push_back(0);
+      this->largeSizeCounter_.push_back(0);
       this->trackMissedFrames_.push_back(0);
 
       // 强制所有目标使用 3D CV 模型，并初始化分类信息为 is_else
@@ -1683,6 +1491,7 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   std::vector<std::deque<Eigen::Vector3d>> pcStdHistTemp;
   std::vector<Eigen::Vector3d> maxHistorySizesTemp;
   std::vector<int> smallSizeCounterTemp;
+  std::vector<int> largeSizeCounterTemp;  // 大尺寸计数器
   std::vector<std::shared_ptr<KalmanFilterBase>> filtersTemp;
   std::vector<int> trackMissedFramesTemp;
   std::vector<int> stableClassificationCountTemp; // 连续相同分类计数器（用于fix_size）
@@ -1695,6 +1504,9 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   }
   if (this->smallSizeCounter_.size() != histSize) {
     this->smallSizeCounter_.resize(histSize, 0);
+  }
+  if (this->largeSizeCounter_.size() != histSize) {
+    this->largeSizeCounter_.resize(histSize, 0);
   }
   if (this->stableClassificationCount_.size() != histSize) {
     this->stableClassificationCount_.resize(histSize, 0);
@@ -1739,6 +1551,7 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
       pcStdHistTemp.push_back(this->pcStdHist_[h_idx]);
       maxHistorySizesTemp.push_back(this->maxHistorySizes_[h_idx]);
       smallSizeCounterTemp.push_back(this->smallSizeCounter_[h_idx]);
+      largeSizeCounterTemp.push_back(this->largeSizeCounter_[h_idx]);
       stableClassificationCountTemp.push_back(this->stableClassificationCount_[h_idx]);
       lastClassifyTimeTemp.push_back(this->lastClassifyTime_[h_idx]);
       filtersTemp.push_back(this->filters_[h_idx]);
@@ -1857,6 +1670,7 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
           Eigen::Vector3d(currDetectedBBox.x_width, currDetectedBBox.y_width,
                           currDetectedBBox.z_width)); // 初始化最大尺寸
       smallSizeCounterTemp.push_back(0);
+      largeSizeCounterTemp.push_back(0);  // 初始化大尺寸计数器
       stableClassificationCountTemp.push_back(0);
       lastClassifyTimeTemp.push_back(ros::Time(0));
 
@@ -1931,6 +1745,7 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
         pcStdHistTemp.push_back(this->pcStdHist_[j]);
         maxHistorySizesTemp.push_back(this->maxHistorySizes_[j]);
         smallSizeCounterTemp.push_back(this->smallSizeCounter_[j]);
+        largeSizeCounterTemp.push_back(this->largeSizeCounter_[j]);
         stableClassificationCountTemp.push_back(this->stableClassificationCount_[j]);
         lastClassifyTimeTemp.push_back(this->lastClassifyTime_[j]);
         filtersTemp.push_back(this->filters_[j]);
@@ -2066,6 +1881,7 @@ void dynamicDetector::kalmanFilterAndUpdateHist(
   this->pcStdHist_ = pcStdHistTemp;
   this->maxHistorySizes_ = maxHistorySizesTemp;
   this->smallSizeCounter_ = smallSizeCounterTemp;
+  this->largeSizeCounter_ = largeSizeCounterTemp;
   this->filters_ = filtersTemp;
   this->trackedBBoxes_ = trackedBBoxesTemp;
   this->trackMissedFrames_ = trackMissedFramesTemp;
@@ -2154,6 +1970,7 @@ void dynamicDetector::removeDuplicateTracks() {
       this->pcStdHist_.erase(this->pcStdHist_.begin() + i);
       this->maxHistorySizes_.erase(this->maxHistorySizes_.begin() + i);
       this->smallSizeCounter_.erase(this->smallSizeCounter_.begin() + i);
+      this->largeSizeCounter_.erase(this->largeSizeCounter_.begin() + i);
       if (i < static_cast<int>(this->stableClassificationCount_.size())) {
         this->stableClassificationCount_.erase(this->stableClassificationCount_.begin() + i);
       }

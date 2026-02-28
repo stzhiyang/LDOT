@@ -11,21 +11,17 @@ namespace onboardDetector {
 
 StaticPointFilter::StaticPointFilter()
     : enabled_(false), voxel_size_(0.1), hit_threshold_(5),
-      time_threshold_(5.0), use_neighbor_voting_(true), min_neighbor_votes_(4),
+      time_threshold_(5.0),
       frame_count_(0), sensor_position_(Eigen::Vector3d::Zero()) {}
 
 StaticPointFilter::~StaticPointFilter() {}
 
 void StaticPointFilter::setParams(bool enabled, float voxel_size,
-                                  int hit_threshold, double time_threshold,
-                                  bool use_neighbor_voting,
-                                  int min_neighbor_votes) {
+                                  int hit_threshold, double time_threshold) {
   enabled_ = enabled;
   voxel_size_ = voxel_size;
   hit_threshold_ = hit_threshold;
   time_threshold_ = time_threshold;
-  use_neighbor_voting_ = use_neighbor_voting;
-  min_neighbor_votes_ = min_neighbor_votes;
 }
 
 long long StaticPointFilter::getVoxelKey(const pcl::PointXYZ &point) {
@@ -66,12 +62,6 @@ bool StaticPointFilter::isPointInBox(const pcl::PointXYZ &pt,
 // 判断体素格子的命中次数，如果大于阈值为静态，返回true
 // 注意：此函数依赖 sensor_position_ 成员变量，需要先调用 updateMap 更新传感器位置
 bool StaticPointFilter::isPointStatic(const pcl::PointXYZ &pt) {
-  // 如果启用邻域投票，使用增强版判断
-  if (use_neighbor_voting_) {
-    return isPointStaticWithNeighbors(pt);
-  }
-  
-  // 原始逻辑：使用距离自适应阈值
   long long key = getVoxelKey(pt);
   if (voxel_map_.find(key) != voxel_map_.end()) {
     int adaptive_thresh = getAdaptiveThreshold(pt);
@@ -80,7 +70,7 @@ bool StaticPointFilter::isPointStatic(const pcl::PointXYZ &pt) {
   return false;
 }
 
-// 【新增】距离自适应阈值 - 远距离降低判定门槛，补偿点云稀疏性
+// 距离自适应阈值 - 远距离降低判定门槛，补偿点云稀疏性
 // 使用成员变量 sensor_position_ 计算点到传感器的距离
 int StaticPointFilter::getAdaptiveThreshold(const pcl::PointXYZ &pt) {
   // 计算点到传感器的2D距离（在全局坐标系下）
@@ -101,69 +91,6 @@ int StaticPointFilter::getAdaptiveThreshold(const pcl::PointXYZ &pt) {
     // 极远距离（>20m）：降低3，最小为2
     return std::max(2, hit_threshold_ - 3);
   }
-}
-
-// 【新增】带邻域投票的静态点判断 - 利用空间连续性
-// 核心思想：稀疏点云中，单个体素可能累积不够，但如果周围邻居都是静态的，
-// 则该点大概率也是静态的（空间连续性假设）
-// 使用成员变量 sensor_position_ 计算距离
-bool StaticPointFilter::isPointStaticWithNeighbors(const pcl::PointXYZ &pt) {
-  long long key = getVoxelKey(pt);
-  int adaptive_thresh = getAdaptiveThreshold(pt);
-  
-  // 1. 首先检查自身
-  int self_hits = 0;
-  auto self_it = voxel_map_.find(key);
-  if (self_it != voxel_map_.end()) {
-    self_hits = self_it->second.hit_count;
-  }
-  
-  // 如果自身已经达到阈值，直接返回静态
-  if (self_hits > adaptive_thresh) {
-    return true;
-  }
-  
-  // 2. 自身未达标，检查邻域投票
-  // 只有当自身有一定累积（至少达到阈值的1/2）时才考虑邻域投票
-  if (self_hits < adaptive_thresh / 2) {
-    return false;
-  }
-  
-  // 3. 6邻域投票（上下左右前后，不含对角线以减少计算量）
-  int neighbor_votes = 0;
-  
-  // 6个方向的偏移
-  float offsets[6][3] = {
-    {voxel_size_, 0, 0}, {-voxel_size_, 0, 0},
-    {0, voxel_size_, 0}, {0, -voxel_size_, 0},
-    {0, 0, voxel_size_}, {0, 0, -voxel_size_}
-  };
-  
-  for (int i = 0; i < 6; ++i) {
-    pcl::PointXYZ neighbor;
-    neighbor.x = pt.x + offsets[i][0];
-    neighbor.y = pt.y + offsets[i][1];
-    neighbor.z = pt.z + offsets[i][2];
-    
-    long long nkey = getVoxelKey(neighbor);
-    auto it = voxel_map_.find(nkey);
-    if (it != voxel_map_.end()) {
-      // 邻居必须是真正的静态点（达到阈值）才能投票
-      // 避免"半静态"的邻居互相抬轿子
-      if (it->second.hit_count > adaptive_thresh) {
-        neighbor_votes++;
-        // 提前退出：如果已经达到投票阈值，无需继续检查
-        if (neighbor_votes >= min_neighbor_votes_) {
-          // 4. 综合判断：自身接近达标 且 邻域投票支持
-          if (self_hits > (adaptive_thresh * 0.67)) {
-            return true;
-          }
-        }
-      }
-    }
-  }
-  
-  return false;
 }
 
 void StaticPointFilter::updateMap(

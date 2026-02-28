@@ -165,10 +165,8 @@ private:
   float staticFilterVoxelSize_;          // 体素大小
   int staticFilterHitThreshold_;         // 命中阈值
   double staticFilterTimeThreshold_;     // 时间阈值
-  bool staticFilterUseNeighborVoting_;   // 是否启用邻域投票
-  int staticFilterMinNeighborVotes_;     // 最小邻域投票数
-  
-  
+
+
   // ===================================================================
   // 目标跟踪与数据关联参数
   // ===================================================================
@@ -198,11 +196,6 @@ private:
   // ===================================================================
   Eigen::Vector3d maxObjectSize_;                    // 物体的最大尺寸阈值
   
-  // 帧内去重(NMS)
-  bool enableDetectionNMS_;                          // 是否启用检测NMS
-  double detectionNMSIoUThreshold_;                  // NMS的IoU阈值
-  double detectionNMSDistScale_;                     // NMS距离阈值缩放参数
-
   // ===================================================================
   // 动态/静态分类参数
   // ===================================================================
@@ -217,9 +210,9 @@ private:
   int dynamicConsistThresh_;                         // 动态一致性检查的帧数阈值
   
   // 尺寸管理
-  double sizeMergeThresh_;                           // 尺寸合并阈值
-  double pointCountMergeThresh_;                     // 点数合并阈值
-  int sizeResetFrames_;                              // 尺寸重置帧数
+  double sizeChangeRatio_;                           // 尺寸变化比例阈值（用于检测合并/分离）
+  double pointCountChangeRatio_;                     // 点数变化比例阈值（用于检测合并/分离）
+  int sizeChangeConfirmFrames_;                      // 确认尺寸变化所需的持续帧数
 
   // ===================================================================
   // 物体分类参数
@@ -290,7 +283,8 @@ private:
   std::vector<std::deque<Eigen::Vector3d>> pcCenterHist_;             // 点云中心历史
   std::vector<std::deque<Eigen::Vector3d>> pcStdHist_;                // 点云标准差历史
   std::vector<Eigen::Vector3d> maxHistorySizes_;                      // 历史最大尺寸
-  std::vector<int> smallSizeCounter_;                                 // 小尺寸计数器
+  std::vector<int> smallSizeCounter_;                                 // 小尺寸计数器（分离检测）
+  std::vector<int> largeSizeCounter_;                                 // 大尺寸计数器（合并检测）
   std::vector<std::shared_ptr<KalmanFilterBase>> filters_;            // 卡尔曼滤波器
 
   // ===================================================================
@@ -360,14 +354,6 @@ public:
   void odomBufferCB(const nav_msgs::OdometryConstPtr &odom);
   void cloudBufferCB(const sensor_msgs::PointCloud2ConstPtr &cloudMsg);
   void processTimerCB(const ros::TimerEvent &e);
-
-  // ===================================================================
-  // 检测模块
-  // ===================================================================
-  void applyDetectionNMS(std::vector<onboardDetector::box3D> &bboxes,
-                        std::vector<std::vector<Eigen::Vector3d>> &pcClusters,
-                        std::vector<Eigen::Vector3d> &pcClusterCenters,
-                        std::vector<Eigen::Vector3d> &pcClusterStds);
 
   // ===================================================================
   // 跟踪模块
