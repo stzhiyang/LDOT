@@ -10,9 +10,8 @@ static_map_warmup_duration: 5.0 # 静态地图预热时长 (秒)，启动后前N
 ground_height: -0.1 # 地面高度阈值 (米), 用于移除地面点云
 roof_height: 2.0 # 天花板/屋顶相对高度阈值 (米), 用于移除天花板点云
 lidar_detection_range: [10.0, 10.0, 2.0]  # 激光雷达最大检测范围 [x, y, z（用不上）] (米)
-enable_voxel_downsampling: true  # 是否启用Voxel Grid自适应下采样
-voxel_base_leaf_size: 0.1       # 基础体素大小 (米), 初始下采样精度
-voxel_target_point_count: 3500  # 目标点云数量, 超过此数量会自适应增大体素尺寸
+enable_voxel_downsampling: true  # 是否启用Voxel Grid下采样
+voxel_base_leaf_size: 0.2       # 基础体素大小 (米), 初始下采样精度
 
 # 静态点与静态簇去除滤波器参数
 static_filter_enabled: true     # 是否启用静态点去除
@@ -25,7 +24,7 @@ lidar_DBSCAN_min_points: 10   # 激光雷达DBSCAN聚类的最小点数
 lidar_DBSCAN_epsilon: 0.2    # 激光雷达DBSCAN邻域搜索半径 (米)，不能小于最大体素大小
 lidar_DBSCAN_use_adaptive: true  # 是否启用基于距离的自适应DBSCAN (true: 启用, false: 使用固定epsilon)
 lidar_DBSCAN_distance_scale: 0.02  # 自适应DBSCAN的距离缩放因子, epsilon会根据点的深度动态调整
-max_object_size: [3.0, 3.0, 1.8] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
+max_object_size: [3.0, 3.0, 3.0] # 过滤掉过大物体的尺寸阈值 [长, 宽, 高] (米)
 
 # 质心补偿参数 - 解决雷达只能检测到物体朝向雷达一面导致的位置误差
 enable_centroid_compensation: true   # 是否启用质心补偿（建议开启）
@@ -38,9 +37,9 @@ association_gate_confidence: 0.99  # 关联置信度，用于根据卡方分布�
 association_pos_cost_weight: 0.8    # 位置代价权重（马氏距离），考虑不确定性
 association_iou_cost_weight: 1    # 3D IoU代价权重，反映空间重叠度，月小月宽松
 # 分类稳定性参数
-classification_size_change_ratio: 0.3            # 尺寸变化比例阈值（检测临时合并/分离）
-classification_point_count_change_ratio: 0.3     # 点数变化比例阈值（检测临时合并/分离）
-classification_size_change_confirm_frames: 10    # 确认尺寸变化所需的持续帧数
+classification_size_change_ratio: 0.5            # 尺寸变化比例阈值（检测临时合并/分离）
+classification_point_count_change_ratio: 0.5     # 点数变化比例阈值（检测临时合并/分离）
+classification_size_change_confirm_frames: 3    # 确认尺寸变化所需的持续帧数
 # 分类与模型切换参数，[box中z、x/y的宽度比较, 质心z高度  z轴宽度的倍数]
 classification_start_frame: 10 # 跟踪多少帧后开始进行分类和模型切换
 classification_interval_sec: 1 # 分类检查时间间隔 s
@@ -48,7 +47,7 @@ classify_xy_distance_threshold: 3.0 # box与无人机xy轴距离阈值(米)，�
 classify_human_threshold: [1.1, 0.9]   # [z >= x/y, z<0.8*zw, PCA z_std/xy_std > 1.6]
 classify_vehicle_threshold: [1.5, 0.7] # [x/y >=z, z<0.7*zw, PCA xy_std/z_std > 1.2]
 classify_uav_threshold: [0.8, 1.2] # z/y/z <0.7 ,z>1.2*zw
-fix_size_classification_threshold: 3 # 连续相同分类次数阈值，达到后固定尺寸和分类（仅对人/车/无人机生效）
+fix_size_classification_threshold: 5 # 连续相同分类次数阈值，达到后固定尺寸和分类（仅对人/车/无人机生效）
 # 跟踪、防幽灵轨迹
 size_retain_ratio: 0.8              # 尺寸保持比例阈值 (0.0-1.0)，当前尺寸低于此比例时触发约束
 box_size_smoothing_alpha: 0.4 # 包围框尺寸平滑系数 (0.0 - 1.0), 越小越平滑重叠

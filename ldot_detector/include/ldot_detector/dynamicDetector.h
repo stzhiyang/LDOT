@@ -140,9 +140,8 @@ private:
   double roofHeight_;                    // 天花板高度阈值
   
   // Voxel Grid下采样
-  bool enableVoxelDownsampling_;         // 是否启用自适应下采样
+  bool enableVoxelDownsampling_;         // 是否启用体素下采样
   float voxelBaseLeafSize_;              // 基础体素大小（米）
-  int voxelTargetPointCount_;            // 目标点云数量
 
   // ===================================================================
   // DBSCAN聚类参数

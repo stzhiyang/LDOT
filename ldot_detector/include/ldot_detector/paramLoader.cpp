@@ -240,16 +240,6 @@ void ParamLoader::loadVoxelParams(dynamicDetector *detector) {
                           << detector->voxelBaseLeafSize_ << "m");
   }
 
-  // 目标点云数量
-  if (not nh_.getParam(ns_ + "/voxel_target_point_count",
-                       detector->voxelTargetPointCount_)) {
-    detector->voxelTargetPointCount_ = 5;
-    ROS_WARN_STREAM(hint_ << " No voxel_target_point_count param. Use default: "
-                             "5");
-  } else {
-    ROS_INFO_STREAM(hint_ << " voxel_target_point_count: "
-                          << detector->voxelTargetPointCount_);
-  }
 }
 
 // ==================== Static Point Filter Parameters ====================

@@ -8,10 +8,7 @@
 #include <chrono>  // for timing
 #include <iomanip> // for std::put_time
 #include <sstream> // for std::stringstream
-#include <unordered_map> // for std::unordered_map
-#include <unordered_set> // for std::unordered_set
-#include <random>   // for std::random_device, std::mt19937, std::shuffle
-#include <algorithm> // for std::shuffle
+#include <algorithm> // for std::max, std::min
 #include <ldot_detector/dynamicDetector.h>
 #include <ldot_detector/paramLoader.h>
 
@@ -303,7 +300,7 @@ void dynamicDetector::lidarOdomCB(
  * 1. 更新位姿信息（机体位姿）
  * 2. 范围过滤（相对于机体位置）
  * 3. 地面和天花板过滤（Z方向）
- * 4. 自适应Voxel Grid下采样
+ * 4. Voxel Grid下采样
  */
 pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
     const sensor_msgs::PointCloud2ConstPtr &cloudMsg,
@@ -358,72 +355,16 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr dynamicDetector::preprocessPointCloud(
     }
   }
 
-  // --- 5. 基于体素内点云数量上限的自适应降采样 ---
-  // 策略：对每个体素内的点云数量进行限制，超过上限时随机保留部分点
+  // --- 5. 体素降采样（简单快速） ---
   pcl::PointCloud<pcl::PointXYZ>::Ptr finalCloud(
       new pcl::PointCloud<pcl::PointXYZ>());
 
   if (this->enableVoxelDownsampling_) {
-    // 预分配内存，减少动态扩容开销
-    finalCloud->reserve(groundRoofFilterCloud->size());
-    
-    // 使用更高效的体素分组方式
-    std::unordered_map<int, std::vector<int>> voxelMap;
-    voxelMap.reserve(groundRoofFilterCloud->size() / 5); // 预估体素数量
-    
-    // 计算每个点的体素索引并分组
-    const float invLeafSize = 1.0f / this->voxelBaseLeafSize_; // 预计算倒数，避免除法
-    for (size_t i = 0; i < groundRoofFilterCloud->size(); ++i) {
-      const pcl::PointXYZ &pt = groundRoofFilterCloud->points[i];
-      
-      // 使用位运算和乘法代替除法，提高计算速度
-      int voxelX = static_cast<int>(std::floor(pt.x * invLeafSize));
-      int voxelY = static_cast<int>(std::floor(pt.y * invLeafSize));
-      int voxelZ = static_cast<int>(std::floor(pt.z * invLeafSize));
-      
-      // 使用更简单的哈希函数，减少计算开销
-      int voxelKey = ((voxelX * 73856093) ^ (voxelY * 19349663)) ^ (voxelZ * 83492791);
-      
-      voxelMap[voxelKey].push_back(i);
-    }
-    
-    // 对每个体素内的点进行降采样
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    
-    for (const auto &voxelPair : voxelMap) {
-      const std::vector<int> &pointIndices = voxelPair.second;
-      const size_t pointCount = pointIndices.size();
-      
-      if (pointCount <= static_cast<size_t>(this->voxelTargetPointCount_)) {
-        // 如果体素内点数不超过上限，全部保留
-        for (int idx : pointIndices) {
-          finalCloud->push_back(groundRoofFilterCloud->points[idx]);
-        }
-      } else {
-        // 使用 Fisher-Yates 洗牌算法的部分实现，只随机选择前N个点
-        // 这比完全洗牌更高效
-        std::vector<int> selectedIndices;
-        selectedIndices.reserve(this->voxelTargetPointCount_);
-        
-        // 简单的随机采样：随机选择N个不重复的索引
-        std::uniform_int_distribution<int> dist(0, pointCount - 1);
-        std::unordered_set<int> selectedSet;
-        selectedSet.reserve(this->voxelTargetPointCount_);
-        
-        while (selectedSet.size() < static_cast<size_t>(this->voxelTargetPointCount_)) {
-          int randomIdx = dist(gen);
-          if (selectedSet.insert(randomIdx).second) {
-            selectedIndices.push_back(pointIndices[randomIdx]);
-          }
-        }
-        
-        // 添加选中的点
-        for (int idx : selectedIndices) {
-          finalCloud->push_back(groundRoofFilterCloud->points[idx]);
-        }
-      }
-    }
+    pcl::VoxelGrid<pcl::PointXYZ> voxelFilter;
+    const float leafSize = std::max(this->voxelBaseLeafSize_, 0.01f);
+    voxelFilter.setLeafSize(leafSize, leafSize, leafSize);
+    voxelFilter.setInputCloud(groundRoofFilterCloud);
+    voxelFilter.filter(*finalCloud);
   } else {
     finalCloud = groundRoofFilterCloud;
   }
